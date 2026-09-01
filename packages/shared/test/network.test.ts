@@ -4,7 +4,9 @@ import {
   ARC_TESTNET,
   BuildInfoSchema,
   CanonicalDecimalSchema,
+  CanonicalIntegerSchema,
   EvmAddressSchema,
+  IsoTimestampSchema,
   NETWORKS,
   TransactionHashSchema,
 } from "../src/index.js";
@@ -35,6 +37,25 @@ describe("Arc Testnet registry", () => {
     expect(JSON.stringify(NETWORKS).toLowerCase()).not.toContain("mainnet");
   });
 
+  it("deep-freezes the reviewed Testnet registry", () => {
+    expect(Object.isFrozen(ARC_TESTNET)).toBe(true);
+    expect(Object.isFrozen(ARC_TESTNET.contracts)).toBe(true);
+    expect(Object.isFrozen(NETWORKS)).toBe(true);
+
+    expect(Reflect.set(ARC_TESTNET, "rpcHttp", "https://example.invalid")).toBe(false);
+    expect(
+      Reflect.set(
+        ARC_TESTNET.contracts,
+        "usdc",
+        "0x0000000000000000000000000000000000000000",
+      ),
+    ).toBe(false);
+    expect(ARC_TESTNET.rpcHttp).toBe("https://rpc.testnet.arc.io");
+    expect(ARC_TESTNET.contracts.usdc).toBe(
+      "0x3600000000000000000000000000000000000000",
+    );
+  });
+
   it("canonicalizes EVM addresses without changing their bytes", () => {
     expect(
       EvmAddressSchema.parse("0x8004A818BFB912233c491871b3d84c89A494BD9e"),
@@ -52,6 +73,28 @@ describe("Arc Testnet registry", () => {
     }
     for (const value of ["01", "1.0", "-1", "1e2", "1."]) {
       expect(() => CanonicalDecimalSchema.parse(value)).toThrow();
+    }
+
+    expect(CanonicalIntegerSchema.parse("9".repeat(78))).toBe("9".repeat(78));
+    expect(() => CanonicalIntegerSchema.parse("9".repeat(79))).toThrow();
+    expect(
+      CanonicalDecimalSchema.parse(`${"9".repeat(78)}.${"1".repeat(78)}`),
+    ).toBe(`${"9".repeat(78)}.${"1".repeat(78)}`);
+    expect(() => CanonicalDecimalSchema.parse(`${"9".repeat(79)}.1`)).toThrow();
+    expect(() => CanonicalDecimalSchema.parse(`1.${"1".repeat(79)}`)).toThrow();
+    expect(() => CanonicalDecimalSchema.parse("9".repeat(100_000))).toThrow();
+  });
+
+  it("accepts only explicit UTC timestamps", () => {
+    for (const value of ["2026-09-01T00:00:00Z", "2026-09-01T00:00:00.123Z"]) {
+      expect(IsoTimestampSchema.parse(value)).toBe(value);
+    }
+    for (const value of [
+      "2026-09-01T05:00:00+05:00",
+      "2026-08-31T20:00:00-04:00",
+      "2026-09-01T00:00:00",
+    ]) {
+      expect(() => IsoTimestampSchema.parse(value)).toThrow();
     }
   });
 

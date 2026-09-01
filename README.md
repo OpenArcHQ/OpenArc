@@ -56,8 +56,7 @@ pnpm release:gate
 
 The complete evidence record is in
 [`docs/releases/00-foundation.md`](docs/releases/00-foundation.md). Milestone 01
-remains blocked only on independent review; the exact pushed SHA and hosted CI
-gate are recorded there.
+remains blocked on the corrected exact hosted gate and independent re-review.
 
 ## Logo
 

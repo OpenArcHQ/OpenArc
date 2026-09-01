@@ -452,6 +452,14 @@ Exit gate:
 - API and web expose exact commit markers;
 - no mainnet config exists.
 
+Milestone 00 is the sole foundation exception to the universal staging and live
+Testnet proof requirements in Section 14. It exposes no product route, makes no
+network call, and has no persistent state to validate in a hosted environment.
+For M00 only, exact-SHA production-image startup, marker, browser, scan, and SBOM
+evidence in hosted CI replace staging deployment and live Testnet proof. This
+exception does not permit a public availability claim and does not carry forward
+to later milestones.
+
 ### Milestone 01 - evidence engine and fixture explorer
 
 Build:
@@ -684,7 +692,9 @@ A work item is ready only when it has:
 
 ## 14. Definition of done
 
-A milestone is done only when:
+A milestone is done only when the following requirements apply, except where a
+milestone's own exit gate explicitly records a narrower not-applicable case and
+its reason:
 
 - implementation and normative docs agree;
 - lint, typecheck, unit, integration, build, and required browser suites pass on

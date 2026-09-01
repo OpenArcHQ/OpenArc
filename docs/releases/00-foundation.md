@@ -1,6 +1,6 @@
 # Milestone 00 — repository and verification foundation
 
-Status: **pushed engineering candidate; independent review pending**
+Status: **corrected engineering candidate; exact CI and re-review pending**
 Network review: **2026-09-01**
 
 ## Frozen boundary
@@ -33,7 +33,7 @@ connect a wallet, sign or broadcast, persist user data, or define Arc mainnet.
 - [x] API and web expose the exact supplied build marker
 - [x] Trivy high/critical image scans pass
 - [x] CycloneDX SBOM artifacts are generated
-- [x] Exact pushed SHA passes the hosted release workflow
+- [ ] Corrected exact pushed SHA passes the hosted release workflow
 - [ ] Independent review finds no P0/P1
 
 ## Local candidate evidence
@@ -41,23 +41,27 @@ connect a wallet, sign or broadcast, persist user data, or define Arc mainnet.
 Run on 2026-09-01 from the current local tree:
 
 - `pnpm release:gate` passed inside the repository's Node 22/Linux gate image.
-- Eleven unit/contract tests passed: five shared-network/primitive tests, four
+- Thirteen unit/contract tests passed: seven shared-network/primitive tests, four
   API/configuration tests, and two web build-marker tests.
 - The foundation browser journey passed in Chromium and WebKit.
 - `pnpm audit --prod --audit-level high` reported no known vulnerabilities, and
   the production-license policy passed.
 - Production API and web images built, started, and exposed the supplied
-  `m00-local` marker.
-- Final Trivy scans reported zero HIGH or CRITICAL findings in both images.
+  `m00-review-fix` marker; the API ran as UID 100 without package-manager
+  binaries in its production closure.
+- Final Trivy 0.73.0 scans, including findings with no fix recorded, reported
+  zero HIGH or CRITICAL findings in both images. Runtime base images and
+  patched Alpine packages are version/digest pinned; broad `apk upgrade` is
+  forbidden by the release check.
 - CycloneDX JSON SBOMs were generated for both production images.
 - The API production closure excludes TypeScript, Vitest, `tsx`, and the Prisma
   CLI.
 
 ## Pushed candidate evidence
 
-- Candidate `8139303271b832ee6fe135de2aae4e51e4fca24b` is pushed to the
-  private remote and matches its remote branch head at verification time.
-- GitHub Actions run `33555512681` completed successfully on that exact SHA:
+- Reviewed predecessor `69797d001e0b3c1f68b379c10f62ccf3c373f44c` is pushed to
+  the private remote and matched its remote branch head at verification time.
+- GitHub Actions run `33556223475` completed successfully on that exact SHA:
   verification, Chromium/WebKit, production image smoke, Trivy, and CycloneDX
   SBOM jobs all passed.
 - The generated `openarc-sboms` artifact is present and unexpired.
@@ -69,5 +73,10 @@ Run on 2026-09-01 from the current local tree:
   strict timeout to every job so ordinary pushes cannot consume runner minutes.
 - No staging or production deployment was created.
 
-Independent-review evidence is not yet available. Do not begin Milestone 01
-until the remaining review checkbox is closed.
+The first independent review correctly held the predecessor for a mutable nested
+network registry, unbounded/non-UTC primitives, and an impossible release-rule
+conflict. The current corrected tree deep-freezes the registry, caps canonical
+integer/decimal strings at 78/78 digits, requires `Z` UTC timestamps, and records
+the M00-only staging/live-proof exception. Its full Linux/Node 22 gate passes
+locally. Do not begin Milestone 01 until the corrected exact hosted gate and
+independent re-review both pass.

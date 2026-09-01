@@ -33,7 +33,7 @@ export const ArcTestnetConfigSchema = z.strictObject({
   sourceRevision: z.literal("arc-docs-2026-09-01"),
 });
 
-export const ARC_TESTNET = ArcTestnetConfigSchema.parse({
+const parsedArcTestnet = ArcTestnetConfigSchema.parse({
   id: "arc-testnet",
   environment: "testnet",
   chainId: "5042002",
@@ -60,6 +60,11 @@ export const ARC_TESTNET = ArcTestnetConfigSchema.parse({
   },
   reviewedAt: "2026-09-01",
   sourceRevision: "arc-docs-2026-09-01",
+});
+
+export const ARC_TESTNET = Object.freeze({
+  ...parsedArcTestnet,
+  contracts: Object.freeze({ ...parsedArcTestnet.contracts }),
 });
 
 /**

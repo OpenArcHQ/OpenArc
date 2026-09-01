@@ -12,16 +12,26 @@ export const TransactionHashSchema = z
 
 export const CanonicalIntegerSchema = z
   .string()
-  .regex(/^(0|[1-9][0-9]*)$/u, "Expected an unsigned base-10 integer string");
+  .regex(
+    /^(0|[1-9][0-9]{0,77})$/u,
+    "Expected an unsigned base-10 integer string of at most 78 digits",
+  );
 
 export const CanonicalDecimalSchema = z
   .string()
-  .regex(/^(0|[1-9][0-9]*)(\.[0-9]+)?$/u, "Expected an unsigned canonical decimal string")
+  .regex(
+    /^(0|[1-9][0-9]{0,77})(\.[0-9]{1,78})?$/u,
+    "Expected an unsigned decimal with at most 78 integer and 78 fractional digits",
+  )
   .refine((value) => !value.includes(".") || !value.endsWith("0"), {
     message: "Fractional trailing zeros are not canonical",
   });
 
-export const IsoTimestampSchema = z.iso.datetime({ offset: true });
+export const IsoTimestampSchema = z
+  .iso.datetime({ offset: false, local: false })
+  .refine((value) => value.endsWith("Z"), {
+    message: "Expected an ISO 8601 UTC timestamp ending in Z",
+  });
 
 export const Sha256DigestSchema = z
   .string()
