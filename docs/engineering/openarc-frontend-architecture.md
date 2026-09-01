@@ -1,0 +1,834 @@
+# OpenArc frontend architecture
+
+Status: **normative frontend specification**  
+Specification version: **0.1.0-draft**  
+Parent: `docs/engineering/openarc-engineering-source-of-truth.md`  
+Runtime target: **React, Vite, TypeScript, browser WebCrypto and IndexedDB**
+
+This document defines the OpenArc browser application. It is subordinate to the
+engineering source of truth and owns frontend-specific behavior only.
+
+## 1. Frontend mission
+
+The browser is the private workspace and primary product. It owns the local
+human context that must not become a server-side behavioral profile.
+
+It:
+
+- encrypts and stores the workspace locally;
+- manages agent labels, monitoring policies, evidence, actions, and notes;
+- records exact permission receipts before network calls;
+- validates every API response at runtime;
+- evaluates policy and reconciles evidence deterministically;
+- presents an accessible timeline, graph, source view, and investigation report;
+- aborts and discards work at every lock or session boundary.
+
+It does not:
+
+- store provider API credentials;
+- collect wallet private keys, seed phrases, entity secrets, or OTPs;
+- sign or broadcast transactions;
+- automatically refresh wallet or provider data;
+- send private labels, policies, notes, prompts, or cross-source relationships to
+  the API;
+- infer intent, agent identity, provider quality, or wallet enforcement.
+
+## 2. Frontend package layout
+
+```text
+apps/web/
+  src/
+    main.tsx
+    App.tsx
+    app/
+      routes.tsx
+      availability.ts
+      ProductShell.tsx
+      ProductRail.tsx
+      ErrorBoundary.tsx
+    vault/
+      types.ts
+      crypto.ts
+      db.ts
+      service.ts
+      archive.ts
+      session.tsx
+      errors.ts
+    evidence/
+      types.ts
+      reconciliation.ts
+      EvidenceTimeline.tsx
+      EvidenceGraph.tsx
+      EvidenceList.tsx
+      EvidenceDetails.tsx
+    agents/
+      AgentsPanel.tsx
+      AgentEditor.tsx
+      AgentIdentityPanel.tsx
+    activity/
+      ActivityPanel.tsx
+      RefreshDialog.tsx
+      TransactionEvidence.tsx
+    jobs/
+      JobsPanel.tsx
+      JobEvidence.tsx
+    payments/
+      PaymentsPanel.tsx
+      GatewayEvidence.tsx
+    policies/
+      PoliciesPanel.tsx
+      PolicyEditor.tsx
+      evaluation.ts
+    investigations/
+      InvestigationsPanel.tsx
+      ExpectedObserved.tsx
+      ReportExport.tsx
+    sources/
+      SourcesPanel.tsx
+      SourceStatus.tsx
+    api/
+      client.ts
+      schemas.ts
+      errors.ts
+    components/
+      Dialog.tsx
+      InfoBubble.tsx
+      EmptyState.tsx
+      StatusBadge.tsx
+      ExactValue.tsx
+    styles/
+      tokens.css
+      global.css
+  test/
+  public/
+  Dockerfile
+```
+
+Feature folders import `packages/shared` and shared components. They do not import
+another feature's internal storage implementation.
+
+## 3. Routes and product shell
+
+Public routes:
+
+```text
+/                 product landing page
+/guide            beginner product guide
+/docs             product and technical documentation
+/faq              FAQ
+/legal            privacy, terms, and limitations
+/status            source/build status or status-service handoff
+```
+
+Private local workspace route:
+
+```text
+/workspace?view=overview
+/workspace?view=agents
+/workspace?view=activity
+/workspace?view=jobs
+/workspace?view=payments
+/workspace?view=policies
+/workspace?view=investigations
+/workspace?view=sources
+/workspace?view=settings
+```
+
+The private workspace is outside any account, cloud, wallet-connect, or analytics
+provider. It does not mount unrelated network clients.
+
+### Navigation rules
+
+- Persistent desktop rail and compact mobile drawer.
+- Each workspace has title, one-sentence purpose, information bubble, status, and
+  a `Learn how this works` link.
+- Disabled features are visible only when useful and labeled
+  `BUILT - NOT ENABLED IN THIS BUILD`; they are not clickable.
+- Invalid or disabled direct views fall back to the nearest enabled workspace.
+- Browser back/forward changes views without locking the Vault.
+- Leaving `/workspace`, manual lock, hidden/pagehide, workspace replacement, or
+  deletion applies the relevant session boundary.
+
+## 4. First-visit guidance
+
+The first successful workspace creation shows an accessible guided tour:
+
+1. What OpenArc can and cannot prove.
+2. Where private workspace data lives.
+3. How to add an agent wallet label.
+4. Why refresh requires explicit permission.
+5. How to read evidence classes and incomplete states.
+6. How to lock, export, recover, and delete.
+
+Tour state is local and non-sensitive. `Show tour again` remains available in the
+rail and settings. The tour never blocks lock or delete.
+
+The dialog has initial focus, a focus trap, Escape close when safe, focus return,
+background inertness, text-based progress, reduced-motion behavior, and full
+contrast coverage.
+
+## 5. Application state model
+
+Top-level Vault phases:
+
+```ts
+type VaultPhase =
+  | { kind: "probing" }
+  | { kind: "unsupported"; reason: string }
+  | { kind: "empty" }
+  | { kind: "creating" }
+  | { kind: "locked"; meta: PublicVaultMeta }
+  | { kind: "unlocking"; meta: PublicVaultMeta }
+  | { kind: "unlocked"; session: VaultSession }
+  | { kind: "deleting"; vaultId: string; blocked: boolean }
+  | { kind: "fatal"; code: string };
+```
+
+Session identity:
+
+```ts
+interface VaultSession {
+  vaultId: string;
+  generation: number;
+  key: CryptoKey;
+  revision: string;
+  openedAt: number;
+  inactivityDeadline: number;
+}
+```
+
+The renderable generation state and internal generation ref advance together on:
+
+- unlock;
+- successful workspace replacement/import/recovery;
+- manual or inactivity lock;
+- visibility/pagehide lock;
+- deletion start;
+- remote cross-tab lock/deleting/deleted event;
+- unexpected database close or version change.
+
+Every async operation captures `{vaultId, generation, revision}` and an
+`AbortSignal`. It asserts session identity before network, after network, inside
+the final IndexedDB write transaction, and before updating React state.
+
+## 6. Browser capability gate
+
+Before any create/unlock controls mount, require:
+
+- secure context;
+- `crypto.subtle`;
+- `crypto.getRandomValues`;
+- `crypto.randomUUID` or an approved local UUID implementation using secure RNG;
+- IndexedDB;
+- TextEncoder/TextDecoder;
+- Blob and URL object URL support for encrypted exports.
+
+Missing core capabilities show one unsupported page. There is no plaintext,
+localStorage, cookie, or remote fallback.
+
+BroadcastChannel, Storage Persistence, Web Locks, and File System Access are
+optional enhancements and cannot be correctness dependencies.
+
+## 7. IndexedDB structure
+
+One origin-bound database:
+
+```text
+database: openarc-vault
+version: 1
+
+store vaultMeta
+  key: "active"
+  value: PublicVaultMeta
+
+store records
+  key: opaque record UUID
+  value: EncryptedEnvelope
+```
+
+Plain public metadata contains only:
+
+```ts
+interface PublicVaultMeta {
+  formatVersion: 1;
+  databaseVersion: 1;
+  vaultId: string;
+  schemaVersion: number;
+  keyVersion: number;
+  revision: string;
+  kdf: {
+    algorithm: "PBKDF2-HMAC-SHA-256";
+    iterations: number;
+    salt: string;
+  };
+  passphraseWrapper: WrappedKey;
+  recoveryWrapper: WrappedKey;
+  sentinelRecordId: string;
+}
+```
+
+It contains no agent name, address, policy, record kind, record count, created
+date, action date, provider name, or evidence timestamp.
+
+Encrypted envelope:
+
+```ts
+interface EncryptedEnvelope {
+  id: string;
+  iv: string;
+  keyVersion: number;
+  schemaVersion: number;
+  ciphertext: string;
+}
+```
+
+The encrypted plaintext contains a discriminated record union. Unknown kinds or
+versions fail closed and remain exportable/deletable.
+
+## 8. Cryptographic lifecycle
+
+### Create
+
+1. Normalize and bound the passphrase under a documented Unicode policy.
+2. Generate a random 256-bit data-encryption key as extractable only during
+   wrapping.
+3. Derive a wrapping key with PBKDF2-HMAC-SHA-256, a random salt, and versioned
+   iteration count.
+4. Wrap the data key with AES-KW.
+5. Create a separately derived recovery wrapper from a high-entropy recovery
+   secret displayed once.
+6. Discard extractable key material.
+7. Unwrap the session key as nonextractable AES-GCM.
+8. Encrypt and verify a sentinel.
+9. Commit metadata plus sentinel atomically.
+
+### Record encryption
+
+- AES-256-GCM.
+- Fresh random 96-bit IV on every write, including rewrites.
+- 128-bit authentication tag.
+- Canonical AAD:
+
+```text
+openarc|vault-v1|<vaultId>|<recordId>|<recordSchema>|<keyVersion>
+```
+
+- Canonical UTF-8 JSON serialization with bounded keys and arrays.
+- No IV reuse under one data key.
+
+### Unlock
+
+- Derive wrapping key.
+- Unwrap to nonextractable session key.
+- Decrypt and validate sentinel.
+- Read one atomic snapshot of metadata and records.
+- Decrypt and validate every required record before entering unlocked phase.
+- Use generic user error: `Wrong passphrase or damaged workspace.`
+
+### Lock
+
+- abort all requests;
+- invalidate generation;
+- clear key and decrypted state;
+- clear editors, dialogs, drafts, and report previews;
+- revoke object URLs;
+- clear timers and listeners;
+- broadcast non-sensitive lock event;
+- return to locked UI.
+
+Do not claim guaranteed JavaScript heap erasure.
+
+### Recovery
+
+Recovery unwraps the same data key, verifies every record, creates a new
+passphrase wrapper and recovery wrapper in memory, then conditionally commits
+metadata against the original vault ID/revision. Old passphrase and old recovery
+secret must fail after success. Any record error leaves original wrappers valid.
+
+### Export and import
+
+- Decrypt and validate one atomic snapshot.
+- Build a bounded canonical archive in memory.
+- Encrypt the whole archive with a user-supplied backup passphrase and fresh
+  salt/IV.
+- Clear header contains only magic, version, KDF bounds, salt, and IV.
+- Import validates file size and KDF bounds before work.
+- Decrypt and strictly validate every record before replacement.
+- Replacement is one IndexedDB transaction with expected-empty or expected
+  `{vaultId, revision}` precondition.
+- No merge in the first release.
+
+### Delete
+
+- invalidate session and broadcast `deleting`;
+- clear UI and close this tab's handles;
+- enter dedicated non-interactive deleting phase;
+- call `indexedDB.deleteDatabase`;
+- treat `onblocked` as pending, not cancelled;
+- report completion only on `onsuccess`;
+- show close-other-tabs guidance while blocked;
+- never expose create/unlock/import controls while an uncancellable delete is
+  pending.
+
+## 9. Record schemas
+
+Initial encrypted record kinds:
+
+```ts
+type VaultRecord =
+  | AgentProfileRecord
+  | MonitoringPolicyRecord
+  | EvidenceRecordRecord
+  | ActionEnvelopeRecord
+  | PermissionReceiptRecord
+  | InvestigationNoteRecord
+  | WorkspaceSettingsRecord
+  | SentinelRecord;
+```
+
+Record IDs are opaque UUIDs and carry no domain meaning.
+
+### Agent profile
+
+```text
+record ID
+owner-supplied display name
+wallet associations: network + canonical address + classification source
+optional framework label
+optional local purpose note
+policy record IDs
+```
+
+### Monitoring policy
+
+```text
+policy ID and revision
+owner-supplied name
+status and validity window
+per-action and rolling-window limits
+allowed/blocked service origins
+allowed/blocked recipient and contract addresses
+human-approval requirement
+enforcement evidence: none or source-linked proof
+```
+
+### Permission receipt
+
+```text
+receipt ID
+connector ID
+destination
+exact public fields released
+purpose
+credential/cookie behavior
+provider retention description
+OpenArc no-store description
+approvedAt
+outcome: approved | completed | failed
+resolvedAt
+failure class, never raw provider message
+```
+
+## 10. API client boundary
+
+One client module owns all fetch calls.
+
+```ts
+async function requestOpenArc<TReq, TRes>(input: {
+  path: AllowedPath;
+  requestSchema: ZodSchema<TReq>;
+  responseSchema: ZodSchema<TRes>;
+  body: TReq;
+  signal: AbortSignal;
+}): Promise<TRes>
+```
+
+Rules:
+
+- same-origin relative path only;
+- method fixed by `AllowedPath`;
+- credentials omitted for credentialless source routes;
+- JSON content type;
+- request validated before serialization;
+- response byte cap where browser streaming support allows;
+- response envelope and DTO validated before use;
+- no redirects to another origin;
+- non-JSON and malformed error responses collapse to a bounded local error;
+- no address, hash, ID, policy, or provider message enters console logs;
+- abort is a neutral session event, not a visible provider failure after lock.
+
+## 11. Permission-before-network transaction
+
+All source refreshes use the same flow:
+
+1. User supplies or selects one public identifier.
+2. UI shows exact destination split and fields.
+3. User confirms.
+4. Create `approved` permission receipt in memory.
+5. Encrypt and write receipt using expected session revision.
+6. Assert the same Vault session.
+7. Create/register AbortController.
+8. Send the minimum request.
+9. Validate response.
+10. Build source evidence and completed receipt update in memory.
+11. Assert session and conditionally write all affected records atomically.
+12. Update UI from the committed local result.
+
+On provider failure, update the existing receipt to `failed` when the session is
+still active. If the failure update cannot commit, the earlier approved receipt
+still truthfully proves that disclosure was authorized and may have been sent.
+
+On post-network local-save failure, copy says the public identifier was sent but
+the new result was not saved. Pre-network local-save failure says nothing was
+sent.
+
+## 12. Evidence reconciliation in the browser
+
+The API returns source facts. The browser creates private relationships and
+conclusions.
+
+Reconciliation function:
+
+```ts
+function reconcileAction(input: {
+  action: ActionEnvelope;
+  evidence: EvidenceRecord[];
+  policies: MonitoringPolicy[];
+  ruleVersion: string;
+}): ReconciliationResult
+```
+
+The function is pure, deterministic, exact, and fully covered by fixtures. It:
+
+- validates every referenced evidence ID exists;
+- confirms source subject and network match;
+- compares exact integer/decimal fields;
+- checks authorization nonce and validity;
+- checks provider/Gateway/onchain source relationship;
+- evaluates local policy without calling it wallet enforcement;
+- emits ordered gaps, conflicts, and limitations;
+- never mutates source evidence;
+- never makes a network call.
+
+Presentation preserves the normative distinction:
+
+- `AUTHORIZED` is not rendered as `SETTLED`;
+- `SETTLED` is not rendered as `FULFILLED`;
+- a disagreement becomes `CONFLICTING_EVIDENCE`, not a source-preference guess;
+- a fully matched action becomes `RECONCILED` only under the versioned rule for
+  that action type.
+
+## 13. Workspace structure
+
+### Overview
+
+Shows:
+
+- labeled agents and wallets;
+- evidence health;
+- pending authorization/settlement/reconciliation counts;
+- policy exceptions;
+- source outage or stale state;
+- no fake aggregate health score.
+
+### Agents
+
+Shows owner label separately from wallet, ERC-8004 identity, registry owner,
+observer feedback, and validation evidence. Metadata URIs are untrusted text links
+with no automatic preview or remote image.
+
+### Activity
+
+Explicit refresh of one approved wallet or transaction. Displays exact source,
+anchor, USDC interface/precision, fee, finality, coverage, and limitations.
+
+### Jobs
+
+Displays one fixed-contract ERC-8183 job with roles, budget, expiry, state,
+deliverable digest, source, and Testnet reference limitation.
+
+### Payments
+
+Displays requirement, authorization metadata, provider response metadata,
+Gateway state, and Arc settlement as separate rows. No execution control.
+
+### Policies
+
+Creates local monitoring rules and shows simulated comparison. Each result says
+either `LOCAL MONITORING ONLY` or cites exact enforcement evidence.
+
+### Investigations
+
+Searches only decrypted local records plus explicit one-ID source lookup. Shows
+expected versus observed, gaps, conflicts, source links, and redacted report.
+
+### Sources
+
+Displays API capability manifest, exact provider destination, source revision,
+last completed observation, data classes released, stale/outage status, and
+feature flags.
+
+### Settings
+
+Lock, storage persistence status, encrypted export/import/recovery/delete,
+threat-model limitations, tour restart, build SHA, and documentation links.
+
+## 14. Evidence visualization
+
+The semantic evidence list is the source of truth. It is always rendered and
+accessible.
+
+The graph is a progressive enhancement:
+
+```text
+policy/mandate -> attempt -> requirement -> authorization
+                                   |              |
+                                   v              v
+                              fulfillment     Gateway
+                                   \              /
+                                    -> settlement -> reconciliation
+```
+
+Graph requirements:
+
+- nodes derive directly from the same sorted records as the list;
+- no graph-only conclusion or control;
+- color is never the only state channel;
+- each node has state text, source class, time, and limitation indicator;
+- edges distinguish `reported relationship`, `cryptographic link`,
+  `provider association`, and `OpenArc-derived match`;
+- keyboard navigation follows chronological order;
+- screen-reader equivalent names every edge relationship;
+- reduced motion disables animated edges and layout transitions;
+- mobile may default to the list and offer graph on demand.
+
+Library decision remains open. Preferred candidates are an accessible reviewed
+`@xyflow/react` configuration for node-edge interaction or a small custom SVG
+layer over semantic HTML. Any choice requires license, bundle, keyboard,
+screen-reader, zoom, reduced-motion, and theme review.
+
+For simple exact charts such as action counts by state, use semantic HTML plus a
+small SVG or a reviewed modular library such as Visx. No chart may fabricate time
+series or smooth sparse evidence into an implied continuous measurement.
+
+## 15. Styling and motion
+
+The UI follows the OpenArc brand system:
+
+- off-white paper background;
+- deep blue structure;
+- signal blue facts and active controls;
+- horizon gold for attention, not generic decoration;
+- high-contrast dark text;
+- restrained grain and soft gradients from the logo;
+- technical monospace for exact identifiers and source states.
+
+Motion communicates state:
+
+- short route/view transition;
+- staggered evidence-node reveal only after committed data;
+- gentle graph layout transition;
+- clear but non-flashing conflict emphasis;
+- no perpetual decorative animation in the workspace;
+- `prefers-reduced-motion` disables nonessential movement and preserves all
+  content immediately.
+
+GSAP is optional and must pass license and bundle review. Native CSS transitions
+are sufficient for MVP.
+
+Custom scrollbars can be used as progressive visual styling, but native scrolling,
+keyboard scrolling, touch momentum, high-contrast mode, and platform fallback
+must remain intact.
+
+## 16. Accessibility contract
+
+Required from Milestone 01:
+
+- semantic headings and landmarks;
+- skip links that move programmatic focus;
+- visible focus and logical tab order;
+- minimum target sizes for essential controls;
+- dialogs with initial focus, trap, Escape behavior, inert background, and focus
+  return;
+- status communicated with text and icon, not color only;
+- exact identifiers have accessible labels and safe copy controls;
+- tables have captions and headers;
+- graph has complete list equivalent;
+- error summary focuses after invalid submit;
+- live regions announce completed refresh without reading private values aloud;
+- full-document Axe scans including rail, dialogs, tour, locked state, and error
+  states;
+- manual VoiceOver and keyboard walkthrough before public Testnet beta.
+
+## 17. Privacy-safe presentation
+
+- Addresses and hashes are truncated visually but accessible/copyable on explicit
+  action.
+- Private labels never appear in document title, URL, query, analytics, browser
+  notification, console, or crash report.
+- Clipboard actions are explicit and disclose copied field class.
+- External links use `noopener noreferrer` and exact approved origins.
+- Resource URLs display origin plus local label; full private path remains local
+  and collapsed by default.
+- No remote image, avatar, metadata, favicon, or embed loads from an evidence URI.
+- Error UI uses local error taxonomy, not raw server/provider messages.
+
+## 18. Performance and capacity
+
+Initial bounded workspace targets:
+
+```text
+agents                         100
+policies                       500
+evidence records             5000
+action envelopes             1000
+permission receipts          5000
+notes                         1000
+encrypted backup               32 MiB maximum
+single imported attachment      4 MiB maximum if later enabled
+```
+
+The exact serialized encrypted archive must remain below the import maximum.
+Capacity is checked before every save and again before download. Accepted local
+state must always be exportable and importable by the same build.
+
+Large lists use pagination or virtualization without changing semantic ordering.
+The graph defaults to one action at a time and has a strict node/edge cap.
+
+## 19. Error and degraded-state copy
+
+Every message answers:
+
+- Was anything sent?
+- Was anything saved?
+- Is prior evidence unchanged?
+- Is retry safe?
+- Which evidence remains missing?
+
+Examples:
+
+```text
+Pre-network local failure:
+"OpenArc could not save the permission receipt. Nothing was sent."
+
+Provider failure:
+"The approved public identifier may have reached Arc RPC, but no new source
+evidence was accepted. Your prior encrypted evidence is unchanged."
+
+Post-network local failure:
+"The source response completed, but OpenArc could not save it locally. The public
+identifier was sent; your prior encrypted evidence remains unchanged."
+
+Conflict:
+"The cited sources disagree on the recipient. OpenArc did not reconcile this
+action."
+
+Locked during request:
+No late result or toast is rendered after returning to the locked state.
+```
+
+## 20. Frontend test architecture
+
+### Unit tests
+
+- Vault crypto roundtrip, wrong passphrase, tamper, AAD, IV uniqueness, key
+  nonextractability, Unicode, and bounds;
+- IndexedDB revision conflict, quota rollback, blocked delete, eviction,
+  versionchange, and onclose;
+- record schema and unknown-kind rejection;
+- exact arithmetic, policy evaluation, state machine, correlation, ordering, and
+  report redaction;
+- API response validation and malicious source/handoff rejection;
+- feature availability and direct-view fallback.
+
+### Component tests
+
+- permission modal destination split;
+- info bubbles and guide links;
+- evidence class/state/limitations;
+- error summaries and focus behavior;
+- graph/list parity;
+- empty, stale, partial, conflict, unsupported, and disabled states.
+
+### Browser tests in Chromium and WebKit
+
+- create -> add fixture -> reload locked -> unlock exact values;
+- export -> delete -> import and recovery;
+- blocked deletion and cross-tab lock/change/delete;
+- delayed source response -> lock -> no write or render;
+- receipt save failure -> zero network;
+- success -> local quota/conflict -> honest copy and unchanged prior state;
+- explicit refresh sends only approved public fields;
+- planted cookie absent on credentialless call;
+- private canaries absent from requests, console, raw IndexedDB, page title, URL,
+  and post-lock DOM;
+- full action timeline and graph keyboard path;
+- mobile layout, reduced motion, contrast, and minimum action sizes;
+- flag-off tab/direct-route fallback with zero route requests.
+
+### Static privacy tests
+
+Vault and feature modules are scanned for forbidden direct use of:
+
+```text
+localStorage
+sessionStorage
+document.cookie
+navigator.sendBeacon
+WebSocket outside approved source module
+fetch outside api/client.ts
+wallet signing or transaction APIs
+dangerouslySetInnerHTML
+remote image URL rendering
+```
+
+## 21. Frontend deployment
+
+Vite feature flags are build-time and must be declared as Docker build args and
+environment variables. Production defaults are false.
+
+Nginx:
+
+- serves the SPA and exact build marker;
+- same-origin proxies API routes;
+- verifies HTTPS upstream certificates;
+- sets strict CSP with no third-party script, frame, or image origins;
+- allows `blob:` only when required for local encrypted download/preview;
+- sends no-store for private workspace shell and API responses;
+- provides immutable caching only for content-hashed static assets.
+
+The canonical public origin must be frozen before real users create local Vaults,
+because IndexedDB is origin-bound and cannot migrate cross-origin automatically.
+
+## 22. Frontend definition of done
+
+A frontend milestone is complete only when:
+
+- shared schemas landed first;
+- the enabled navigation matches API capabilities;
+- no private field crosses the network boundary;
+- every optional network call persists permission before contact;
+- all session-bound async work fails closed on lock/replace/delete;
+- plaintext is absent from raw storage and post-lock DOM;
+- every conclusion has source, time, class, and limitation;
+- accessible list and graph agree;
+- unit, component, Chromium, WebKit, mobile, Axe, keyboard, and reduced-motion
+  gates pass on Node 22;
+- exact staging build and API SHA markers match;
+- docs and tour describe the enabled build truthfully.
+
+## 23. Frontend prohibited shortcuts
+
+- Persisting a key or passphrase for a "quick unlock" mode.
+- Persisting private data in localStorage, sessionStorage, Cache API, URL, or
+  unencrypted IndexedDB metadata.
+- Rendering a graph without an equivalent semantic list.
+- Calling local policy wallet-enforced without source evidence.
+- Auto-refreshing on page load, unlock, focus, or interval.
+- Using stale imported provider URLs as current links.
+- Fetching remote metadata or images from registry records.
+- Reusing React editor state across agent, policy, action, or Vault identity.
+- Allowing an in-flight request to write after a session boundary.
+- Showing raw provider errors or private identifier values in telemetry.
+- Enabling a direct route because the component exists when the feature flag is
+  false.

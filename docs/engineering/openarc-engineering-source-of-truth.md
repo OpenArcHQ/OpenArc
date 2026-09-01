@@ -1,0 +1,750 @@
+# OpenArc engineering source of truth
+
+Status: **normative build specification**  
+Specification version: **0.2.0-draft**  
+Prepared: **2026-08-16; Arc facts re-verified 2026-09-01**  
+Initial target: **Arc Testnet, read-only, non-custodial**
+
+This is the controlling engineering document for OpenArc. It defines what gets
+built, which document owns each decision, the system boundaries, the shared
+contracts, and the order of implementation.
+
+If another OpenArc document conflicts with this one, this document wins for
+engineering scope and sequencing. Arc network facts remain controlled by the
+verified network registry in `docs/openarc-technical-spec.md`.
+
+## 1. Document authority
+
+Use this precedence order:
+
+1. `docs/engineering/openarc-engineering-source-of-truth.md`
+   - product boundary, architecture, shared contracts, dependencies, build order,
+     and release gates.
+2. `docs/engineering/openarc-backend-architecture.md`
+   - API runtime, routes, adapters, security controls, operations, and backend
+     verification.
+3. `docs/engineering/openarc-frontend-architecture.md`
+   - local Vault, UI state, routes, network consent, visualizations,
+     accessibility, and frontend verification.
+4. `docs/openarc-technical-spec.md`
+   - reviewed Arc Testnet and Circle facts, contract addresses, protocol behavior,
+     and mainnet migration inputs.
+5. `docs/openarc-product-blueprint.md`
+   - product intent and evidence semantics.
+6. Marketing, launch, roadmap, and brand documents
+   - communication and planning; never implementation authority.
+
+No code change may silently change a normative contract. Change this document
+and the relevant backend or frontend document in the same pull request.
+
+## 2. Product boundary
+
+OpenArc is a locally private evidence, policy, and investigation interface for
+economic agent activity.
+
+The first complete product:
+
+- creates an encrypted local workspace;
+- lets the owner label one Arc Testnet address as an agent wallet;
+- records local monitoring policies;
+- reads bounded Arc Testnet account, transaction, ERC-8004, and ERC-8183 facts;
+- imports or receives bounded agent-reported evidence;
+- reconciles one controlled x402/Gateway payment path;
+- displays permission, attempt, authorization, fulfillment, and settlement as
+  separate evidence states;
+- exports, imports, recovers, locks, and deletes the encrypted workspace.
+
+OpenArc does not:
+
+- hold or move funds;
+- collect private keys, seed phrases, Circle entity secrets, or OTPs;
+- sign or broadcast transactions;
+- make cart, checkout, swap, bridge, transfer, or contract-write calls;
+- infer hidden model reasoning;
+- call a wallet address a verified agent without a named source;
+- call observer feedback an objective reputation score;
+- persist private workspace data on the server;
+- copy Arc Testnet values into a mainnet configuration;
+- expose a general public blockchain or agent-data API in the MVP.
+
+## 3. Non-negotiable invariants
+
+### Evidence invariants
+
+- Every conclusion cites one or more evidence records.
+- Evidence classes remain distinct: local, signed, agent-reported, provider,
+  Gateway, onchain, and OpenArc-derived.
+- `AUTHORIZED` is not `SETTLED`.
+- `SETTLED` is not `FULFILLED`.
+- `FULFILLED` does not prove quality.
+- Missing evidence stays missing; the UI cannot infer the missing link.
+- Conflicting network, asset, recipient, amount, nonce, validity, action ID,
+  transaction, or block evidence fails closed.
+- Every derived conclusion records its rule version and input evidence IDs.
+
+### Privacy invariants
+
+- Agent labels, policies, notes, private resource labels, evidence relationships,
+  and investigation context persist only inside encrypted local storage.
+- Optional network calls occur only after an encrypted permission receipt is
+  committed locally.
+- If receipt persistence fails, the request is not sent.
+- A provider that was attempted remains named even when it fails.
+- Lock, delete, import, recovery, and workspace replacement invalidate all
+  pending async work before it can write.
+- Server logs, metrics, Redis keys, error text, and traces contain no raw wallet
+  addresses, transaction hashes from request bodies, payment signatures, private
+  URLs, prompts, policy text, or provider response bodies.
+
+### Execution invariants
+
+- OpenArc product code has no signing or broadcasting interface.
+- Server adapters are read-only.
+- Public RPC and provider URLs are fixed configuration, not user input.
+- Mainnet is a separate immutable network definition and false-by-default flag.
+- Testnet and mainnet records cannot share a network identifier or capability
+  instance.
+
+### Numeric invariants
+
+- Monetary and token values use base-unit integer strings or canonical decimal
+  strings.
+- JavaScript `number` is forbidden for money, token quantity, gas value, block
+  number, nonce, job ID, or agent ID.
+- Native Arc USDC 18-decimal values and ERC-20 USDC 6-decimal values are never
+  compared before explicit conversion.
+- Timestamps are ISO 8601 UTC strings, but onchain ordering uses block number,
+  transaction index, and log index because Arc block timestamps can repeat.
+
+## 4. Proposed technology stack
+
+The initial repository is a pnpm TypeScript monorepo:
+
+```text
+openarc/
+  apps/
+    api/                 Fastify API and source adapters
+    web/                 React/Vite browser application
+  packages/
+    shared/              normative schemas, constants, and pure logic
+    config/              lint, TypeScript, and test configuration
+  e2e/                   Playwright browser journeys
+  docs/                  engineering and product records
+  scripts/               release, fixture, and verification tooling
+```
+
+Chosen baseline:
+
+- Node.js 22 LTS.
+- pnpm workspace with a committed lockfile.
+- TypeScript strict mode.
+- `zod` for runtime schemas shared by API and web.
+- Fastify for the API.
+- React and Vite for the web application.
+- Native IndexedDB and WebCrypto for the local Vault.
+- Redis only for abuse limits, provider budgets, and short-lived distributed
+  coordination.
+- Vitest for unit and contract tests.
+- Playwright for Chromium and WebKit journeys; Firefox can be added before public
+  beta.
+- Docker multi-stage production images with pruned production dependencies.
+
+No relational database is required for MVP user evidence. Do not add Prisma or
+Postgres until a separate requirement identifies server-owned data that cannot
+remain local.
+
+## 5. Package ownership
+
+### `packages/shared`
+
+This package is the only owner of:
+
+- Arc network constants and capability IDs;
+- request and response schemas;
+- error codes;
+- evidence classes and state-machine values;
+- canonical address, integer, decimal, timestamp, and digest utilities;
+- deterministic reconciliation and policy-evaluation functions;
+- encrypted plaintext record schemas, but not cryptographic implementation;
+- feature identifiers and schema versions.
+
+It must not import React, Fastify, Redis, IndexedDB, Node filesystem APIs, provider
+SDKs, or environment variables.
+
+### `apps/api`
+
+The API owns:
+
+- environment validation;
+- HTTP, Origin, CSRF, CORS, and no-store behavior;
+- provider networking and normalization;
+- Redis abuse and global-budget controls;
+- health, readiness, metrics, and structured logs;
+- source capability discovery;
+- read-only Arc, registry, job, and optional Gateway adapters.
+
+It cannot own private evidence relationships or user-facing reconciliation.
+
+### `apps/web`
+
+The web application owns:
+
+- the encrypted local Vault and session lifecycle;
+- local agent profiles, policies, evidence records, and action envelopes;
+- permission receipts;
+- client-side policy evaluation and reconciliation;
+- all human-facing evidence labels and limitations;
+- export, import, recovery, lock, and deletion;
+- UI routing, accessibility, and visualizations.
+
+It cannot hold provider API credentials or trust an API response without shared
+runtime validation.
+
+## 6. Shared domain contracts
+
+The following conceptual types become strict TypeScript and Zod schemas in
+`packages/shared`. All string bounds, enums, and array caps must be explicit in
+code.
+
+```ts
+type NetworkId = "eip155:5042002";
+
+type EvidenceClass =
+  | "local"
+  | "signed"
+  | "agent_reported"
+  | "provider"
+  | "gateway"
+  | "onchain"
+  | "openarc_derived";
+
+type EvidenceState =
+  | "PROPOSED"
+  | "PERMITTED"
+  | "ATTEMPTED"
+  | "AUTHORIZED"
+  | "FULFILLED"
+  | "SETTLING"
+  | "SETTLED"
+  | "RECONCILED"
+  | "DENIED_BY_POLICY"
+  | "EXPIRED"
+  | "FAILED"
+  | "REFUNDED"
+  | "CONFLICTING_EVIDENCE"
+  | "FULFILLMENT_UNVERIFIED"
+  | "SETTLEMENT_UNVERIFIED"
+  | "INTENT_NOT_SUPPLIED"
+  | "UNSUPPORTED";
+
+interface SourceRef {
+  kind: "arc_rpc" | "arc_contract" | "gateway" | "circle_wallets" |
+    "agent_connector" | "owner";
+  id: string;
+  origin: string | null;
+  environment: "arc_testnet" | "arc_mainnet";
+  adapterVersion: string;
+  observedAt: string;
+}
+
+interface EvidenceRecord {
+  schemaVersion: "openarc.evidence.v1";
+  evidenceId: string;
+  class: EvidenceClass;
+  source: SourceRef;
+  subject: { kind: string; canonicalId: string };
+  occurredAt: string | null;
+  observedAt: string;
+  digest: string;
+  normalized: Record<string, unknown>;
+  limitations: string[];
+}
+
+interface StateTransition {
+  state: EvidenceState;
+  at: string;
+  evidenceIds: string[];
+  ruleVersion: string | null;
+}
+
+interface ActionEnvelope {
+  schemaVersion: "openarc.action.v1";
+  actionId: string;
+  agentId: string;
+  actionType: "paid_api_request" | "transfer" | "contract_call" |
+    "agent_job" | "other";
+  createdAt: string;
+  states: StateTransition[];
+  evidenceIds: string[];
+  policyEvaluation: PolicyEvaluation | null;
+  reconciliation: ReconciliationResult;
+  revision: string;
+}
+```
+
+### Canonical identifiers
+
+Use these canonical forms:
+
+```text
+wallet       eip155:5042002:0x<40 lowercase hex>
+transaction  eip155:5042002:tx:0x<64 lowercase hex>
+block        eip155:5042002:block:<base-10 integer>:0x<64 lowercase hex>
+log          <transaction canonical ID>:log:<base-10 index>
+agent        eip155:5042002:erc8004:<base-10 agent ID>
+job          eip155:5042002:erc8183:<contract lowercase>:<base-10 job ID>
+gateway      gateway:x402:<UUID>
+local        openarc:<vault ID>:<opaque UUID>
+```
+
+Checksum casing may be retained as display metadata, but comparison uses the
+canonical lowercase address.
+
+## 7. Network configuration contract
+
+Every environment uses an immutable `NetworkConfig` from `packages/shared`:
+
+```ts
+interface NetworkConfig {
+  key: "arcTestnet" | "arcMainnet";
+  environment: "testnet" | "mainnet";
+  chainId: string;
+  caip2: string;
+  rpcOrigin: string;
+  webSocketOrigin: string | null;
+  explorerOrigin: string;
+  nativeFeeAsset: {
+    symbol: "USDC";
+    internalDecimals: 18;
+    displayDecimals: 6;
+  };
+  contracts: Record<string, string>;
+  gatewayDomain: string;
+  finality: { kind: "deterministic"; confirmations: 1 };
+  sourceRevision: string;
+  reviewedAt: string;
+}
+```
+
+Only `arcTestnet` exists during MVP. `arcMainnet` must not be created with
+placeholder or copied values. Unknown config is a build or startup failure.
+
+## 8. API boundary
+
+The initial app-only API surface is:
+
+```text
+GET  /healthz
+GET  /readyz
+GET  /v1/private/capabilities
+POST /v1/private/arc/account-snapshot
+POST /v1/private/arc/transaction-evidence
+POST /v1/private/arc/agent-registry-evidence
+POST /v1/private/arc/job-evidence
+POST /v1/private/gateway/transfer-evidence   optional, flag off by default
+```
+
+Common route behavior:
+
+- strict JSON and unknown-key rejection;
+- small route-specific body limits;
+- one public identifier per request;
+- exact production Origin validation;
+- `Cache-Control: no-store` on success and errors;
+- no account cookie on credentialless source routes;
+- request ID returned, but request body omitted from logs;
+- shared success and error schemas;
+- no raw provider payloads;
+- no generic proxy URL, method, contract, or RPC call supplied by the browser.
+
+The full route contract is owned by the backend architecture document.
+
+## 9. Local Vault boundary
+
+The Vault stores encrypted records in one IndexedDB database:
+
+```text
+vaultMeta      plain cryptographic bootstrap only
+records        opaque ID + IV + key version + ciphertext + revision
+```
+
+Encrypted plaintext record kinds:
+
+```text
+agent_profile
+monitoring_policy
+evidence_record
+action_envelope
+permission_receipt
+investigation_note
+workspace_settings
+sentinel
+```
+
+The crypto and lifecycle contract is owned by the frontend architecture
+document. Database version, encrypted record schema version, and evidence schema
+version are separate values.
+
+## 10. Feature flags
+
+Feature flags fail closed and exist on both sides when a server route and UI are
+paired.
+
+```text
+ARC_OBSERVATION_ENABLED
+VITE_ARC_OBSERVATION_ENABLED
+
+AGENT_REGISTRY_ENABLED
+VITE_AGENT_REGISTRY_ENABLED
+
+AGENT_JOBS_ENABLED
+VITE_AGENT_JOBS_ENABLED
+
+GATEWAY_EVIDENCE_ENABLED
+VITE_GATEWAY_EVIDENCE_ENABLED
+
+VITE_GENERIC_AGENT_IMPORT_ENABLED
+```
+
+Missing is false. The UI must not advertise an unavailable route as functional.
+Direct URLs fall back to the nearest enabled workspace. Capabilities returned by
+the API are the runtime truth; build flags are the navigation truth. A local-only
+feature such as bounded file import has no server flag or route.
+
+## 11. Exact implementation order
+
+The order below is mandatory. A milestone begins only when the previous
+milestone's exit gate is recorded. Backend and frontend tasks listed within one
+milestone may proceed in parallel after their shared schemas land.
+
+```text
+M00 repository
+  -> M01 evidence engine
+  -> M02 encrypted workspace
+  -> M03 API/privacy boundary
+  -> M04 Arc account + transaction evidence
+  -> M05 ERC-8004 agent evidence
+  -> M06 ERC-8183 job evidence
+  -> M07 x402 + Gateway evidence
+  -> M08 local agent import + policy comparison
+  -> M09 investigation operations
+  -> M10 public Testnet hardening
+  -> M11 separately approved Arc mainnet adapter
+```
+
+### Milestone 00 - repository and verification foundation
+
+Build:
+
+- pnpm monorepo structure;
+- Node 22 and TypeScript strict configuration;
+- lint, typecheck, unit, build, and Playwright commands;
+- CI with Redis service and Chromium/WebKit;
+- Dockerfiles, deployment marker, health/readiness shells;
+- dependency license policy, vulnerability audit, and SBOM job;
+- `packages/shared` with primitive schemas and Arc Testnet config.
+
+Exit gate:
+
+- clean install from lockfile;
+- all empty-shell gates pass in CI;
+- production images start with pruned dependencies;
+- API and web expose exact commit markers;
+- no mainnet config exists.
+
+### Milestone 01 - evidence engine and fixture explorer
+
+Build:
+
+- evidence types and canonical IDs;
+- state machine and deterministic reconciliation;
+- policy schema and local pure evaluator;
+- fixture set for complete, missing, conflicting, expired, failed, and refunded
+  actions;
+- frontend read-only fixture timeline and accessible evidence list;
+- no live source calls.
+
+Exit gate:
+
+- transition matrix tests cover every state;
+- malformed, unknown-version, duplicate, and replay fixtures fail closed;
+- every rendered conclusion cites evidence IDs and limitations;
+- graph is an enhancement over a complete accessible list.
+
+### Milestone 02 - encrypted local workspace
+
+Build:
+
+- Vault creation, unlock, lock, inactivity lock, and feature detection;
+- record encryption and revision-checked IndexedDB writes;
+- agent profiles, local policies, evidence, and actions;
+- backup, import, recovery, and deletion;
+- cross-tab lock/change/delete coordination;
+- no server persistence.
+
+Exit gate:
+
+- wrong passphrase, tamper, corrupt record, quota, blocked delete, eviction, and
+  concurrent revision tests;
+- lock invalidates pending async work and clears plaintext UI;
+- mixed-record export/delete/import/recovery passes in Chromium and WebKit;
+- plaintext canaries are absent from IndexedDB and browser storage.
+
+### Milestone 03 - API shell and privacy boundary
+
+Build:
+
+- Fastify app, environment schema, Origin/CSRF/CORS controls;
+- no-store success/error handling;
+- provider HTTP client with host pinning, timeouts, body caps, and no redirects;
+- Redis HMAC abuse limiter and global daily source budget;
+- health, readiness, metrics, retention-free startup, and structured logs;
+- capabilities route;
+- frontend permission-receipt transaction and typed API client.
+
+Exit gate:
+
+- malformed, oversized, credentialed, cross-origin, rate, budget, Redis outage,
+  provider timeout, redirect, and invalid-response tests;
+- every enabled attempt consumes the correct limit;
+- logs and Redis contain no raw privacy canaries;
+- receipt save failure proves zero outbound calls;
+- lock during a delayed call proves zero late writes.
+
+### Milestone 04 - Arc account and transaction observation
+
+Build:
+
+- one-address account snapshot;
+- exact block anchor and chain-ID verification;
+- native USDC balance and fee normalization;
+- transaction plus receipt validation;
+- native EIP-7708 and ERC-20 transfer classification without double counting;
+- user-visible source, freshness, finality, and limitations;
+- explicit refresh only.
+
+Exit gate:
+
+- 18/6 decimal and sub-micro-USDC fixtures;
+- same-timestamp block ordering;
+- wrong chain, mismatched receipt hash/block, malformed logs, and anchor mismatch;
+- outage keeps prior encrypted evidence stale and unchanged;
+- live controlled Testnet wallet proof on an exact deployed SHA.
+
+### Milestone 05 - ERC-8004 agent evidence
+
+Build:
+
+- fixed-contract identity, reputation, and validation reads;
+- owner-supplied agent label plus source-linked registry identity;
+- metadata URI displayed as untrusted external metadata;
+- observer-specific feedback and validation presentation;
+- no universal score or verification badge.
+
+Exit gate:
+
+- wrong contract, unknown agent, changed owner, malformed metadata URI, self
+  feedback, and conflicting validation fixtures;
+- UI labels source and observer for every claim;
+- no remote metadata fetch without a new consent and content-security review.
+
+### Milestone 06 - ERC-8183 job evidence
+
+Build:
+
+- fixed Testnet reference-contract job reads;
+- client, provider, evaluator, budget, expiry, status, and deliverable digest;
+- job-to-action linking only with exact local confirmation or signed evidence;
+- reference-implementation limitation in UI.
+
+Exit gate:
+
+- every documented job state;
+- wrong contract, missing job, invalid budget, expired job, and conflicting local
+  description;
+- no claim that all Arc agent jobs use ERC-8183 or this deployment.
+
+### Milestone 07 - controlled x402 and Gateway evidence
+
+Build:
+
+- normalized x402 requirement, authorization metadata, and response metadata;
+- controlled test resource and safe resource-origin digest;
+- optional Gateway transfer lookup behind server and web flags;
+- exact correlation of network, asset, payer, recipient, amount, nonce, validity,
+  transfer ID, and onchain evidence;
+- no signing inside OpenArc.
+
+Exit gate:
+
+- requirement, signature-metadata, response, received, batched, confirmed,
+  completed, failed, replay, expiry, and mismatch fixtures;
+- reusable payment signature and paid response body absent from persistence;
+- one complete and one intentionally incomplete live Testnet evidence arc;
+- provider fulfillment and payment settlement remain separately labeled.
+
+### Milestone 08 - local agent connector and policy comparison
+
+Build:
+
+- bounded local JSON import first;
+- optional connector signature verification;
+- local per-action, daily, recipient, contract, service, expiry, and approval rules;
+- explicit `LOCAL MONITORING ONLY` versus source-proven enforcement;
+- imported-event provenance and duplicate detection.
+
+Exit gate:
+
+- unsigned, signed, expired, duplicate, replayed, oversized, future-version, and
+  conflicting imports;
+- no localhost bridge, webhook, MCP, or public ingest API yet;
+- policy evaluation is deterministic and never presented as wallet enforcement
+  without evidence.
+
+### Milestone 09 - investigation operations
+
+Build:
+
+- action search and exception inbox;
+- expected-versus-observed view;
+- evidence graph with accessible chronological equivalent;
+- redacted report export and manifest of omitted fields;
+- source-health and unresolved-action dashboard;
+- optional local-only investigation notes.
+
+Exit gate:
+
+- reports never contain fields marked local-private unless explicitly selected;
+- filtering and graph/list results are identical;
+- keyboard, screen-reader, mobile, and reduced-motion journeys pass;
+- large bounded fixture set remains responsive.
+
+### Milestone 10 - public Testnet hardening
+
+Build:
+
+- permanent product origin;
+- operator, legal, privacy, support, security, and status information;
+- production monitoring, alerts, budget controls, rollback, and restore evidence;
+- independent application-security review;
+- exact docs and feature-availability matrix;
+- design-partner feedback fixes.
+
+Exit gate:
+
+- full Node 22 release gate;
+- exact Git CI and exact staging deployment markers;
+- complete browser journey on desktop and mobile;
+- load, outage, Redis, budget, rollback, backup, and incident drills;
+- no unresolved P0/P1 review finding;
+- still Testnet-only and no production-funds claim.
+
+### Milestone 11 - Arc mainnet adapter
+
+This milestone remains blocked until official mainnet parameters and the external
+gates in `docs/openarc-technical-spec.md` exist.
+
+Arc has announced a September 16, 2026 public-mainnet launch and was operating a
+private mainnet at the September 1 review date. That announcement does not supply
+the public RPC, CAIP identifier, explorer, contract registry, or capability
+parity needed by this milestone. Milestones 00-10 therefore remain Testnet-only.
+
+It creates a new network config and read-only mode. It does not overwrite
+Testnet, enable signing, or make mainnet a default.
+
+## 12. Release mechanics
+
+Each milestone uses one active release branch and immutable release-candidate
+tags. The exact mechanics should be scaffolded with the repository, but the
+invariants are:
+
+- one active milestone at a time;
+- later milestone branches are not created early;
+- each milestone begins from updated production `main`;
+- every feature is false by default until its own gate passes;
+- no staging deploy before the complete local release gate passes;
+- exact deployed SHA is visible in API and web;
+- evidence-only documentation commits still require exact CI and deployment
+  markers before tagging;
+- tags are immutable and never reused.
+
+## 13. Definition of ready
+
+A work item is ready only when it has:
+
+- a named milestone;
+- shared schema impact identified;
+- exact inputs, outputs, caps, and error states;
+- privacy release fields and destination;
+- local versus server persistence decision;
+- source authority and limitation;
+- feature flag behavior;
+- unit, integration, browser, and live-test evidence expectations;
+- no unresolved dependency on a later milestone.
+
+## 14. Definition of done
+
+A milestone is done only when:
+
+- implementation and normative docs agree;
+- lint, typecheck, unit, integration, build, and required browser suites pass on
+  Node 22;
+- dependency audit, license policy, image scan, and SBOM pass;
+- failure states are tested, not only success;
+- privacy canaries are absent from network, logs, metrics, Redis, and plaintext
+  storage;
+- exact SHA is clean, pushed, deployed to staging, and visible in both services;
+- the live controlled Testnet proof and rollback conditions are recorded;
+- independent review finds no P0/P1 blocker;
+- user-visible claims match the enabled build.
+
+## 15. Decision rules
+
+When a design choice is not covered:
+
+1. Prefer no custody and no execution.
+2. Prefer local encrypted storage over server persistence.
+3. Prefer explicit user action over background refresh.
+4. Prefer one bounded identifier over bulk discovery.
+5. Prefer exact source evidence over inferred identity or intent.
+6. Prefer omission or `UNSUPPORTED` over a plausible fallback.
+7. Prefer a strict allowlist DTO over passing through provider objects.
+8. Prefer a false-by-default flag over exposing a partial workflow.
+9. Prefer an accessible semantic list as the source of truth over a decorative
+   graph.
+10. Stop the active milestone when a required current-source, privacy, legal,
+    security, or cost condition cannot be satisfied.
+
+## 16. Change-control checklist
+
+Every pull request that changes a normative behavior answers:
+
+- Which section of this source of truth changes?
+- Does `packages/shared` change first?
+- Does the API release a new field or destination?
+- Does the Vault store a new plaintext record kind or schema version?
+- Can an older build still unlock, export, and delete the new record?
+- Does the feature availability matrix change?
+- What new failure state appears?
+- Which exact tests prove the privacy and evidence invariants?
+- Is a new external term, credential, cost, or approval required?
+- Does the marketing sourcebook need a truth update?
+
+## 17. Open decisions
+
+These decisions remain intentionally unresolved until their milestone:
+
+- Final product domain and permanent encrypted-Vault origin.
+- Whether authenticated Circle/Gateway transfer lookup is permitted and viable
+  under the required account, terms, privacy, and cost boundary.
+- Exact encrypted-backup KDF parameters after browser performance measurement.
+- Whether raw provider artifacts may be attached locally, or only normalized
+  fields plus digests.
+- Which visualization library passes accessibility, bundle, license, and styling
+  review.
+- Whether a connector beyond local file import is justified after design-partner
+  testing.
+- Operator entity, jurisdiction, security contact, legal review, and independent
+  security reviewer.
+
+An unresolved decision cannot be replaced by an implementation assumption.
