@@ -56,7 +56,7 @@ pnpm release:gate
 
 The complete evidence record is in
 [`docs/releases/00-foundation.md`](docs/releases/00-foundation.md). Milestone 01
-remains blocked on the corrected exact hosted gate and independent re-review.
+may begin from immutable foundation tag `rc/00-foundation/1` and updated `main`.
 
 ## Logo
 

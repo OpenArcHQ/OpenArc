@@ -1,6 +1,6 @@
 # Milestone 00 — repository and verification foundation
 
-Status: **corrected engineering candidate; independent re-review pending**
+Status: **complete — immutable `rc/00-foundation/1`**
 Network review: **2026-09-01**
 
 ## Frozen boundary
@@ -34,7 +34,7 @@ connect a wallet, sign or broadcast, persist user data, or define Arc mainnet.
 - [x] Trivy high/critical image scans pass
 - [x] CycloneDX SBOM artifacts are generated
 - [x] Corrected exact pushed implementation SHA passes the hosted release workflow
-- [ ] Independent review finds no P0/P1
+- [x] Independent review finds no P0/P1
 
 ## Local candidate evidence
 
@@ -81,6 +81,13 @@ network registry, unbounded/non-UTC primitives, and an impossible release-rule
 conflict. The corrected implementation deep-freezes the registry, caps canonical
 integer/decimal strings at 78/78 digits, requires `Z` UTC timestamps, and records
 the M00-only staging/live-proof exception. Its full Linux/Node 22 gate and exact
-hosted workflow pass. Do not begin Milestone 01 until an evidence-only successor
-also passes exact hosted CI and the independent re-review approves the immutable
-M00 tag.
+hosted workflow pass.
+
+The evidence and CI-hardening successor
+`dc4fc76ac1f7995e6a8e050e232a27c16fdafdc9` passed exact GitHub Actions run
+`33560934386`: verification, Chromium/WebKit, bounded API and web startup,
+unrestricted HIGH/CRITICAL scans, and SBOM upload all succeeded. GitHub reported
+zero billable milliseconds. Independent re-review found no P0/P1 and approved
+immutable annotated tag `rc/00-foundation/1`, which was created and pushed at
+that exact SHA. The tag must never be moved or reused. Milestone 01 may now begin
+from updated `main`.
