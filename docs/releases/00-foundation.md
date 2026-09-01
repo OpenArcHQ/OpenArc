@@ -1,6 +1,6 @@
 # Milestone 00 — repository and verification foundation
 
-Status: **corrected engineering candidate; exact CI and re-review pending**
+Status: **corrected engineering candidate; independent re-review pending**
 Network review: **2026-09-01**
 
 ## Frozen boundary
@@ -33,7 +33,7 @@ connect a wallet, sign or broadcast, persist user data, or define Arc mainnet.
 - [x] API and web expose the exact supplied build marker
 - [x] Trivy high/critical image scans pass
 - [x] CycloneDX SBOM artifacts are generated
-- [ ] Corrected exact pushed SHA passes the hosted release workflow
+- [x] Corrected exact pushed implementation SHA passes the hosted release workflow
 - [ ] Independent review finds no P0/P1
 
 ## Local candidate evidence
@@ -59,12 +59,14 @@ Run on 2026-09-01 from the current local tree:
 
 ## Pushed candidate evidence
 
-- Reviewed predecessor `69797d001e0b3c1f68b379c10f62ccf3c373f44c` is pushed to
-  the private remote and matched its remote branch head at verification time.
-- GitHub Actions run `33556223475` completed successfully on that exact SHA:
+- Corrected implementation candidate
+  `61895d2297f0e201a5a8f876f5b442276ed5f388` is pushed to the private remote
+  and matched its remote branch head at verification time.
+- GitHub Actions run `33560328346` completed successfully on that exact SHA:
   verification, Chromium/WebKit, production image smoke, Trivy, and CycloneDX
   SBOM jobs all passed.
-- The generated `openarc-sboms` artifact is present and unexpired.
+- The generated `openarc-sboms` artifact is present and unexpired. GitHub's
+  timing endpoint reports zero billable milliseconds for all three jobs.
 - Third-party actions are pinned to immutable full commit SHAs at their reviewed
   release versions; the rerun emitted no deprecated action-runtime warning.
 - The account's Actions product has a hard `$0` budget with stop-usage enabled,
@@ -73,10 +75,12 @@ Run on 2026-09-01 from the current local tree:
   strict timeout to every job so ordinary pushes cannot consume runner minutes.
 - No staging or production deployment was created.
 
-The first independent review correctly held the predecessor for a mutable nested
+The first independent review correctly held predecessor
+`69797d001e0b3c1f68b379c10f62ccf3c373f44c` for a mutable nested
 network registry, unbounded/non-UTC primitives, and an impossible release-rule
-conflict. The current corrected tree deep-freezes the registry, caps canonical
+conflict. The corrected implementation deep-freezes the registry, caps canonical
 integer/decimal strings at 78/78 digits, requires `Z` UTC timestamps, and records
-the M00-only staging/live-proof exception. Its full Linux/Node 22 gate passes
-locally. Do not begin Milestone 01 until the corrected exact hosted gate and
-independent re-review both pass.
+the M00-only staging/live-proof exception. Its full Linux/Node 22 gate and exact
+hosted workflow pass. Do not begin Milestone 01 until an evidence-only successor
+also passes exact hosted CI and the independent re-review approves the immutable
+M00 tag.
