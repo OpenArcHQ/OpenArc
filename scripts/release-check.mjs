@@ -89,6 +89,11 @@ for (const requiredDigest of [
 if (workflowSource.includes("--ignore-unfixed")) {
   failures.push("Release image scans must not ignore unfixed HIGH/CRITICAL findings");
 }
+for (const readinessGuard of ["api_ready=0", "test \"${api_ready}\" = \"1\"", "web_ready=0", "test \"${web_ready}\" = \"1\""]) {
+  if (!workflowSource.includes(readinessGuard)) {
+    failures.push(`Release image smoke is missing bounded readiness guard: ${readinessGuard}`);
+  }
+}
 
 if (failures.length > 0) {
   for (const failure of failures) console.error(`[release-check] ${failure}`);
