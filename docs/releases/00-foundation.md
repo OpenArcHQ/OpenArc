@@ -1,6 +1,6 @@
 # Milestone 00 — repository and verification foundation
 
-Status: **local engineering candidate; remote CI/review pending**  
+Status: **pushed engineering candidate; remote CI/review pending**
 Network review: **2026-09-01**
 
 ## Frozen boundary
@@ -52,7 +52,16 @@ Run on 2026-09-01 from the current local tree:
 - The API production closure excludes TypeScript, Vitest, `tsx`, and the Prisma
   CLI.
 
-Remote CI, deployment, and independent-review evidence are not yet available.
-Do not begin Milestone 01 until this implementation is bound to an exact pushed
-SHA, the same gate passes for that candidate, and the remaining review checkbox
-is closed.
+## Pushed candidate evidence
+
+- Implementation commit
+  `d4c5610bd4eeca3def06ae1527202c287993cded` is pushed to the private remote.
+- The pushed implementation is source-identical to the locally gated tree;
+  this evidence update changes documentation only.
+- No staging or production deployment was created.
+- Remote CI was intentionally skipped on the first private push so no hosted
+  runner charge could be incurred without an explicit no-cost confirmation.
+
+Remote CI and independent-review evidence are not yet available. Do not begin
+Milestone 01 until the complete gate passes for an exact pushed candidate and
+the remaining review checkbox is closed.
