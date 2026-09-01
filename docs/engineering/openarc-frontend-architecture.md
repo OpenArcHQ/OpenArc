@@ -494,18 +494,20 @@ function reconcileAction(input: {
   action: ActionEnvelope;
   evidence: EvidenceRecord[];
   policies: MonitoringPolicy[];
-  ruleVersion: string;
+  evaluatedAt: string;
 }): ReconciliationResult
 ```
 
 The function is pure, deterministic, exact, and fully covered by fixtures. It:
 
 - validates every referenced evidence ID exists;
-- confirms source subject and network match;
+- confirms source authority, action ID, and network match;
 - compares exact integer/decimal fields;
 - checks authorization nonce and validity;
 - checks provider/Gateway/onchain source relationship;
 - evaluates local policy without calling it wallet enforcement;
+- reports a matched policy as `unevaluable`, never `permitted`, when correlation
+  facts are missing;
 - emits ordered gaps, conflicts, and limitations;
 - never mutates source evidence;
 - never makes a network call.
@@ -594,9 +596,15 @@ Graph requirements:
 - nodes derive directly from the same sorted records as the list;
 - no graph-only conclusion or control;
 - color is never the only state channel;
-- each node has state text, source class, time, and limitation indicator;
-- edges distinguish `reported relationship`, `cryptographic link`,
-  `provider association`, and `OpenArc-derived match`;
+- each node has evidence type, source class, time, and limitation indicator;
+- the semantic list exposes every normalized fact represented by the node;
+- M01 edges distinguish `chronological evidence sequence`, `signed-field
+  comparison`, and `OpenArc-derived field comparison`;
+- `signed-field comparison` is neutral presentation: the strict engine may find
+  the compared normalized fields equal or conflicting, and the label does not
+  claim OpenArc verified a cryptographic signature or digest-to-digest proof;
+- `OpenArc-derived field comparison` is likewise not a graph-level conclusion;
+  only the cited reconciliation result states match, gap, or conflict;
 - keyboard navigation follows chronological order;
 - screen-reader equivalent names every edge relationship;
 - reduced motion disables animated edges and layout transitions;

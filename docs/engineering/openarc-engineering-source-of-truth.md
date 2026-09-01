@@ -202,9 +202,11 @@ runtime validation.
 
 ## 6. Shared domain contracts
 
-The following conceptual types become strict TypeScript and Zod schemas in
-`packages/shared`. All string bounds, enums, and array caps must be explicit in
-code.
+The following contracts are implemented as strict TypeScript and Zod schemas in
+`packages/shared`. All string bounds, enums, and array caps are explicit in
+code. `openarc.evidence.v1` is intentionally the M01 synthetic-fixture contract;
+M03 live-source evidence must introduce a reviewed version instead of silently
+changing the meaning of v1.
 
 ```ts
 type NetworkId = "eip155:5042002";
@@ -238,55 +240,131 @@ type EvidenceState =
   | "UNSUPPORTED";
 
 interface SourceRef {
-  kind: "arc_rpc" | "arc_contract" | "gateway" | "circle_wallets" |
-    "agent_connector" | "owner";
-  id: string;
-  origin: string | null;
-  environment: "arc_testnet" | "arc_mainnet";
-  adapterVersion: string;
-  observedAt: string;
+  kind: "owner" | "agent_connector" | "provider" | "gateway" |
+    "arc_rpc" | "arc_contract";
+  sourceId: string;                    // 2..64 bounded source key
+  label: string;                       // 1..80
+  reference: `fixture:${string}`;      // bounded local fixture reference only
+  origin: null;                        // M01 performs no live call
+  environment: "synthetic_fixture";
+  adapterVersion: "m01.fixture.v1";
+  network: NetworkId | null;
 }
 
-interface EvidenceRecord {
+interface PaymentCorrelation {
+  network: NetworkId;
+  asset: "0x3600000000000000000000000000000000000000";
+  payer: `0x${string}`;
+  payTo: `0x${string}`;
+  amountBaseUnits: string;             // canonical positive integer, <=78 digits
+  authorizationNonce: `0x${string}`;   // lower-case bytes32
+  resourceDigest: `sha256:${string}`;
+}
+
+interface EvidenceBase {
   schemaVersion: "openarc.evidence.v1";
-  evidenceId: string;
+  evidenceId: `evd_${string}`;         // 32 lower-case hex characters
+  actionId: `act_${string}`;           // 32 lower-case hex characters
   class: EvidenceClass;
   source: SourceRef;
-  subject: { kind: string; canonicalId: string };
-  occurredAt: string | null;
-  observedAt: string;
-  digest: string;
-  normalized: Record<string, unknown>;
-  limitations: string[];
+  observedAt: string;                  // UTC Z, <=30 chars, <=9 fractional digits
+  occurredAt: string | null;           // same bound; cannot follow observedAt
+  limitations: string[];               // 1..8, each <=240
+}
+
+type EvidenceRecord =
+  | EvidenceBase & { evidenceType: "intent"; class: "local" | "signed";
+      payload: PaymentCorrelation & { mandateDigest: string } }
+  | EvidenceBase & { evidenceType: "attempt"; class: "agent_reported";
+      payload: PaymentCorrelation & { connectorEventId: string } }
+  | EvidenceBase & { evidenceType: "payment_requirement"; class: "provider";
+      payload: PaymentCorrelation & ValidityWindow & { requirementDigest: string } }
+  | EvidenceBase & { evidenceType: "authorization"; class: "signed";
+      payload: PaymentCorrelation & ValidityWindow & { authorizationDigest: string } }
+  | EvidenceBase & { evidenceType: "fulfillment"; class: "provider";
+      payload: { resourceDigest: string; providerStatus: "fulfilled" | "failed";
+        responseDigest: string | null } }
+  | EvidenceBase & { evidenceType: "settlement"; class: "gateway" | "onchain";
+      payload: PaymentCorrelation & { transactionHash: string; blockHash: string;
+        blockNumber: string; settlementStatus: "pending" | "settled" | "failed" } }
+  | EvidenceBase & { evidenceType: "refund"; class: "gateway" | "onchain";
+      payload: { originalTransactionHash: string; refundTransactionHash: string;
+        amountBaseUnits: string; blockHash: string; blockNumber: string } };
+
+interface ValidityWindow {
+  validAfter: string;
+  validBefore: string;                 // must be chronologically after validAfter
 }
 
 interface StateTransition {
+  sequence: number;                    // contiguous 1..16
   state: EvidenceState;
-  at: string;
-  evidenceIds: string[];
-  ruleVersion: string | null;
+  at: string;                          // UTC Z; epoch-monotonic, fractions allowed
+  evidenceIds: `evd_${string}`[];      // <=8; typed by state
 }
 
 interface ActionEnvelope {
   schemaVersion: "openarc.action.v1";
-  actionId: string;
-  agentId: string;
-  actionType: "paid_api_request" | "transfer" | "contract_call" |
-    "agent_job" | "other";
+  actionId: `act_${string}`;
+  agentId: `agent_${string}`;
+  kind: "paid_api_request" | "transfer" | "contract_call" | "bridge" | "swap";
   createdAt: string;
   states: StateTransition[];
-  evidenceIds: string[];
+  intentEvidenceIds: string[];
+  attemptEvidenceIds: string[];
+  paymentEvidenceIds: string[];
+  fulfillmentEvidenceIds: string[];
+  settlementEvidenceIds: string[];
   policyEvaluation: PolicyEvaluation | null;
-  reconciliation: ReconciliationResult;
-  revision: string;
+  reconciliation: ReconciliationResult | null;
 }
 ```
+
+M01 relationship lists make evidence role explicit and prevent one record from
+appearing under multiple roles. Every non-`PROPOSED` transition cites one or
+more records from a state-compatible relationship; `RECONCILED` cites both
+fulfilled-provider and settled-payment evidence, and `CONFLICTING_EVIDENCE`
+cites at least two records. Exact allowed state edges are exported as
+`AllowedActionStateEdges` and exercised pairwise. The reconciliation result,
+not each historical transition, carries the derived rule version and every
+evidence ID actually used by its conclusion, including external replay evidence.
+Reconciliation accepts only unresolved actions whose cached policy evaluation
+and reconciliation are both null; stored output is never trusted as engine input.
+M01 has no persisted revision because persistence and optimistic revision control
+begin in M02.
+
+Source authority is part of validation, not display metadata: owner, connector,
+provider, Gateway, and onchain evidence each require their matching source kind;
+Gateway/onchain records also require the pinned Arc Testnet network. M01 accepts
+only synthetic fixture references and null origins. The semantic browser list
+renders every normalized payload field so a person can inspect the exact facts
+behind a conflict or gap.
+
+Source time is also evidence: occurrence cannot follow observation, supported
+causal stages cannot run backwards, the first `PROPOSED` state equals the action
+creation instant, a transition cannot predate the evidence it cites, and the
+evaluation cannot predate used observations or the final transition. M01
+supports exactly one full refund, linked to a cited settled
+transaction with equal base-unit amount and a valid same-or-later block
+reference. Any contradiction remains `CONFLICTING_EVIDENCE`.
+
+Conflict output is closed over every accepted bounded input. A conflict may cite
+all 64 input records. If more than 16 material conflict groups are derived, the
+engine emits one explicit `CONFLICT_SET_OVERFLOW` conflict citing every involved
+record rather than truncating details or throwing an untyped schema error.
+
+Local policy evaluation distinguishes `permitted`, `flagged`, `unevaluable`, and
+`not_applicable`. A matching policy without a usable payment-correlation record
+is `unevaluable`; absence of facts can never be reported as permission.
 
 ### Canonical identifiers
 
 Use these canonical forms:
 
 ```text
+M01 action   act_<32 lower-case hex>
+M01 evidence evd_<32 lower-case hex>
+M01 policy   pol_<32 lower-case hex>
 wallet       eip155:5042002:0x<40 lowercase hex>
 transaction  eip155:5042002:tx:0x<64 lowercase hex>
 block        eip155:5042002:block:<base-10 integer>:0x<64 lowercase hex>
@@ -296,6 +374,11 @@ job          eip155:5042002:erc8183:<contract lowercase>:<base-10 job ID>
 gateway      gateway:x402:<UUID>
 local        openarc:<vault ID>:<opaque UUID>
 ```
+
+The three M01 identifiers are opaque local container identifiers, not claims
+about a live wallet, transaction, block, agent registry entry, or job. The live
+subject identifiers below are introduced only with the milestone that observes
+their named source.
 
 Checksum casing may be retained as display metadata, but comparison uses the
 canonical lowercase address.

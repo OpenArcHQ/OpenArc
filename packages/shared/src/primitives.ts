@@ -29,9 +29,37 @@ export const CanonicalDecimalSchema = z
 
 export const IsoTimestampSchema = z
   .iso.datetime({ offset: false, local: false })
+  .refine((value) => value.length <= 30, {
+    message: "Expected a UTC timestamp of at most 30 characters",
+  })
+  .refine((value) => !/\.(\d+)Z$/u.test(value) || /\.\d{1,9}Z$/u.test(value), {
+    message: "Expected at most 9 fractional-second digits",
+  })
   .refine((value) => value.endsWith("Z"), {
     message: "Expected an ISO 8601 UTC timestamp ending in Z",
   });
+
+export function compareIsoTimestamps(left: string, right: string): number {
+  const pattern = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?Z$/u;
+  const leftMatch = pattern.exec(left);
+  const rightMatch = pattern.exec(right);
+  if (!leftMatch || !rightMatch) throw new Error("Expected valid ISO 8601 UTC timestamps");
+
+  const leftSecond = Date.parse(`${leftMatch[1]}Z`);
+  const rightSecond = Date.parse(`${rightMatch[1]}Z`);
+  if (!Number.isFinite(leftSecond) || !Number.isFinite(rightSecond)) {
+    throw new Error("Expected valid ISO 8601 UTC timestamps");
+  }
+  if (leftSecond !== rightSecond) return leftSecond < rightSecond ? -1 : 1;
+
+  const leftFraction = leftMatch[2] ?? "";
+  const rightFraction = rightMatch[2] ?? "";
+  const precision = Math.max(leftFraction.length, rightFraction.length);
+  const normalizedLeft = leftFraction.padEnd(precision, "0");
+  const normalizedRight = rightFraction.padEnd(precision, "0");
+  if (normalizedLeft === normalizedRight) return 0;
+  return normalizedLeft < normalizedRight ? -1 : 1;
+}
 
 export const Sha256DigestSchema = z
   .string()

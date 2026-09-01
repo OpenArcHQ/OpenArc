@@ -24,7 +24,17 @@ describe("fixture explorer view model", () => {
       for (const node of buildEvidenceFixtureView(fixture).nodes) {
         expect(node.authorityLabel.length).toBeGreaterThan(0);
         expect(node.sourceLabel.length).toBeGreaterThan(0);
+        expect(node.sourceId.length).toBeGreaterThan(0);
+        expect(node.sourceKind.length).toBeGreaterThan(0);
+        expect(node.sourceEnvironment).toBe("synthetic_fixture");
+        expect(node.sourceAdapterVersion).toBe("m01.fixture.v1");
+        expect(node.schemaVersion).toBe("openarc.evidence.v1");
+        expect(node.actionId).toBe(fixture.action.actionId);
+        expect(node.observedAt).toMatch(/Z$/u);
+        expect(node.occurredAt).toMatch(/Z$/u);
         expect(node.time).toMatch(/Z$/u);
+        expect(node.facts.length).toBeGreaterThan(0);
+        expect(node.facts.every((fact) => fact.label.length > 0 && fact.value.length > 0)).toBe(true);
         expect(node.limitations.length).toBeGreaterThan(0);
       }
     }
@@ -33,12 +43,33 @@ describe("fixture explorer view model", () => {
   it("labels the complete arc with distinct relationship meanings", () => {
     const fixture = M01_FIXTURES.find((item) => item.fixtureId === "complete")!;
     expect(buildEvidenceFixtureView(fixture).edges.map((edge) => edge.relationship)).toEqual([
-      "reported relationship",
-      "provider association",
-      "cryptographic link",
-      "provider association",
-      "OpenArc-derived match",
+      "chronological evidence sequence",
+      "chronological evidence sequence",
+      "signed-field comparison",
+      "chronological evidence sequence",
+      "OpenArc-derived field comparison",
     ]);
+  });
+
+  it("exposes the exact recipient conflict and expiry window in the semantic facts", () => {
+    const conflict = M01_FIXTURES.find((item) => item.fixtureId === "conflict")!;
+    const conflictView = buildEvidenceFixtureView(conflict);
+    const recipients = conflictView.nodes.flatMap((node) =>
+      node.facts.filter((fact) => fact.label === "Recipient").map((fact) => fact.value),
+    );
+    expect(new Set(recipients).size).toBe(2);
+    expect(conflictView.edges.map((edge) => edge.relationship)).toContain("signed-field comparison");
+    expect(conflictView.edges.map((edge) => edge.relationship)).not.toContain("exact signed-field correlation");
+    expect(conflictView.edges.map((edge) => edge.relationship)).not.toContain("OpenArc-derived exact match");
+
+    const expired = M01_FIXTURES.find((item) => item.fixtureId === "expired")!;
+    const authorization = buildEvidenceFixtureView(expired).nodes.find(
+      (node) => node.type === "authorization",
+    )!;
+    expect(authorization.facts).toEqual(expect.arrayContaining([
+      { label: "Valid after", value: "2026-09-01T11:50:00Z" },
+      { label: "Valid before", value: "2026-09-01T12:02:00Z" },
+    ]));
   });
 });
 

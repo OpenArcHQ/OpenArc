@@ -609,6 +609,39 @@ h1 {
   margin-bottom: 6px;
 }
 
+.normalized-facts {
+  margin: 0 0 22px;
+  padding: 18px;
+  color: #dbe5f4;
+  background: #151d2b;
+  border: 1px solid #3d4a60;
+}
+
+.normalized-facts h5 {
+  margin: 0 0 14px;
+  color: #efc16f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.semantic-evidence .normalized-facts dl {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.normalized-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.normalized-facts code {
+  color: #f7f4ec;
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
 .limitations {
   padding: 14px 16px;
   color: #f1ddb9;
@@ -826,6 +859,7 @@ footer code {
   }
 
   .semantic-evidence dl,
+  .semantic-evidence .normalized-facts dl,
   .conclusion {
     grid-template-columns: 1fr;
   }

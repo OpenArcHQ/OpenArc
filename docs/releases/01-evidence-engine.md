@@ -23,11 +23,12 @@ storage; M03 owns network and privacy controls.
 | Evidence IDs in one action relationship list | 8 |
 | Action state transitions | 16 |
 | Monitoring policies supplied to one reconciliation | 32 |
-| Limitations per record/result | 8 |
+| Limitations per record/result | 1–8 |
 | Conflicts or gaps per result | 16 |
+| Evidence citations in one conflict | 64 |
 | Human-readable label/detail | 160 / 240 characters |
 | Canonical integer | 78 digits |
-| Canonical timestamp | UTC `Z` only |
+| Canonical timestamp | UTC `Z` only, <=30 characters, <=9 fractional digits |
 
 IDs are bounded lower-case opaque identifiers. Payment comparison uses exact
 base-unit strings and exact Arc Testnet network, address, nonce, resource digest,
@@ -52,14 +53,34 @@ as accepted evidence.
 
 - The chronological semantic evidence list is always present and is the source
   of truth.
+- Every semantic record exposes its exact normalized payload facts: network,
+  token, parties, base-unit amount, nonce, resource, validity window, status,
+  response, transaction, and block fields as applicable.
 - The graph is a progressive visual summary of exactly the same records; it
   adds no fact, conclusion, or control.
 - Every conclusion cites input evidence IDs, ordered gaps/conflicts, the rule
   version, and limitations.
 - Evidence authority classes remain distinct. `AUTHORIZED`, `SETTLED`, and
   `FULFILLED` are never collapsed.
+- Source kind, fixture environment, adapter version, and pinned Testnet network
+  are validated against each evidence type; mislabeled authority fails closed.
+- Action history uses an exact pairwise-tested edge matrix. Every non-proposed
+  state has typed citations; unlisted state edges or semantically incompatible
+  citations fail closed.
+- Evidence occurrence cannot follow its observation, causal source times cannot
+  run backwards, the first `PROPOSED` state equals the action-creation instant,
+  a transition cannot predate the evidence it cites, and evaluation cannot
+  predate any used evidence or the final action transition.
+- Refund conclusions require exactly one full refund linked to a cited settled
+  transaction with exact amount and a valid same-or-later block reference.
+- Reconciliation input must be unresolved: cached policy or result objects are
+  rejected rather than trusted during recomputation.
+- More than 16 material conflict groups collapse to one explicit
+  `CONFLICT_SET_OVERFLOW` result citing every involved record; no overflow is
+  silently truncated or allowed to become reconciliation.
 - Policy results say `LOCAL MONITORING ONLY`; they do not claim wallet or
-  protocol enforcement.
+  protocol enforcement. A matched policy with no usable payment facts is
+  `unevaluable`, never `permitted`.
 - Reduced motion preserves all information without animated transitions.
 
 ## Exit evidence required before M02
@@ -82,13 +103,22 @@ complete.
 
 ## Local implementation evidence
 
-On 2026-09-01, the source-identical pre-commit implementation passed the full
-clean-room Node 22 release gate in the pinned gate image: production audit and
-license policy, lint, strict typecheck, 34 shared tests, 4 API tests, 6 web unit
-tests, production builds, and 8 browser journeys split across Chromium and
-WebKit. The browser gate includes full-document serious/critical Axe analysis,
-keyboard tabs, graph/list parity, mobile target sizing, reduced motion, empty
-browser storage, and zero external or dynamic evidence requests.
+On 2026-09-01, the corrected source-identical pre-commit implementation passed
+the full clean-room Node 22 release gate in the pinned gate image: production
+audit and license policy, lint, strict typecheck, 46 shared tests, 4 API tests,
+7 web unit tests, production builds, and 8 browser journeys split across
+Chromium and WebKit. The browser gate includes full-document serious/critical
+Axe analysis, keyboard tabs, graph/list parity, exact normalized-fact rendering,
+mobile target sizing, reduced motion, empty browser storage, and zero external
+or dynamic evidence requests.
+
+The corrected gate includes regressions for fulfillment-resource, validity,
+transaction/block, source-authority, bounded fractional timestamps, causal
+source time, transition time, refund linkage/count/status, replay citation,
+cached-result, state-edge, typed-citation, and conclusion-consistency failures.
+It also proves that a reconciliation cannot be emitted without at least one
+cited evidence record and that missing payment facts cannot produce a permitted
+policy result.
 
 Exact pushed-SHA CI, production-image scans/SBOM, Railway staging markers, live
 fixture walkthrough, and independent review remain pending and must be appended

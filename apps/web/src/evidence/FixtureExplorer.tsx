@@ -168,18 +168,65 @@ export function FixtureExplorer() {
                   </header>
                   <dl>
                     <div>
+                      <dt>Schema</dt>
+                      <dd>{node.schemaVersion}</dd>
+                    </div>
+                    <div>
                       <dt>Evidence ID</dt>
                       <dd>{node.id}</dd>
+                    </div>
+                    <div>
+                      <dt>Action ID</dt>
+                      <dd>{node.actionId}</dd>
                     </div>
                     <div>
                       <dt>Source</dt>
                       <dd>{node.sourceLabel}</dd>
                     </div>
                     <div>
+                      <dt>Source ID</dt>
+                      <dd>{node.sourceId}</dd>
+                    </div>
+                    <div>
                       <dt>Reference</dt>
                       <dd>{node.sourceReference}</dd>
                     </div>
+                    <div>
+                      <dt>Source kind</dt>
+                      <dd>{node.sourceKind}</dd>
+                    </div>
+                    <div>
+                      <dt>Environment</dt>
+                      <dd>{node.sourceEnvironment}</dd>
+                    </div>
+                    <div>
+                      <dt>Adapter</dt>
+                      <dd>{node.sourceAdapterVersion}</dd>
+                    </div>
+                    <div>
+                      <dt>Source network</dt>
+                      <dd>{node.sourceNetwork ?? "NOT CLAIMED"}</dd>
+                    </div>
+                    <div>
+                      <dt>Occurred</dt>
+                      <dd>{node.occurredAt ?? "NOT SUPPLIED"}</dd>
+                    </div>
+                    <div>
+                      <dt>Observed</dt>
+                      <dd>{node.observedAt}</dd>
+                    </div>
                   </dl>
+                  <section className="normalized-facts" aria-label={`${node.typeLabel} normalized facts`}>
+                    <h5>Normalized facts</h5>
+                    <dl data-testid={`evidence-facts-${node.id}`}>
+                      {node.facts.map((fact) => (
+                        <div key={fact.label}>
+                          <dt>{fact.label}</dt>
+                          <dd><code>{fact.value}</code></dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </section>
                   <div className="limitations">
                     <strong>Limitations</strong>
                     <ul>

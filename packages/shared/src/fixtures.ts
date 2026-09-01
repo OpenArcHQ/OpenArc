@@ -25,6 +25,53 @@ export const EvidenceFixtureSchema = z.strictObject({
   policies: z.array(MonitoringPolicySchema).max(32),
   evaluatedAt: z.literal("2026-09-01T12:15:00Z"),
   result: ReconciliationResultSchema,
+}).superRefine((fixture, context) => {
+  if (fixture.expectedState !== fixture.result.state) {
+    context.addIssue({ code: "custom", message: "Fixture expected state must equal its result state" });
+  }
+  if (fixture.action.actionId !== fixture.result.actionId) {
+    context.addIssue({ code: "custom", message: "Fixture action and result IDs must match" });
+  }
+  if (fixture.evaluatedAt !== fixture.result.evaluatedAt) {
+    context.addIssue({ code: "custom", message: "Fixture and result evaluation timestamps must match" });
+  }
+  if (fixture.evidence.some((record) => record.actionId !== fixture.action.actionId)) {
+    context.addIssue({ code: "custom", message: "Every fixture evidence record must belong to its action" });
+  }
+  if (fixture.action.policyEvaluation !== null || fixture.action.reconciliation !== null) {
+    context.addIssue({
+      code: "custom",
+      message: "Fixture actions must be unresolved reconciliation inputs",
+    });
+  }
+  const fixtureIds = [...new Set(fixture.evidence.map((record) => record.evidenceId))].sort();
+  const resultIds = [...fixture.result.evidenceIds].sort();
+  if (fixtureIds.length !== fixture.evidence.length || JSON.stringify(fixtureIds) !== JSON.stringify(resultIds)) {
+    context.addIssue({
+      code: "custom",
+      message: "Fixture evidence must exactly match the records cited by its result",
+    });
+  }
+  try {
+    const recomputed = reconcileAction({
+      action: fixture.action,
+      evidence: fixture.evidence,
+      policies: fixture.policies,
+      evaluatedAt: fixture.evaluatedAt,
+    });
+    if (JSON.stringify(recomputed) !== JSON.stringify(fixture.result)) {
+      context.addIssue({
+        code: "custom",
+        message: "Fixture result must exactly equal deterministic recomputation",
+        path: ["result"],
+      });
+    }
+  } catch {
+    context.addIssue({
+      code: "custom",
+      message: "Fixture action and evidence must be valid unresolved reconciliation input",
+    });
+  }
 });
 
 export type EvidenceFixture = z.infer<typeof EvidenceFixtureSchema>;
@@ -41,11 +88,21 @@ const bytes32 = (value: number) => `0x${hex(value).repeat(64)}`;
 const address = (value: number) => `0x${hex(value).repeat(40)}`;
 
 const source = (
+  kind: "owner" | "agent_connector" | "provider" | "gateway" | "arc_rpc" | "arc_contract",
   sourceId: string,
   label: string,
   reference: string,
   network: typeof ARC_TESTNET.caip2 | null,
-) => ({ sourceId, label, reference, network });
+) => ({
+  kind,
+  sourceId,
+  label,
+  reference,
+  origin: null,
+  environment: "synthetic_fixture" as const,
+  adapterVersion: "m01.fixture.v1" as const,
+  network,
+});
 
 function makeRecord(
   fixture: number,
@@ -81,7 +138,7 @@ function buildFixture(fixture: number, mode: FixtureMode): EvidenceFixture {
   const intent = makeRecord(fixture, 1, {
     evidenceType: "intent",
     class: "local",
-    source: source("owner-local", "Owner-supplied fixture", `fixture:m01/${mode}/intent`, null),
+    source: source("owner", "owner-local", "Owner-supplied fixture", `fixture:m01/${mode}/intent`, null),
     observedAt: "2026-09-01T12:00:00Z",
     occurredAt: "2026-09-01T12:00:00Z",
     payload: { ...core, mandateDigest: digest(fixture + 20) },
@@ -90,7 +147,7 @@ function buildFixture(fixture: number, mode: FixtureMode): EvidenceFixture {
   const attempt = makeRecord(fixture, 2, {
     evidenceType: "attempt",
     class: "agent_reported",
-    source: source("fixture-agent", "Synthetic agent fixture", `fixture:m01/${mode}/attempt`, null),
+    source: source("agent_connector", "fixture-agent", "Synthetic agent fixture", `fixture:m01/${mode}/attempt`, null),
     observedAt: "2026-09-01T12:01:00Z",
     occurredAt: "2026-09-01T12:01:00Z",
     payload: { ...core, connectorEventId: `evt_${hex(fixture + 1).repeat(24)}` },
@@ -99,7 +156,7 @@ function buildFixture(fixture: number, mode: FixtureMode): EvidenceFixture {
   const requirement = makeRecord(fixture, 3, {
     evidenceType: "payment_requirement",
     class: "provider",
-    source: source("fixture-provider", "Synthetic provider fixture", `fixture:m01/${mode}/requirement`, null),
+    source: source("provider", "fixture-provider", "Synthetic provider fixture", `fixture:m01/${mode}/requirement`, null),
     observedAt: "2026-09-01T12:02:00Z",
     occurredAt: "2026-09-01T12:02:00Z",
     payload: { ...core, ...validity, requirementDigest: digest(fixture + 30) },
@@ -108,7 +165,7 @@ function buildFixture(fixture: number, mode: FixtureMode): EvidenceFixture {
   const authorization = makeRecord(fixture, 4, {
     evidenceType: "authorization",
     class: "signed",
-    source: source("fixture-signature", "Synthetic signed fixture", `fixture:m01/${mode}/authorization`, null),
+    source: source("owner", "fixture-signature", "Synthetic signed fixture", `fixture:m01/${mode}/authorization`, null),
     observedAt: "2026-09-01T12:04:00Z",
     occurredAt: mode === "expired" ? "2026-09-01T12:03:00Z" : "2026-09-01T12:03:00Z",
     payload: {
@@ -122,7 +179,7 @@ function buildFixture(fixture: number, mode: FixtureMode): EvidenceFixture {
   const fulfillment = makeRecord(fixture, 5, {
     evidenceType: "fulfillment",
     class: "provider",
-    source: source("fixture-provider", "Synthetic provider fixture", `fixture:m01/${mode}/fulfillment`, null),
+    source: source("provider", "fixture-provider", "Synthetic provider fixture", `fixture:m01/${mode}/fulfillment`, null),
     observedAt: "2026-09-01T12:05:00Z",
     occurredAt: "2026-09-01T12:05:00Z",
     payload: {
@@ -136,6 +193,7 @@ function buildFixture(fixture: number, mode: FixtureMode): EvidenceFixture {
     evidenceType: "settlement",
     class: "onchain",
     source: source(
+      "arc_rpc",
       "arc-testnet-fixture",
       "Synthetic Arc Testnet fixture",
       `fixture:m01/${mode}/settlement`,
@@ -159,6 +217,7 @@ function buildFixture(fixture: number, mode: FixtureMode): EvidenceFixture {
     evidenceType: "refund",
     class: "onchain",
     source: source(
+      "arc_rpc",
       "arc-testnet-fixture",
       "Synthetic Arc Testnet fixture",
       `fixture:m01/${mode}/refund`,

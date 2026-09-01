@@ -321,6 +321,13 @@ placeholders, not accepted payloads.
 
 ## 7. Evidence model
 
+This section describes the target live-source model as well as the narrower M01
+foundation. M01's exact `openarc.evidence.v1` contract is synthetic-fixture only:
+it has no live origin, signer-domain claim, Gateway transfer ID, or generic
+subject object. The implemented v1 shape is frozen in the engineering source of
+truth; M03 and later must add reviewed versions for live-source fields rather
+than silently broadening v1.
+
 ### Evidence classes
 
 | Class | Authority | Required presentation |
@@ -338,29 +345,36 @@ placeholders, not accepted payloads.
 ```json
 {
   "schemaVersion": "openarc.action.v1",
-  "actionId": "local-uuid",
-  "agentId": "local-agent-uuid",
+  "actionId": "act_01000000000000000000000000000000",
+  "agentId": "agent_01000000000000000000000000000000",
   "kind": "paid_api_request",
-  "createdAt": "2026-08-15T16:00:00Z",
-  "states": [],
+  "createdAt": "2026-09-01T11:59:00Z",
+  "states": [
+    {
+      "sequence": 1,
+      "state": "PROPOSED",
+      "at": "2026-09-01T11:59:00Z",
+      "evidenceIds": []
+    }
+  ],
   "policyEvaluation": null,
   "intentEvidenceIds": [],
   "attemptEvidenceIds": [],
   "paymentEvidenceIds": [],
   "fulfillmentEvidenceIds": [],
   "settlementEvidenceIds": [],
-  "reconciliation": {
-    "state": "INTENT_NOT_SUPPLIED",
-    "ruleVersion": "openarc.reconcile.v1",
-    "gaps": [],
-    "conflicts": []
-  }
+  "reconciliation": null
 }
 ```
 
+This is the unresolved M01 engine-input shape. M01 identifiers are bounded local
+fixture containers rather than live subjects, and both cached result fields must
+be null when reconciliation is recomputed. The derived result carries the fixed
+`openarc.reconcile.v1` rule version and every evidence ID actually used.
+
 ### State machine
 
-The positive path is monotonic:
+The common full positive path is monotonic:
 
 ```text
 PROPOSED -> PERMITTED -> ATTEMPTED -> AUTHORIZED
@@ -384,6 +398,12 @@ UNSUPPORTED
 A later state never deletes earlier evidence. `AUTHORIZED` cannot be rendered as
 `SETTLED`; `SETTLED` cannot be rendered as `FULFILLED`; a matching provider
 receipt cannot prove service quality.
+
+The exported v1 transition matrix also permits a small, explicit set of shortcut
+edges for incomplete fixture evidence. Every unlisted edge fails closed and every
+non-`PROPOSED` transition requires typed evidence that occurred no later than the
+transition. A derived result cannot be timestamped before any evidence it used or
+before the final action transition.
 
 ## 8. Correlation and reconciliation
 
@@ -422,6 +442,16 @@ an explicit ambiguity.
 - Preserve provider response and onchain settlement as independent evidence.
 - Surface conflicting source times; do not rewrite the source timestamp with the
   observation time.
+- Reject occurrence after observation and causal evidence stages that run
+  backwards.
+- Report a matched local policy as `unevaluable`, never `permitted`, when no
+  usable payment-correlation facts are cited.
+- Accept a refund conclusion only for exactly one full refund linked to a cited
+  settled transaction with equal amount and a valid same-or-later block
+  reference.
+- Bound detailed conflict output to 16 groups. If valid bounded input exceeds
+  that closure, emit one explicit overflow conflict citing every involved record;
+  never silently truncate or throw a generic output-schema error.
 
 ## 9. Arc indexing strategy
 

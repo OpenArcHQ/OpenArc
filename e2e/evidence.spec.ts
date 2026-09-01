@@ -40,6 +40,15 @@ test("explores every fixture with graph/list parity, keyboard tabs, and no priva
   await expect(listItems.first()).toBeFocused();
   await expect(page.getByTestId("result-evidence-citation")).not.toBeEmpty();
 
+  const firstFacts = listItems.first().getByRole("region", { name: /normalized facts/iu });
+  await expect(firstFacts.getByText("Network", { exact: true })).toBeVisible();
+  await expect(firstFacts.getByText("Authorization nonce", { exact: true })).toBeVisible();
+
+  await page.getByRole("tab", { name: /Recipient conflict/u }).click();
+  const conflictRecipients = page.getByTestId("evidence-list").getByText("Recipient", { exact: true });
+  await expect(conflictRecipients).toHaveCount(5);
+  await expect(page.getByRole("heading", { name: "CONFLICTING EVIDENCE" })).toBeVisible();
+
   const storage = await page.evaluate(async () => ({
     local: localStorage.length,
     session: sessionStorage.length,
