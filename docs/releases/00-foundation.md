@@ -1,6 +1,6 @@
 # Milestone 00 — repository and verification foundation
 
-Status: **pushed engineering candidate; remote CI/review pending**
+Status: **pushed engineering candidate; independent review pending**
 Network review: **2026-09-01**
 
 ## Frozen boundary
@@ -33,6 +33,7 @@ connect a wallet, sign or broadcast, persist user data, or define Arc mainnet.
 - [x] API and web expose the exact supplied build marker
 - [x] Trivy high/critical image scans pass
 - [x] CycloneDX SBOM artifacts are generated
+- [x] Exact pushed SHA passes the hosted release workflow
 - [ ] Independent review finds no P0/P1
 
 ## Local candidate evidence
@@ -54,16 +55,19 @@ Run on 2026-09-01 from the current local tree:
 
 ## Pushed candidate evidence
 
-- Implementation commit
-  `d4c5610bd4eeca3def06ae1527202c287993cded` is pushed to the private remote.
-- The pushed implementation is source-identical to the locally gated tree;
-  this evidence update changes documentation only.
-- No staging or production deployment was created.
-- Remote CI was intentionally skipped on the first private push so no hosted
-  runner charge could be incurred without an explicit no-cost confirmation.
+- Candidate `8139303271b832ee6fe135de2aae4e51e4fca24b` is pushed to the
+  private remote and matches its remote branch head at verification time.
+- GitHub Actions run `33555512681` completed successfully on that exact SHA:
+  verification, Chromium/WebKit, production image smoke, Trivy, and CycloneDX
+  SBOM jobs all passed.
+- The generated `openarc-sboms` artifact is present and unexpired.
+- Third-party actions are pinned to immutable full commit SHAs at their reviewed
+  release versions; the rerun emitted no deprecated action-runtime warning.
+- The account's Actions product has a hard `$0` budget with stop-usage enabled,
+  so paid overage is blocked. This workflow consumed included usage only.
 - The hosted workflow is manual-only, cancels superseded runs, and applies a
   strict timeout to every job so ordinary pushes cannot consume runner minutes.
+- No staging or production deployment was created.
 
-Remote CI and independent-review evidence are not yet available. Do not begin
-Milestone 01 until the complete gate passes for an exact pushed candidate and
-the remaining review checkbox is closed.
+Independent-review evidence is not yet available. Do not begin Milestone 01
+until the remaining review checkbox is closed.
