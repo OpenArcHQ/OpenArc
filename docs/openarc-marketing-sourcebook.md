@@ -2,7 +2,7 @@
 
 Version: **2026-09-01**  
 Purpose: Canonical messaging and claims reference for human and AI collaborators  
-Product status: **Milestone 00 local engineering candidate; Arc Testnet only**  
+Product status: **Milestone 00 pushed engineering candidate; Arc Testnet only**
 Initial network: **Arc Testnet**  
 Mainnet status: **public launch announced for 2026-09-16; OpenArc support is not available**
 

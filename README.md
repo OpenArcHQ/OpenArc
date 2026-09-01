@@ -1,6 +1,6 @@
 # OpenArc marketing and technical product package
 
-Status: **Milestone 00 local engineering candidate; Arc Testnet only**  
+Status: **Milestone 00 pushed engineering candidate; Arc Testnet only**
 Prepared: **2026-08-15; network facts re-verified 2026-09-01**
 
 OpenArc is the proposed private intelligence, policy, and investigation layer for
@@ -54,10 +54,10 @@ pnpm install --frozen-lockfile
 pnpm release:gate
 ```
 
-The complete local evidence record is in
+The complete evidence record is in
 [`docs/releases/00-foundation.md`](docs/releases/00-foundation.md). Milestone 01
-remains blocked until this folder has an exact pushed Git SHA, remote CI evidence,
-and independent review.
+remains blocked only on independent review; the exact pushed SHA and hosted CI
+gate are recorded there.
 
 ## Logo
 
