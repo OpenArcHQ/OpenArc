@@ -1,6 +1,6 @@
 # OpenArc marketing and technical product package
 
-Status: **Milestone 00 pushed engineering candidate; Arc Testnet only**
+Status: **Milestone 01 evidence engine active; Arc Testnet fixture-only**
 Prepared: **2026-08-15; network facts re-verified 2026-09-01**
 
 OpenArc is the proposed private intelligence, policy, and investigation layer for
@@ -32,16 +32,19 @@ parity, and a separately reviewed mainnet release exist.
 - [`docs/openarc-launch-plan.md`](docs/openarc-launch-plan.md) — testnet launch stages, operational gates, external approvals, and incident language.
 - [`docs/openarc-roadmap.md`](docs/openarc-roadmap.md) — staged development from evidence explorer to optional machine-readable services and mainnet support.
 
-## Foundation implementation
+## Current implementation
 
-The repository now contains the Milestone 00 pnpm/TypeScript monorepo:
+The immutable Milestone 00 foundation is complete. Milestone 01 adds a strict,
+fixture-only evidence engine without introducing any live connector:
 
 - `packages/shared` owns the fail-closed Arc Testnet registry and primitive
-  schemas.
+  schemas, versioned evidence records, append-only action states, deterministic
+  reconciliation, and exact local policy evaluation.
 - `apps/api` is a Fastify health/readiness shell with no provider calls or user
   persistence.
-- `apps/web` is a React/Vite product shell that exposes the build marker and
-  clearly labels live connectors as disabled.
+- `apps/web` exposes six synthetic complete, missing, conflicting, expired,
+  failed, and refunded cases as an accessible chronological list plus an exact
+  graph summary. It makes no runtime API, RPC, wallet, analytics, or storage call.
 - `.github/workflows/release-gates.yml`, production Dockerfiles, Chromium and
   WebKit journeys, license/audit checks, image scans, and SBOM generation form
   the initial verification boundary.
@@ -54,9 +57,10 @@ pnpm install --frozen-lockfile
 pnpm release:gate
 ```
 
-The complete evidence record is in
-[`docs/releases/00-foundation.md`](docs/releases/00-foundation.md). Milestone 01
-may begin from immutable foundation tag `rc/00-foundation/1` and updated `main`.
+The foundation evidence record is in
+[`docs/releases/00-foundation.md`](docs/releases/00-foundation.md). The active
+Milestone 01 boundary and pending exit evidence are in
+[`docs/releases/01-evidence-engine.md`](docs/releases/01-evidence-engine.md).
 
 ## Logo
 

@@ -2,6 +2,8 @@ import { ARC_TESTNET } from "@openarc/shared";
 
 import type { BuildInfo } from "@openarc/shared";
 
+import { FixtureExplorer } from "./evidence/FixtureExplorer.js";
+
 interface AppProps {
   build: BuildInfo;
 }
@@ -14,29 +16,40 @@ const evidenceSteps = [
 ] as const;
 
 export function App({ build }: AppProps) {
+  const skipToExplorer = () => {
+    requestAnimationFrame(() => document.querySelector<HTMLElement>("#fixture-explorer")?.focus());
+  };
+
   return (
     <main>
+      <a className="skip-link" href="#fixture-explorer" onClick={skipToExplorer}>
+        Skip to fixture explorer
+      </a>
       <nav className="topbar" aria-label="Primary navigation">
         <a className="brand" href="#top" aria-label="OpenArc home">
           <img src="/openarc-logo.jpeg" alt="" />
           <span>OPENARC</span>
         </a>
-        <span className="phase">M00 · FOUNDATION</span>
+        <div className="topbar-links">
+          <a href="#fixture-explorer">Explorer</a>
+          <a href="#network">Network</a>
+          <span className="phase">M01 · EVIDENCE ENGINE</span>
+        </div>
       </nav>
 
       <section className="hero" id="top" aria-labelledby="hero-title">
         <div className="hero-copy">
-          <p className="eyebrow">ARC TESTNET · READ ONLY · LOCAL FIRST</p>
+          <p className="eyebrow">SYNTHETIC FIXTURES · READ ONLY · LOCAL FIRST</p>
           <h1 id="hero-title">See the full arc of every agent action.</h1>
           <p className="lede">
-            OpenArc is becoming an evidence and investigation workspace for economic agents:
-            permission, attempt, authorization, fulfillment, and settlement—kept distinct and
-            source-linked.
+            OpenArc is an evidence and investigation workspace for economic agents. This first
+            engine keeps intent, attempt, authorization, fulfillment, settlement, and refund
+            evidence distinct—then explains exactly what agrees, conflicts, or remains missing.
           </p>
           <div className="status-row" aria-label="Current build status">
             <span className="status-dot" aria-hidden="true" />
-            <strong>Foundation running</strong>
-            <span>Live connectors are deliberately not enabled yet.</span>
+            <strong>Fixture engine running</strong>
+            <span>Six deterministic local cases. Live connectors remain deliberately disabled.</span>
           </div>
         </div>
 
@@ -49,6 +62,8 @@ export function App({ build }: AppProps) {
           <span className="node node-c" />
         </div>
       </section>
+
+      <FixtureExplorer />
 
       <section className="evidence" aria-labelledby="evidence-title">
         <header>
@@ -66,7 +81,7 @@ export function App({ build }: AppProps) {
         </div>
       </section>
 
-      <section className="network" aria-labelledby="network-title">
+      <section className="network" id="network" aria-labelledby="network-title">
         <div>
           <p className="eyebrow">PINNED NETWORK REGISTRY</p>
           <h2 id="network-title">Arc Testnet, exactly.</h2>

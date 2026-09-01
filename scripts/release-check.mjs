@@ -17,6 +17,41 @@ for (const required of ["pnpm-lock.yaml", "pnpm-workspace.yaml", "apps/api/Docke
   }
 }
 
+const m01Files = [
+  "docs/releases/01-evidence-engine.md",
+  "packages/shared/src/evidence.ts",
+  "packages/shared/src/reconciliation.ts",
+  "packages/shared/src/fixtures.ts",
+  "apps/web/src/evidence/FixtureExplorer.tsx",
+  "apps/web/src/evidence/view-model.ts",
+];
+const m01Sources = [];
+for (const required of m01Files) {
+  try {
+    m01Sources.push(await readFile(path.join(root, required), "utf8"));
+  } catch {
+    failures.push(`Missing required M01 file: ${required}`);
+  }
+}
+const m01Source = m01Sources.join("\n");
+for (const fixtureId of ["complete", "missing", "conflict", "expired", "failed", "refunded"]) {
+  if (!m01Source.includes(`"${fixtureId}"`)) failures.push(`M01 fixture matrix is missing ${fixtureId}`);
+}
+for (const forbiddenToken of [
+  "fetch(",
+  "XMLHttpRequest",
+  "WebSocket",
+  "localStorage",
+  "sessionStorage",
+  "indexedDB",
+  "sendTransaction",
+  "broadcastTransaction",
+]) {
+  if (m01Source.includes(forbiddenToken)) {
+    failures.push(`M01 fixture implementation contains forbidden network/storage/execution API: ${forbiddenToken}`);
+  }
+}
+
 const networkSource = await readFile(path.join(root, "packages/shared/src/network.ts"), "utf8");
 for (const requiredValue of ["5042002", "0x4cef52", "https://rpc.testnet.arc.io"]) {
   if (!networkSource.includes(requiredValue)) failures.push(`Network registry is missing ${requiredValue}`);
@@ -100,4 +135,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log("[release-check] M00 repository and Testnet-only registry verified");
+console.log("[release-check] M01 evidence engine boundary and M00 foundation verified");

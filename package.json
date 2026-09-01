@@ -24,6 +24,7 @@
     "docker:web": "docker build --build-arg COMMIT_SHA=${COMMIT_SHA:-local} -f apps/web/Dockerfile -t openarc-web:local ."
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@eslint/js": "9.39.5",
     "@playwright/test": "1.62.1",
     "@types/node": "22.20.1",

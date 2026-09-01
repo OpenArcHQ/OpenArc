@@ -1,6 +1,6 @@
 # OpenArc dependency and image policy
 
-Status: **Milestone 00 baseline**  
+Status: **Milestone 01 baseline**
 Reviewed: **2026-09-01**
 
 - Production dependencies must use permissive licenses compatible with the
@@ -13,7 +13,9 @@ Reviewed: **2026-09-01**
 - CI scans both images for high and critical vulnerabilities with Trivy and
   generates CycloneDX JSON SBOMs with Syft.
 - No provider SDK, signing library, wallet SDK, database client, or mainnet
-  configuration belongs in Milestone 00.
+  configuration belongs in Milestone 01.
+- `@axe-core/playwright` is a test-only MPL-2.0 dependency used for the required
+  full-document accessibility gate. It is absent from both production images.
 
 An automated license result is inventory and policy enforcement, not legal
 advice. Final distribution still requires review of direct licenses, notices,
