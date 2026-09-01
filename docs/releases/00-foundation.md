@@ -61,6 +61,8 @@ Run on 2026-09-01 from the current local tree:
 - No staging or production deployment was created.
 - Remote CI was intentionally skipped on the first private push so no hosted
   runner charge could be incurred without an explicit no-cost confirmation.
+- The hosted workflow is manual-only, cancels superseded runs, and applies a
+  strict timeout to every job so ordinary pushes cannot consume runner minutes.
 
 Remote CI and independent-review evidence are not yet available. Do not begin
 Milestone 01 until the complete gate passes for an exact pushed candidate and
