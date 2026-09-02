@@ -93,10 +93,10 @@ as accepted evidence.
 - [x] Chromium and WebKit keyboard/mobile/reduced-motion journeys pass
 - [x] Full-document serious Axe scan passes
 - [x] Static guard proves fixture explorer makes zero network/storage calls
-- [ ] Clean Node 22 release gate, image scan, and SBOM pass
-- [ ] Exact pushed SHA and exact hosted CI pass
-- [ ] Exact Railway staging markers and fixture walkthrough pass
-- [ ] Independent review finds no P0/P1
+- [x] Clean Node 22 release gate, image scan, and SBOM pass
+- [x] Exact pushed SHA and exact hosted CI pass
+- [x] Exact Railway staging markers and fixture walkthrough pass
+- [x] Independent review finds no P0/P1
 
 No staging deployment or M02 work begins until the relevant gates above are
 complete.
@@ -120,6 +120,42 @@ It also proves that a reconciliation cannot be emitted without at least one
 cited evidence record and that missing payment facts cannot produce a permitted
 policy result.
 
-Exact pushed-SHA CI, production-image scans/SBOM, Railway staging markers, live
-fixture walkthrough, and independent review remain pending and must be appended
-without rewriting this implementation evidence.
+## Exact candidate and staging evidence
+
+The corrected implementation was committed and pushed at exact SHA
+`56619d1badfabfe33fab54799954adbca8768dac`. GitHub Actions run
+`33566745921` completed successfully on that exact SHA on 2026-09-01. Its
+`verify`, `browser`, and `images` jobs all passed: sequencing, production audit,
+license policy, lint, strict typecheck, all 46 shared / 4 API / 7 web tests,
+production builds, all 8 Chromium/WebKit journeys, exact-image-marker smoke,
+container vulnerability scans, and CycloneDX SBOM generation. The unexpired
+`openarc-sboms` artifact is attached to the run. GitHub reported zero billable
+runner milliseconds.
+
+An independent adversarial review of the exact corrective diff found no P0 or
+P1 issue. It independently reproduced the formerly failing conflict-overflow
+and 19-citation cases and confirmed deterministic bounded results with complete
+citations, no runtime network or storage API, no signing or execution surface,
+and no mainnet configuration.
+
+The exact implementation SHA was then deployed to the isolated Railway project
+`openarc-staging`, environment `staging`, with no database or volume. API
+deployment `<deployment-id>` and web deployment
+`<deployment-id>` both reached `SUCCESS`. The API
+`/healthz` and `/readyz` responses and the web footer all exposed the full exact
+SHA. The web response returned `Cache-Control: no-store` plus the expected CSP,
+permissions, referrer, content-type, and frame protections.
+
+The live fixture walkthrough at
+`https://web-staging-1275.up.railway.app/` confirmed all six deterministic
+results: `RECONCILED`, `INTENT NOT SUPPLIED`, `CONFLICTING EVIDENCE`, `EXPIRED`,
+`FAILED`, and `REFUNDED`. Each view retained its semantic source-of-truth list,
+normalized facts, evidence citations, limitations, and neutral graph labels.
+The staging API is available at
+`https://api-staging-539a.up.railway.app/` and exposes only the M01 health and
+readiness surface.
+
+Both services are constrained to one replica with a 1 vCPU / 1 GB memory
+ceiling and Railway serverless sleep. No provider, database, volume, mainnet,
+wallet, signing, or broadcast integration is enabled. These limits and the
+serverless setting were applied before the first deployment.
