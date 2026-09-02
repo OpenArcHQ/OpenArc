@@ -1,6 +1,6 @@
 # Milestone 01 — evidence engine and fixture explorer
 
-Status: **active implementation**
+Status: **complete — immutable `rc/01-evidence-engine/1`**
 Network review: **not applicable — fixture-only, zero live calls**
 Base: `main` after immutable `rc/00-foundation/1`
 
@@ -159,3 +159,16 @@ Both services are constrained to one replica with a 1 vCPU / 1 GB memory
 ceiling and Railway serverless sleep. No provider, database, volume, mainnet,
 wallet, signing, or broadcast integration is enabled. These limits and the
 serverless setting were applied before the first deployment.
+
+The evidence-only successor
+`e8091bf141d6a651d582059a45efa72c47652159` passed exact GitHub Actions run
+`33640047056` on 2026-09-02. Its verification, Chromium/WebKit, production-image
+scan, and SBOM jobs all succeeded, and GitHub reported zero billable runner
+milliseconds. Final Railway API deployment
+`<deployment-id>` and web deployment
+`<deployment-id>` both reached `SUCCESS`; `/healthz`,
+`/readyz`, and the web build marker exposed that full exact SHA, and the light
+asset/security-header smoke passed. Independent final review found no P0/P1 and
+approved immutable annotated tag `rc/01-evidence-engine/1`, which was created
+and pushed at that exact SHA. The tag must never be moved or reused. Milestone
+02 may now begin only from this updated `main` closure.

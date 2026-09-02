@@ -1,6 +1,6 @@
 # OpenArc marketing and technical product package
 
-Status: **Milestone 01 evidence engine active; Arc Testnet fixture-only**
+Status: **Milestone 01 evidence engine complete; Arc Testnet fixture-only**
 Prepared: **2026-08-15; network facts re-verified 2026-09-01**
 
 OpenArc is the proposed private intelligence, policy, and investigation layer for
@@ -34,7 +34,8 @@ parity, and a separately reviewed mainnet release exist.
 
 ## Current implementation
 
-The immutable Milestone 00 foundation is complete. Milestone 01 adds a strict,
+The immutable Milestone 00 foundation and Milestone 01 evidence engine are
+complete. Milestone 01 adds a strict,
 fixture-only evidence engine without introducing any live connector:
 
 - `packages/shared` owns the fail-closed Arc Testnet registry and primitive
@@ -58,8 +59,8 @@ pnpm release:gate
 ```
 
 The foundation evidence record is in
-[`docs/releases/00-foundation.md`](docs/releases/00-foundation.md). The active
-Milestone 01 boundary and pending exit evidence are in
+[`docs/releases/00-foundation.md`](docs/releases/00-foundation.md). The Milestone
+01 boundary and completed exit evidence are in
 [`docs/releases/01-evidence-engine.md`](docs/releases/01-evidence-engine.md).
 
 ## Logo
