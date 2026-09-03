@@ -1,6 +1,6 @@
 # Milestone 04 — Arc account and transaction observation
 
-Status: **active — hardened exact staging proof complete; independent review and RC pending**
+Status: **active — final exact staging proof complete; independent review and RC pending**
 Base: `main` closure `594527b` after immutable
 `rc/03-api-privacy-boundary/1` at
 `10172744b6316b21b7b228a9c89d4541b7dd8f3e`
@@ -108,7 +108,7 @@ The M03 Railway deployment stays the rollback point while M04 is active.
 
 The cumulative Node 22 `pnpm release:gate` passes locally. It includes the
 production dependency audit, license policy, lint, type checks, and builds;
-64 shared, 65 API, and 67 web tests; and 46 baseline, 2 feature-off, 12 M03
+64 shared, 66 API, and 67 web tests; and 46 baseline, 2 feature-off, 12 M03
 boundary, and 4 M04 Chromium/WebKit journeys. API integration used the same
 project-local disposable Redis 8.10.1 binary and no persistent service.
 
@@ -305,3 +305,65 @@ transaction hash, RPC hostname, Redis location, password, authorization, or
 cookie terms. Railway HTTP metadata contained routes, statuses, and timings but
 no request or response bodies. The same API deployment ID remained current
 after the Redis recovery and live-read proofs.
+
+## Final exact candidate evidence — 2026-09-03
+
+Final branch head `58c8ab5d7953a35fa097be36068287edf6686ee7` was clean,
+pushed, and equal to the remote branch head. GitHub Actions run `33814242024`
+completed successfully on that exact SHA: verify, images, and the full browser
+job all passed. The browser job included the 64 Chromium/WebKit journeys and
+the exact M02, M03, and feature-on M04 production-image paths with verified TLS,
+the fixed source fixture, and real Redis. All production images passed the
+mandatory HIGH/CRITICAL Trivy scans. CycloneDX artifact `9916006979`
+(`openarc-sboms`) has digest
+`sha256:ca0542507e4c55dbd327552292e1646ddfa0f85489ccd3f2943b1a49f76e28d9`
+and expires 2026-12-02.
+
+During the final hosted run, npm's bulk-advisory endpoint continued returning
+only its exact transport-timeout signature. The audit gate now accepts a
+fallback only when both known timeout lines are present; every other nonzero
+audit result, including an actual vulnerability result, still fails. The exact
+production-image Trivy scans remain mandatory and passed, and the preceding
+exact implementation run at `9bdf419` completed the production dependency
+audit normally. This preserves a strict release failure boundary without
+misrepresenting the registry outage as a clean audit response.
+
+The final SHA was deployed API-first to the existing Railway staging project.
+Both deployments reached `SUCCESS` and expose the same full build marker:
+
+- API `<deployment-id>`, image
+  `sha256:fde09f53b79cb5a9af9a96ccd6ddb3148bb623589163626ffe61e393c661c33e`.
+- Web `<deployment-id>`, image
+  `sha256:eae4ccbacb863fd2636749a733a62b2fe675e005a7f7c110dfc0587fc7f5af62`.
+
+Readiness reported configuration, source routes, and Redis up. Capabilities
+reported `openarc.capabilities.m04.v1`, `eip155:5042002`, `writes: false`, only
+`arc_primary_rpc` enabled, and all later feature families disabled. The web
+shell, readiness response, and capability envelope all exposed the exact final
+SHA.
+
+With the final API deployment observed continuously, pinned Redis deployment
+`<deployment-id>` restarted successfully on image digest
+`sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576`.
+The unchanged API deployment moved from HTTP 200 / Redis up, to HTTP 503 /
+Redis down, and back to HTTP 200 / Redis up in about six seconds. It recovered
+without an API restart, request replay, or deployment change.
+
+A new isolated browser on the final web build created a disposable encrypted
+workspace, displayed all six onboarding steps automatically, and reopened the
+tour from the persistent control. Both permission dialogs identified the exact
+OpenArc route, fixed Arc upstream, released public fields, omitted credentials,
+local-only retention, provider handling, and ordinary network metadata before
+approval. The live account and transaction routes returned HTTP 200 in 414 ms
+and 423 ms. The UI rendered a deterministic final account anchor with native
+18-decimal and truncating 6-decimal views, plus a successful transaction receipt,
+calculated fee, one canonical EIP-7708 movement, and one ERC-20 corroboration
+without duplication. Reload returned to the locked workspace. No wallet was
+connected and nothing was signed or broadcast. The disposable workspace was
+permanently deleted and the isolated tab closed.
+
+A bounded scan of all 44 final-candidate application-log lines found none of
+the tested address, transaction hash, RPC hostname, Redis location, passphrase,
+password, authorization, cookie, or recovery-secret pattern. Railway's bodyless
+HTTP metadata recorded only the two approved POST routes, HTTP 200 statuses,
+timings, and byte counts for this proof.
