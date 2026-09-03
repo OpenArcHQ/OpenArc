@@ -120,7 +120,7 @@ Hosted release plumbing now builds a feature-on M04 web image and runs the
 actual feature-on API image through its real Redis limiter, verified TLS proxy,
 and fixed HTTPS RPC transport against a local certificate-pinned JSON-RPC
 fixture. It also adds M04 HIGH/CRITICAL scanning and a CycloneDX SBOM. Those
-The exact candidate workflow results are recorded below.
+exact candidate workflow results are recorded below.
 
 ## Exact implementation hosted evidence — 2026-09-03
 
@@ -149,3 +149,44 @@ No request in this candidate or its hosted tests contacted Arc, created a
 Railway resource, or changed the M03 rollback deployment. Controlled live
 Public Testnet proof, independent review, staging, immutable RC, and closure
 remain separate gates.
+
+The documentation-only successor
+`a977c383a9ecffef87d3ee27edddffbb0c8ad59a` was clean, pushed, and equal to
+the remote branch head. GitHub Actions run `33800054306` completed successfully
+on that exact SHA: verify, images, and browser jobs all passed; SBOM artifact
+`9910804476` has digest
+`sha256:2ae6358b8942f3dd1360fe5454bba851009105cab9581a41c07e723aa2ca17d8`
+and expires 2026-12-02. GitHub again reported zero billable runner
+milliseconds.
+
+## Controlled local Public Testnet proof — 2026-09-03
+
+After explicit confirmation of the current Arc Testnet terms, the exact clean
+branch-head implementation
+`a977c383a9ecffef87d3ee27edddffbb0c8ad59a` made a minimal read-only
+`eth_chainId` request to the fixed provider. It returned `0x4cef52`, confirming
+decimal chain ID `5042002`. No wallet was connected and no transaction was
+signed or broadcast.
+
+The production API entry point was then run locally with the feature enabled,
+a disposable pinned Redis 8 container, the fixed live Arc endpoint, and the
+exact branch-head build marker. Readiness reported configuration, source
+routes, and Redis up. Capabilities reported
+`openarc.capabilities.m04.v1`, `eip155:5042002`, and only
+`arc_primary_rpc` enabled.
+
+One account snapshot and one finalized public transaction were exercised
+through OpenArc's real HTTP routes and actual bounded provider transport. The
+account response reconciled the native 18-decimal balance with the truncated
+6-decimal ERC-20 view at one anchored block. The transaction response anchored
+the transaction and receipt to the same finalized block, calculated the fee
+from `gasUsed * effectiveGasPrice`, and returned one canonical EIP-7708 USDC
+movement with one exact ERC-20 corroboration rather than double counting it.
+Both strict response schemas passed.
+
+Completion logs for readiness, capabilities, account, and transaction calls
+contained only request ID, route class, method, status, duration bucket,
+failure code, and build SHA. They contained no address, transaction hash, RPC
+URL, response data, or Redis data. The local API and disposable Redis container
+were stopped after the proof. This evidence validates the live adapter locally;
+it does not satisfy the separate exact-staged-SHA exit gate.
