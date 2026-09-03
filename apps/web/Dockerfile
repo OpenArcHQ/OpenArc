@@ -36,13 +36,16 @@ RUN apk add --no-cache \
 
 ARG VITE_API_BOUNDARY_ENABLED=false
 COPY apps/web/nginx.conf apps/web/nginx-api.conf apps/web/proxy_params /tmp/openarc-nginx/
-RUN if [ "${VITE_API_BOUNDARY_ENABLED}" = "true" ]; then \
+RUN set -eu; \
+    if [ "${VITE_API_BOUNDARY_ENABLED}" = "true" ]; then \
+      mkdir -p /etc/nginx/templates; \
       cp /tmp/openarc-nginx/nginx-api.conf /etc/nginx/templates/default.conf.template; \
       cp /tmp/openarc-nginx/proxy_params /etc/nginx/proxy_params; \
       rm -f /etc/nginx/conf.d/default.conf; \
     else \
       cp /tmp/openarc-nginx/nginx.conf /etc/nginx/conf.d/default.conf; \
-    fi && rm -rf /tmp/openarc-nginx
+    fi; \
+    rm -rf /tmp/openarc-nginx
 ENV API_TRUST_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
     NGINX_ENVSUBST_FILTER=^API_(UPSTREAM_(HOST|SNI)|TRUST_BUNDLE)$
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
