@@ -3,12 +3,14 @@ import { expect, test } from "@playwright/test";
 
 test("explores every fixture with graph/list parity, keyboard tabs, and no private side effects", async ({
   page,
+  baseURL,
 }) => {
+  const appOrigin = new URL(baseURL ?? "").origin;
   const externalRequests: string[] = [];
   const dynamicRequests: string[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (url.origin !== "http://127.0.0.1:5173") externalRequests.push(request.url());
+    if (url.origin !== appOrigin) externalRequests.push(request.url());
     if (/\/(v1|rpc|graphql)(\/|\?|$)/u.test(url.pathname)) dynamicRequests.push(request.url());
   });
 

@@ -6,12 +6,12 @@ export default defineConfig({
   forbidOnly: Boolean(process.env.CI),
   reporter: "list",
   use: {
-    baseURL: "http://127.0.0.1:5174",
+    baseURL: "http://127.0.0.1:5184",
     reducedMotion: "reduce",
   },
   webServer: {
-    command: "pnpm --filter @openarc/web dev --port 5174",
-    url: "http://127.0.0.1:5174",
+    command: "pnpm --filter @openarc/web dev --port 5184",
+    url: "http://127.0.0.1:5184",
     reuseExistingServer: false,
     env: {
       VITE_COMMIT_SHA: "e2e-workspace-disabled",

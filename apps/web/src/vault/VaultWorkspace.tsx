@@ -1396,6 +1396,12 @@ function TourDialog({ onClose, returnFocus }: { onClose: () => void; returnFocus
 function Modal({ title, children, onClose, closeDisabled = false, returnFocus: explicitReturnFocus = null }: { title: string; children: ReactNode; onClose: () => void; closeDisabled?: boolean; returnFocus?: HTMLElement | null }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
+  const closeRef = useRef(onClose);
+  const closeDisabledRef = useRef(closeDisabled);
+  useEffect(() => {
+    closeRef.current = onClose;
+    closeDisabledRef.current = closeDisabled;
+  }, [closeDisabled, onClose]);
   useEffect(() => {
     returnFocus.current = explicitReturnFocus ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const background = document.querySelector<HTMLElement>(".workspace-shell");
@@ -1407,7 +1413,7 @@ function Modal({ title, children, onClose, closeDisabled = false, returnFocus: e
     const dialog = dialogRef.current;
     dialog?.querySelector<HTMLElement>("button:not([disabled]), input:not([disabled]), textarea:not([disabled])")?.focus();
     const keyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !closeDisabled) { event.preventDefault(); onClose(); return; }
+      if (event.key === "Escape" && !closeDisabledRef.current) { event.preventDefault(); closeRef.current(); return; }
       if (event.key !== "Tab" || !dialog) return;
       const items = [...dialog.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), textarea:not([disabled]), a[href]")];
       if (items.length === 0) return;
@@ -1425,9 +1431,9 @@ function Modal({ title, children, onClose, closeDisabled = false, returnFocus: e
         else background.setAttribute("aria-hidden", previousAriaHidden);
       }
       const target = returnFocus.current;
-      window.setTimeout(() => target?.focus(), 25);
+      if (target?.isConnected) target.focus();
     };
-  }, [closeDisabled, explicitReturnFocus, onClose]);
+  }, [explicitReturnFocus]);
   return createPortal(<div className="modal-backdrop" role="presentation"><div className="workspace-modal" role="dialog" aria-modal="true" aria-labelledby="workspace-dialog-title" ref={dialogRef}><header><p className="eyebrow">PRIVATE WORKSPACE</p><h2 id="workspace-dialog-title">{title}</h2>{!closeDisabled ? <button type="button" aria-label="Close dialog" onClick={onClose}>×</button> : null}</header>{children}</div></div>, document.body);
 }
 

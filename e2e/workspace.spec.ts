@@ -9,7 +9,9 @@ const privateCanary = "PRIVATE_AGENT_BROWSER_CANARY";
 
 test("runs the encrypted workspace lifecycle without plaintext or network leakage", async ({
   page,
+  baseURL,
 }, testInfo) => {
+  const appOrigin = new URL(baseURL ?? "").origin;
   const dynamicRequests: string[] = [];
   const requestObservations: string[] = [];
   const consoleMessages: string[] = [];
@@ -18,7 +20,7 @@ test("runs the encrypted workspace lifecycle without plaintext or network leakag
     requestObservations.push(
       JSON.stringify({ method: request.method(), url: request.url(), body: request.postData(), headers: request.headers() }),
     );
-    if (/\/(v1|rpc|graphql)(\/|\?|$)/u.test(url.pathname) || url.origin !== "http://127.0.0.1:5173") {
+    if (/\/(v1|rpc|graphql)(\/|\?|$)/u.test(url.pathname) || url.origin !== appOrigin) {
       dynamicRequests.push(`${request.method()} ${request.url()} ${request.postData() ?? ""}`);
     }
   });
@@ -183,6 +185,7 @@ test("coordinates revision changes and lock across tabs", async ({ context, page
   await page.getByRole("checkbox", { name: /I saved it somewhere private/u }).check();
   await page.getByRole("button", { name: "Continue to workspace" }).click();
   await page.getByRole("button", { name: "Skip" }).click();
+  await expect(page.getByText("Tour preference saved inside the encrypted workspace.")).toBeVisible();
   await expect(second.getByRole("heading", { name: "Unlock your private workspace" })).toBeVisible();
   await unlock(second, localPassphrase);
 
@@ -677,6 +680,16 @@ test("stale empty create observes a deletion marker before doing local work", as
   await context.addInitScript(() => {
     Object.defineProperty(globalThis, "BroadcastChannel", { configurable: true, value: undefined });
   });
+  // Isolate submission before the 2-second poll. The separate no-BC test
+  // exercises normal polling; a slower CI runner must not erase this setup.
+  await page.addInitScript(() => {
+    const schedule = window.setInterval.bind(window);
+    window.setInterval = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+      const timer = schedule(handler, delay, ...args);
+      if (delay === 2_000) window.clearInterval(timer);
+      return timer;
+    }) as typeof window.setInterval;
+  });
   await page.goto("/workspace");
   const markerPage = await context.newPage();
   await createUnlockedWorkspace(markerPage);
@@ -868,6 +881,7 @@ async function createUnlockedWorkspace(page: Page) {
   await page.getByRole("checkbox", { name: /I saved it somewhere private/u }).check();
   await page.getByRole("button", { name: "Continue to workspace" }).click();
   await page.getByRole("button", { name: "Skip" }).click();
+  await expect(page.getByText("Tour preference saved inside the encrypted workspace.")).toBeVisible();
 }
 
 async function markVaultDeletingAndHold(page: Page) {

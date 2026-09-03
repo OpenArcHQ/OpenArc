@@ -122,7 +122,7 @@ requires an encrypted export/import.
 
 ## Exit evidence required before M03
 
-### Local candidate evidence — 2026-09-02
+### Local candidate evidence — 2026-09-03
 
 The source-identical pre-commit tree passed `pnpm release:gate` under Node
 22: release boundary checks, production dependency audit, license policy,
@@ -131,6 +131,16 @@ feature-on Chromium/WebKit journeys, and 2 feature-off Chromium/WebKit
 journeys. The feature-on production Nginx image, image scans/SBOM, exact hosted
 SHA, and Railway evidence remain open below and are not implied by this local
 gate.
+
+The initial pushed implementation `bda162b90787f206eacd95a537c9befb65693b1f`
+passed hosted verification and all three image scans/SBOMs in run
+`33775618131`, but its browser job failed. It is not staging-approved. The
+corrective candidate stabilizes modal focus across parent renders, waits for
+the encrypted tour preference before cross-tab test operations, and isolates
+the submit-before-poll deletion fixture. The four affected browser scenarios
+passed three repeats in each engine with one worker (24 checks), followed by
+the complete local gate above. Test servers use dedicated ports and never
+reuse an unrelated running app. New exact hosted CI is still required.
 
 - [x] Shared record schemas reject unknown kinds, versions, overlong fields,
       invalid record relationships, and malformed timestamps
