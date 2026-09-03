@@ -6,3 +6,4 @@ export * from "./reconciliation.js";
 export * from "./vault.js";
 export * from "./api.js";
 export * from "./permission.js";
+export * from "./arc-observation.js";

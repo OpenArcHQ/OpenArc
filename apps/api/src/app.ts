@@ -1,13 +1,22 @@
 import {
   API_ERRORS, API_MAX_REQUEST_BYTES, API_MAX_RESPONSE_BYTES, API_SCHEMA_VERSION,
-  ARC_TESTNET, CAPABILITIES_PATH, CapabilitiesEnvelopeSchema, type ApiErrorCode,
+  ARC_ACCOUNT_SNAPSHOT_PATH, ARC_TESTNET, ARC_TRANSACTION_EVIDENCE_PATH,
+  ArcAccountSnapshotEnvelopeSchema, ArcAccountSnapshotRequestSchema,
+  ArcTransactionEvidenceEnvelopeSchema, ArcTransactionEvidenceRequestSchema,
+  CAPABILITIES_PATH, CapabilitiesEnvelopeSchema, type ApiErrorCode,
+  type ArcAccountSnapshotEnvelope, type ArcAccountSnapshotRequest,
+  type ArcTransactionEvidenceEnvelope, type ArcTransactionEvidenceRequest,
 } from "@openarc/shared";
 import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
 import type { ApiConfig } from "./config.js";
+import type { ArcAccountService } from "./arc/account-service.js";
+import type { ArcTransactionService } from "./arc/transaction-service.js";
 import { ApiBoundaryError, apiErrorEnvelope, normalizeApiError } from "./http/errors.js";
 import { verifyBrowserOrigin, verifyPreflight } from "./http/origin.js";
+import { registerSourceRoute } from "./http/source-route.js";
+import type { SourceBudget } from "./limits/budget.js";
 import { AggregateMetrics, durationBucket, metricsAuthorized, safeMethod,
   type DurationBucket, type RouteClass, type SafeMethod } from "./ops/metrics.js";
 
@@ -26,10 +35,12 @@ export interface CreateAppOptions {
   logger?: boolean;
   logSink?: (entry: Readonly<CompletionLog>) => void;
   metrics?: AggregateMetrics;
+  sourceBudget?: SourceBudget;
+  arcAccountService?: ArcAccountService;
+  arcTransactionService?: ArcTransactionService;
 }
 
 const disabledPaths = [
-  "/v1/private/arc/account-snapshot", "/v1/private/arc/transaction-evidence",
   "/v1/private/arc/agent-registry-evidence", "/v1/private/arc/job-evidence",
   "/v1/private/gateway/transfer-evidence",
 ] as const;
@@ -40,11 +51,14 @@ function routeClass(url: string): RouteClass {
   if (path === "/readyz") return "readiness";
   if (path === "/metrics") return "metrics";
   if (path === CAPABILITIES_PATH) return "capabilities";
+  if (path === ARC_ACCOUNT_SNAPSHOT_PATH) return "arc_account";
+  if (path === ARC_TRANSACTION_EVIDENCE_PATH) return "arc_transaction";
   if (disabledPaths.some((candidate) => candidate === path)) return "disabled_source";
   return "not_found";
 }
 
-export function createApp({ config, logger = config.NODE_ENV !== "test", logSink, metrics = new AggregateMetrics() }: CreateAppOptions): FastifyInstance {
+export function createApp({ config, logger = config.NODE_ENV !== "test", logSink, metrics = new AggregateMetrics(),
+  sourceBudget, arcAccountService, arcTransactionService }: CreateAppOptions): FastifyInstance {
   // Framework request/error logging is disabled, including parser failures.
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: API_MAX_REQUEST_BYTES,
     requestIdHeader: false, genReqId: () => randomUUID(), exposeHeadRoutes: false,
@@ -84,8 +98,17 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
 
   const build = { service: "openarc-api", version: "0.0.0", commitSha: config.COMMIT_SHA } as const;
   app.get("/healthz", async () => ({ status: "ok" as const, ...build }));
-  app.get("/readyz", async () => ({ ok: true as const, status: "ready" as const,
-    checks: { configuration: "up", sourceRoutes: "disabled", redis: "not_required" }, ...build }));
+  app.get("/readyz", async (_request, reply) => {
+    if (config.ARC_OBSERVATION_ENABLED) {
+      const redisReady = sourceBudget ? await sourceBudget.ready(AbortSignal.timeout(750)) : false;
+      if (!redisReady) return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
+        checks: { configuration: "up", sourceRoutes: "enabled", redis: "down" }, ...build });
+      return { ok: true as const, status: "ready" as const,
+        checks: { configuration: "up", sourceRoutes: "enabled", redis: "up" }, ...build };
+    }
+    return { ok: true as const, status: "ready" as const,
+      checks: { configuration: "up", sourceRoutes: "disabled", redis: "not_required" }, ...build };
+  });
 
   app.all(CAPABILITIES_PATH, { onRequest: async (request, reply) => {
     if (!config.API_BOUNDARY_ENABLED) throw new ApiBoundaryError("FEATURE_DISABLED");
@@ -104,16 +127,42 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
     reply.header("Vary", "Origin");
   } }, async (request) => CapabilitiesEnvelopeSchema.parse({
     ok: true,
-    data: { capabilityVersion: "openarc.capabilities.m03.v1", environment: "testnet", network: ARC_TESTNET.caip2,
+    data: { capabilityVersion: "openarc.capabilities.m04.v1", environment: "testnet", network: ARC_TESTNET.caip2,
       sourceRevision: ARC_TESTNET.sourceRevision, reviewedAt: ARC_TESTNET.reviewedAt,
-      writes: false, enabledConnectors: [],
-      features: { arcObservation: false, agentRegistry: false, agentJobs: false, gatewayEvidence: false },
+      writes: false, enabledConnectors: config.ARC_OBSERVATION_ENABLED ? ["arc_primary_rpc"] : [],
+      features: { arcObservation: config.ARC_OBSERVATION_ENABLED, agentRegistry: false, agentJobs: false, gatewayEvidence: false },
       limits: { requestBytes: API_MAX_REQUEST_BYTES, responseBytes: API_MAX_RESPONSE_BYTES,
         sourceResponseBytes: config.SOURCE_MAX_RESPONSE_BYTES, sourceTimeoutMs: config.SOURCE_TIMEOUT_MS,
         sourceMaxSubcalls: config.SOURCE_MAX_SUBCALLS, requestsPerPeerHour: config.REQUESTS_PER_IP_HOUR,
         globalSourceUnitsPerDay: config.GLOBAL_SOURCE_UNITS_PER_DAY } },
     meta: { schemaVersion: API_SCHEMA_VERSION, requestId: request.id, buildSha: config.COMMIT_SHA },
   }));
+
+  if (config.ARC_OBSERVATION_ENABLED) {
+    if (!sourceBudget || !arcAccountService || !arcTransactionService) {
+      throw new Error("Arc observation dependencies are unavailable");
+    }
+    registerSourceRoute<ArcAccountSnapshotRequest, ArcAccountSnapshotEnvelope>(app, {
+      path: ARC_ACCOUNT_SNAPSHOT_PATH, source: "arc_rpc", route: "arc_account", enabled: true,
+      appOrigin: config.APP_ORIGIN, budget: sourceBudget, timeoutMs: config.SOURCE_TIMEOUT_MS,
+      requestSchema: ArcAccountSnapshotRequestSchema, responseSchema: ArcAccountSnapshotEnvelopeSchema,
+      execute: async (input, context) => ({ ok: true as const,
+        data: await arcAccountService.observe(input, context.lease, context.signal),
+        meta: { schemaVersion: API_SCHEMA_VERSION, requestId: context.requestId, buildSha: config.COMMIT_SHA } }),
+    });
+    registerSourceRoute<ArcTransactionEvidenceRequest, ArcTransactionEvidenceEnvelope>(app, {
+      path: ARC_TRANSACTION_EVIDENCE_PATH, source: "arc_rpc", route: "arc_transaction", enabled: true,
+      appOrigin: config.APP_ORIGIN, budget: sourceBudget, timeoutMs: config.SOURCE_TIMEOUT_MS,
+      requestSchema: ArcTransactionEvidenceRequestSchema, responseSchema: ArcTransactionEvidenceEnvelopeSchema,
+      execute: async (input, context) => ({ ok: true as const,
+        data: await arcTransactionService.observe(input, context.lease, context.signal),
+        meta: { schemaVersion: API_SCHEMA_VERSION, requestId: context.requestId, buildSha: config.COMMIT_SHA } }),
+    });
+  } else {
+    for (const path of [ARC_ACCOUNT_SNAPSHOT_PATH, ARC_TRANSACTION_EVIDENCE_PATH] as const) {
+      app.all(path, { onRequest: async () => { throw new ApiBoundaryError("FEATURE_DISABLED"); } }, async () => undefined);
+    }
+  }
 
   for (const path of disabledPaths) {
     app.all(path, { onRequest: async () => { throw new ApiBoundaryError("FEATURE_DISABLED"); } }, async () => undefined);
@@ -124,6 +173,7 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
     if (request.url.includes("?") || !metricsAuthorized(request.headers.authorization, config.METRICS_TOKEN)) {
       throw new ApiBoundaryError("METRICS_UNAUTHORIZED");
     }
-  } }, async (_request, reply) => reply.type("text/plain; version=0.0.4; charset=utf-8").send(metrics.render(config.COMMIT_SHA)));
+  } }, async (_request, reply) => reply.type("text/plain; version=0.0.4; charset=utf-8")
+    .send(metrics.render(config.COMMIT_SHA, config.ARC_OBSERVATION_ENABLED)));
   return app;
 }

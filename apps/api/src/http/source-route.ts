@@ -23,10 +23,10 @@ export interface SourceRouteOptions<Input, Output> {
   timeoutMs: number;
   requestSchema: z.ZodObject;
   responseSchema: z.ZodType<Output>;
-  execute: (input: Input, context: { lease: SourceLease; signal: AbortSignal }) => Promise<Output>;
+  execute: (input: Input, context: { lease: SourceLease; signal: AbortSignal; requestId: string }) => Promise<Output>;
 }
 
-/** Infrastructure only in M03. No production adapter or test endpoint is registered. */
+/** Reusable source boundary. Adapters remain route-owned and receive no raw request object. */
 export function registerSourceRoute<Input, Output>(app: FastifyInstance, options: SourceRouteOptions<Input, Output>): void {
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 100 || options.timeoutMs > 10_000) {
     throw new Error("Invalid source timeout configuration");
@@ -97,7 +97,9 @@ export function registerSourceRoute<Input, Output>(app: FastifyInstance, options
   }, async (request, reply: FastifyReply) => {
     const context = contexts.get(request);
     if (!context?.lease || context.controller.signal.aborted) throw new ApiBoundaryError("SOURCE_UNAVAILABLE");
-    const work = options.execute(request.body as Input, { lease: context.lease, signal: context.controller.signal });
+    const work = options.execute(request.body as Input, {
+      lease: context.lease, signal: context.controller.signal, requestId: request.id,
+    });
     const output = await untilAborted(work, context.controller.signal);
     if (context.controller.signal.aborted) throw new ApiBoundaryError("SOURCE_UNAVAILABLE");
     const validated = options.responseSchema.safeParse(output);

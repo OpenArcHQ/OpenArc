@@ -9,3 +9,9 @@ export function apiBoundaryEnabled(
 ): boolean {
   return value === true || value === "true";
 }
+
+export function arcObservationEnabled(
+  value: string | boolean | undefined = import.meta.env.VITE_ARC_OBSERVATION_ENABLED,
+): boolean {
+  return value === true || value === "true";
+}

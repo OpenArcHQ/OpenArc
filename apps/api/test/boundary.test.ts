@@ -32,8 +32,17 @@ describe("M03 configuration guards", () => {
     ]) expect(() => loadConfig({ ...valid, ...mutation })).toThrow();
   });
 
-  it("cannot enable unimplemented source adapters even with nominal infrastructure", () => {
-    for (const flag of ["ARC_OBSERVATION_ENABLED", "AGENT_REGISTRY_ENABLED", "AGENT_JOBS_ENABLED", "GATEWAY_EVIDENCE_ENABLED"]) {
+  it("enables only M04 Arc observation with its exact boundary and infrastructure", () => {
+    expect(loadConfig({ NODE_ENV: "test", API_BOUNDARY_ENABLED: "true", ARC_OBSERVATION_ENABLED: "true",
+      REDIS_URL: "redis://127.0.0.1:6379", ABUSE_LIMIT_SECRET: "a".repeat(32),
+      METRICS_TOKEN: metricsToken }).ARC_OBSERVATION_ENABLED).toBe(true);
+    for (const mutation of [
+      { API_BOUNDARY_ENABLED: "false" }, { REDIS_URL: undefined }, { ABUSE_LIMIT_SECRET: undefined },
+      { SOURCE_MAX_SUBCALLS: "4" },
+    ]) expect(() => loadConfig({ NODE_ENV: "test", API_BOUNDARY_ENABLED: "true",
+      ARC_OBSERVATION_ENABLED: "true", REDIS_URL: "redis://127.0.0.1:6379",
+      ABUSE_LIMIT_SECRET: "a".repeat(32), METRICS_TOKEN: metricsToken, ...mutation })).toThrow();
+    for (const flag of ["AGENT_REGISTRY_ENABLED", "AGENT_JOBS_ENABLED", "GATEWAY_EVIDENCE_ENABLED"]) {
       expect(() => loadConfig({ NODE_ENV: "test", [flag]: "true",
         REDIS_URL: "redis://127.0.0.1:6379", ABUSE_LIMIT_SECRET: "a".repeat(32), METRICS_TOKEN: metricsToken })).toThrow();
     }
@@ -53,6 +62,7 @@ describe("M03 credentialless browser boundary", () => {
     expect(response.headers["access-control-allow-credentials"]).toBeUndefined();
     expect(response.headers["x-openarc-request-id"]).toBe(response.json().meta.requestId);
     expect(response.json().data.enabledConnectors).toEqual([]);
+    expect(response.json().data.capabilityVersion).toBe("openarc.capabilities.m04.v1");
   });
 
   it("handles the same-origin GET missing-Origin case without granting cross-site access", async () => {

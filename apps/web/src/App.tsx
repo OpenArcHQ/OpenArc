@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { BuildInfo } from "@openarc/shared";
 
 import { FixtureExplorer } from "./evidence/FixtureExplorer.js";
-import { apiBoundaryEnabled, encryptedWorkspaceEnabled } from "./app/availability.js";
+import { apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled } from "./app/availability.js";
 import { VaultWorkspace } from "./vault/VaultWorkspace.js";
 
 interface AppProps {
@@ -21,6 +21,7 @@ const evidenceSteps = [
 export function App({ build }: AppProps) {
   const [path, setPath] = useState(window.location.pathname);
   const workspaceEnabled = encryptedWorkspaceEnabled();
+  const observationEnabled = workspaceEnabled && apiBoundaryEnabled() && arcObservationEnabled();
 
   useEffect(() => {
     const onPopState = () => setPath(window.location.pathname);
@@ -55,7 +56,9 @@ export function App({ build }: AppProps) {
           {workspaceEnabled ? <a href="/workspace">Workspace</a> : null}
           <a href="#fixture-explorer">Explorer</a>
           <a href="#network">Network</a>
-          <span className="phase">{apiBoundaryEnabled() ? "M03 · API PRIVACY BOUNDARY" : "M02 · ENCRYPTED WORKSPACE"}</span>
+          <span className="phase">{observationEnabled
+            ? "M04 · ARC OBSERVATION"
+            : apiBoundaryEnabled() ? "M03 · API PRIVACY BOUNDARY" : "M02 · ENCRYPTED WORKSPACE"}</span>
         </div>
       </nav>
 
@@ -70,8 +73,10 @@ export function App({ build }: AppProps) {
           </p>
           <div className="status-row" aria-label="Current build status">
             <span className="status-dot" aria-hidden="true" />
-            <strong>Fixture engine running</strong>
-            <span>Six deterministic local cases. Live connectors remain deliberately disabled.</span>
+            <strong>{observationEnabled ? "Arc observation available" : "Fixture engine running"}</strong>
+            <span>{observationEnabled
+              ? "Explicit, read-only account and transaction observations through the privacy boundary."
+              : "Six deterministic local cases. Live connectors remain deliberately disabled."}</span>
           </div>
           {workspaceEnabled ? <a className="hero-action" href="/workspace">Open private workspace →</a> : null}
         </div>
@@ -109,9 +114,9 @@ export function App({ build }: AppProps) {
           <p className="eyebrow">PINNED NETWORK REGISTRY</p>
           <h2 id="network-title">Arc Testnet, exactly.</h2>
           <p>
-            Mainnet has been announced for September 16, 2026, but its public endpoints and
-            contract registry are not available in the official references yet. This build will
-            not guess or copy Testnet values forward.
+            Arc's official documentation currently identifies Public Testnet as the active public
+            network and Mainnet as upcoming. No public Mainnet registry is pinned here; OpenArc
+            will not guess or copy Testnet values forward.
           </p>
         </div>
         <dl>

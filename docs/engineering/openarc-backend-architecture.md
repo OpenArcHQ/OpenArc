@@ -1,7 +1,7 @@
 # OpenArc backend architecture
 
 Status: **normative backend specification**  
-Specification version: **0.1.0-draft**  
+Specification version: **0.2.1-draft**
 Parent: `docs/engineering/openarc-engineering-source-of-truth.md`  
 Runtime target: **Node.js 22, TypeScript, Fastify**
 
@@ -307,9 +307,16 @@ Returns:
 
 - exact final anchor number/hash/time;
 - native USDC balance as 18-decimal base-unit string and canonical decimal;
-- optional ERC-20 six-decimal view with truncation limitation;
+- exact ERC-20 six-decimal view with the same-underlying-balance and truncation
+  limitation;
 - source origin, observation time, and explorer link;
 - no full transaction history.
+
+The adapter performs exactly five bounded subcalls: chain ID, latest block,
+native balance at that exact block tag, fixed-contract `balanceOf` at that tag,
+and the same block by number. It requires the two anchor reads to agree and
+requires `nativeBaseUnits / 10^12 == erc20BaseUnits`. A conflict returns no
+partial observation.
 
 ### `POST /v1/private/arc/transaction-evidence`
 
@@ -331,6 +338,22 @@ Returns:
 - emitter-specific movement class;
 - coverage and truncation fields;
 - limitations.
+
+The adapter performs exactly five bounded subcalls: chain ID, transaction by
+hash, receipt by hash, block by hash, and that block by number. It cross-checks
+the requested/returned transaction hash, transaction and receipt block hash,
+block number, transaction index, sender, recipient, both anchor reads, receipt
+status, every log's transaction/block/index ownership, and uint256 fee bounds.
+Pending/missing facts, removed logs, impossible fee products, malformed values,
+or disagreements return a bounded failure and no partial evidence.
+
+For USDC, only `0xfffffffffffffffffffffffffffffffffffffffe` plus the exact
+standard `Transfer` topic is canonical. Its amount is interpreted at 18
+decimals. A matching event from fixed ERC-20 interface
+`0x3600000000000000000000000000000000000000` is a 6-decimal corroboration only
+when sender, recipient, order, and `erc20Amount * 10^12` match one unconsumed
+canonical event. It never becomes a second movement. Gas fee is
+`gasUsed * effectiveGasPrice`, never inferred from a Transfer event.
 
 ### `POST /v1/private/arc/agent-registry-evidence`
 
@@ -442,6 +465,8 @@ native internal decimals    18
 display decimals             6
 ERC-20 interface decimals    6
 ERC-20 address               0x3600000000000000000000000000000000000000
+EIP-7708 system emitter      0xfffffffffffffffffffffffffffffffffffffffe
+Transfer topic0              0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef
 ```
 
 Rules:
@@ -452,8 +477,12 @@ Rules:
 - retain the source interface and precision;
 - disclose ERC-20 truncation;
 - do not add native and ERC-20 views;
-- classify native EIP-7708 and ERC-20 events by exact emitter;
-- dedupe only under a reviewed event rule, never by token symbol or equal amount;
+- classify EIP-7708 and ERC-20 events by exact emitter;
+- emit one canonical movement for each valid EIP-7708 system event;
+- treat an ERC-20 event only as corroboration after an exact sender, recipient,
+  and `6-decimal amount * 10^12` match to one earlier unmatched system event;
+- require every ERC-20 USDC `Transfer` to have exactly one system-event match;
+- never dedupe by token symbol, amount alone, timestamp, or adjacency;
 - reject negative, non-canonical, overflow, and exponent values.
 
 ## 11. Transaction normalization
@@ -470,8 +499,12 @@ The transaction service requires:
 
 Movement decoding is allowlisted:
 
-- Arc native USDC EIP-7708 emitter;
-- exact USDC ERC-20 interface;
+- Arc EIP-7708 system emitter at
+  `0xfffffffffffffffffffffffffffffffffffffffe`, 18 decimals, as the canonical
+  movement stream for every native and ERC-20-initiated balance change;
+- exact USDC ERC-20 interface at
+  `0x3600000000000000000000000000000000000000`, 6 decimals, as a corroborating
+  event stream that is never returned as an additional movement;
 - no arbitrary ABI decoding in MVP.
 
 A failed transaction has no successful native or token movement conclusion. Fees

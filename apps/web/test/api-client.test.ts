@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapabilityRequestError, requestCapabilities } from "../src/api/capabilities.js";
 
 function envelope() {
-  return { ok: true, data: { capabilityVersion: "openarc.capabilities.m03.v1", environment: "testnet",
+  return { ok: true, data: { capabilityVersion: "openarc.capabilities.m04.v1", environment: "testnet",
     network: ARC_TESTNET.caip2, sourceRevision: ARC_TESTNET.sourceRevision, reviewedAt: ARC_TESTNET.reviewedAt,
     writes: false, enabledConnectors: [], features: { arcObservation: false, agentRegistry: false, agentJobs: false, gatewayEvidence: false },
     limits: { requestBytes: 16_384, responseBytes: 65_536, sourceResponseBytes: 262_144,
@@ -33,7 +33,7 @@ describe("M03 capability API client", () => {
 
   it("requires exact success and fixed error envelopes", async () => {
     for (const value of [{ ...envelope(), extra: true }, { ...envelope(), data: { ...envelope().data, writes: true } },
-      { ...envelope(), data: { ...envelope().data, enabledConnectors: ["arc_rpc"] } }, { private: "PRIVATE_CANARY" }, null]) {
+      { ...envelope(), data: { ...envelope().data, enabledConnectors: ["arc_primary_rpc"] } }, { private: "PRIVATE_CANARY" }, null]) {
       await expect(requestCapabilities(new AbortController().signal, async () => json(value))).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
     }
     const error = { ok: false, error: { code: "FEATURE_DISABLED", message: "This capability is disabled.", retryable: false },

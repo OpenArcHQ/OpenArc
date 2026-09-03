@@ -564,10 +564,27 @@ function assertWorkspaceRelationships(
   const policies = parsedRecords.filter((record) => record.kind === "monitoring_policy");
   const actions = parsedRecords.filter((record) => record.kind === "action_envelope");
   const evidence = parsedRecords.filter((record) => record.kind === "evidence_record");
+  const permissions = parsedRecords.filter((record) => record.kind === "permission_receipt");
+  const observations = parsedRecords.filter((record) => record.kind === "arc_observation");
   requireUnique(agents.map((record) => record.agentId));
   requireUnique(policies.map((record) => record.policy.policyId));
   requireUnique(actions.map((record) => record.action.actionId));
   requireUnique(evidence.map((record) => record.evidence.evidenceId));
+  requireUnique(observations.map((record) => record.permissionReceiptId));
+
+  const permissionById = new Map(permissions.map((record) => [record.recordId, record]));
+  for (const observation of observations) {
+    const permission = permissionById.get(observation.permissionReceiptId);
+    if (!permission || permission.recordSchema !== "openarc.permission-receipt.v2" ||
+      permission.outcome !== "completed") invalidRelationships();
+    if (observation.observation.schemaVersion === "openarc.arc-account-snapshot.v1") {
+      if (permission.connectorId !== "arc_account_snapshot" ||
+        permission.released.address !== observation.observation.address ||
+        permission.released.network !== observation.observation.network) invalidRelationships();
+    } else if (permission.connectorId !== "arc_transaction_evidence" ||
+      permission.released.transactionHash !== observation.observation.transaction.hash ||
+      permission.released.network !== observation.observation.network) invalidRelationships();
+  }
 
   const policyRecordIds = new Set(policies.map((record) => record.recordId));
   const policyIds = new Set(policies.map((record) => record.policy.policyId));

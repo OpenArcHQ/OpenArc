@@ -40,9 +40,19 @@ const EnvironmentSchema = z.object({
   if (config.ABUSE_LIMIT_SECRET && config.ABUSE_LIMIT_SECRET === config.METRICS_TOKEN) {
     context.addIssue({ code: "custom", path: ["ABUSE_LIMIT_SECRET"], message: "Operator secrets must be distinct" });
   }
-  if (config.ARC_OBSERVATION_ENABLED || config.AGENT_REGISTRY_ENABLED ||
-    config.AGENT_JOBS_ENABLED || config.GATEWAY_EVIDENCE_ENABLED) {
-    context.addIssue({ code: "custom", message: "Source adapters are unavailable in M03" });
+  if (config.AGENT_REGISTRY_ENABLED || config.AGENT_JOBS_ENABLED || config.GATEWAY_EVIDENCE_ENABLED) {
+    context.addIssue({ code: "custom", message: "Later source adapters are unavailable in M04" });
+  }
+  if (config.ARC_OBSERVATION_ENABLED) {
+    if (!config.API_BOUNDARY_ENABLED) {
+      context.addIssue({ code: "custom", path: ["API_BOUNDARY_ENABLED"], message: "Arc observation requires the API boundary" });
+    }
+    if (!config.REDIS_URL || !config.ABUSE_LIMIT_SECRET) {
+      context.addIssue({ code: "custom", message: "Arc observation requires Redis and an abuse-limit secret" });
+    }
+    if (config.SOURCE_MAX_SUBCALLS < 5) {
+      context.addIssue({ code: "custom", path: ["SOURCE_MAX_SUBCALLS"], message: "Arc observation requires five bounded source subcalls" });
+    }
   }
 });
 

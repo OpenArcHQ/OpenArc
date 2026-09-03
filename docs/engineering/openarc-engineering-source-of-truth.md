@@ -1,8 +1,8 @@
 # OpenArc engineering source of truth
 
-Status: **normative build specification**  
-Specification version: **0.2.0-draft**  
-Prepared: **2026-08-16; Arc facts re-verified 2026-09-01**  
+Status: **normative build specification**
+Specification version: **0.2.1-draft**
+Prepared: **2026-08-16; Arc facts re-verified 2026-09-03**
 Initial target: **Arc Testnet, read-only, non-custodial**
 
 This is the controlling engineering document for OpenArc. It defines what gets
@@ -652,7 +652,8 @@ Build:
 - exact block anchor and chain-ID verification;
 - native USDC balance and fee normalization;
 - transaction plus receipt validation;
-- native EIP-7708 and ERC-20 transfer classification without double counting;
+- canonical native EIP-7708 movement classification plus ERC-20 corroboration
+  without double counting;
 - user-visible source, freshness, finality, and limitations;
 - explicit refresh only.
 
@@ -663,6 +664,18 @@ Exit gate:
 - wrong chain, mismatched receipt hash/block, malformed logs, and anchor mismatch;
 - outage keeps prior encrypted evidence stale and unchanged;
 - live controlled Testnet wallet proof on an exact deployed SHA.
+
+M04's frozen source rule follows the current Arc `USDC system events`
+reference. The system emitter at
+`0xfffffffffffffffffffffffffffffffffffffffe` emits an 18-decimal `Transfer`
+for every USDC balance movement, including movements initiated through the
+ERC-20 interface. The ERC-20 contract at
+`0x3600000000000000000000000000000000000000` additionally emits its ordinary
+6-decimal `Transfer` for ERC-20 calls. OpenArc therefore treats the system event
+as the one canonical movement and, when an exact scaled address/amount match is
+present, records the ERC-20 event only as corroboration. An unmatched ERC-20
+USDC transfer is a source conflict; equal amounts, token symbols, or adjacency
+alone are never deduplication rules.
 
 ### Milestone 05 - ERC-8004 agent evidence
 

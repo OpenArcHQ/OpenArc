@@ -3,7 +3,7 @@ import { ApiErrorCodeSchema, BuildMarkerSchema, type ApiErrorCode } from "@opena
 
 import { SOURCE_CLASSES, type BudgetEvent, type SourceClass } from "../limits/budget.js";
 
-export const ROUTE_CLASSES = ["health", "readiness", "capabilities", "metrics", "disabled_source", "not_found", "test_source"] as const;
+export const ROUTE_CLASSES = ["health", "readiness", "capabilities", "metrics", "arc_account", "arc_transaction", "disabled_source", "not_found", "test_source"] as const;
 export type RouteClass = typeof ROUTE_CLASSES[number];
 export type SafeMethod = "GET" | "POST" | "OPTIONS" | "HEAD" | "OTHER";
 
@@ -45,7 +45,7 @@ export class AggregateMetrics {
     const key = `source="${source}",event="${event}"`;
     this.sourceCounts.set(key, Math.min(Number.MAX_SAFE_INTEGER, (this.sourceCounts.get(key) ?? 0) + 1));
   }
-  render(commitSha: string): string {
+  render(commitSha: string, sourceRoutesEnabled = false): string {
     const marker = BuildMarkerSchema.safeParse(commitSha);
     if (!marker.success) throw new Error("Invalid metrics build marker");
     const lines = ["# TYPE openarc_http_requests_total counter",
@@ -55,8 +55,8 @@ export class AggregateMetrics {
       "# TYPE openarc_source_events_total counter",
       ...[...this.sourceCounts].sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => `openarc_source_events_total{${key}} ${value}`),
       "# TYPE openarc_build_info gauge", `openarc_build_info{sha="${commitSha}"} 1`,
-      "# TYPE openarc_source_routes_enabled gauge", "openarc_source_routes_enabled 0",
-      "# TYPE openarc_redis_required gauge", "openarc_redis_required 0"];
+      "# TYPE openarc_source_routes_enabled gauge", `openarc_source_routes_enabled ${sourceRoutesEnabled ? 1 : 0}`,
+      "# TYPE openarc_redis_required gauge", `openarc_redis_required ${sourceRoutesEnabled ? 1 : 0}`];
     return `${lines.join("\n")}\n`;
   }
 }

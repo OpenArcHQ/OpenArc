@@ -2,7 +2,7 @@
 
 Status: **proposed Arc Testnet architecture**  
 Specification version: **0.3-draft**  
-Research verified: **2026-09-01**  
+Research verified: **2026-09-03**
 Target: **a read-only, locally private evidence and investigation product**
 
 This document turns the OpenArc product idea into a buildable technical plan. It
@@ -64,6 +64,7 @@ documentation and are valid only for Arc Testnet at the reviewed date.
 | Execution | EVM, current Arc reference says Osaka baseline | Use standard JSON-RPC plus Arc-specific normalization. |
 | Gas asset | USDC | Never label fees or native balance as ETH. |
 | USDC ERC-20 interface | `0x3600000000000000000000000000000000000000` | Pin exact address and six-decimal ERC-20 interpretation. |
+| EIP-7708 system emitter | `0xfffffffffffffffffffffffffffffffffffffffe` | Canonical 18-decimal movement stream; never add a matching ERC-20 event as another movement. |
 | Native USDC precision | 18 decimals internally | Keep raw values as integers or exact decimal strings. |
 | ERC-20 USDC precision | 6 decimals | Never compare raw native and ERC-20 values without conversion. |
 | Gateway domain | `26` | Do not confuse with EVM chain ID. |
@@ -76,9 +77,11 @@ documentation and are valid only for Arc Testnet at the reviewed date.
   balance. They are not separate assets.
 - Native movements use 18-decimal accounting while the ERC-20 interface uses 6
   decimals. The ERC-20 view can truncate sub-micro-USDC native precision.
-- Arc emits EIP-7708-style `Transfer` logs for native USDC movements from a
-  system emitter. Indexers must identify the emitter and avoid double counting
-  native and ERC-20 representations.
+- Arc's current EIP-7708 system emitter produces an 18-decimal `Transfer` for
+  every USDC balance movement, including an ERC-20-initiated transfer. The
+  ERC-20 contract also emits its ordinary 6-decimal event for ERC-20 calls.
+  Indexers must use the emitter and exact `10^12` scaling rule to avoid counting
+  the same balance movement twice.
 - Blocks are deterministically final when committed. One confirmation is the
   current integration rule, but the observed block hash and number still remain
   in every evidence record.
@@ -101,12 +104,12 @@ post-quantum wallet signatures, and other privacy modules as roadmap or mainnet
 features. They are not available OpenArc MVP dependencies. The first architecture
 must remain safe on a public transparent testnet.
 
-Arc announced that public mainnet is scheduled for September 16, 2026 and that
-the network was operating as private mainnet at the reviewed date. Official
-public-mainnet RPC parameters and contract addresses were not yet published in
-the Arc network reference. Testnet values must not be copied forward. A separate
-signed configuration release is required after those values exist and the
-mainnet capability set has been re-verified.
+The official deployment model reviewed on 2026-09-03 identifies Public Testnet
+as the current active network and both Private Mainnet and Public Mainnet as
+upcoming. Official mainnet RPC parameters and contract addresses were not
+published in the network reference. Testnet values must not be copied forward.
+A separate signed configuration release is required after those values exist
+and the mainnet capability set has been re-verified.
 
 ## 3. Confirmed agentic and payment surfaces
 

@@ -1268,6 +1268,79 @@ footer code {
   overflow-wrap: anywhere;
 }
 
+.activity-controls .workspace-form {
+  max-width: 760px;
+}
+
+.activity-list .activity-card {
+  grid-template-columns: minmax(220px, 0.8fr) minmax(340px, 1.2fr);
+}
+
+.activity-card .source-facts {
+  margin: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.activity-card details {
+  min-width: 0;
+  padding: 14px 0;
+  color: #bdc9d9;
+  border-top: 1px solid #40506a;
+}
+
+.activity-card summary {
+  min-height: 44px;
+  color: #9dccff;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 740;
+  line-height: 44px;
+}
+
+.movement-list {
+  display: grid;
+  gap: 10px;
+  padding-left: 22px;
+}
+
+.movement-list li {
+  padding: 12px;
+  background: #0d1625;
+  border-left: 3px solid #78b9ff;
+}
+
+.movement-list strong,
+.movement-list span {
+  display: block;
+}
+
+.movement-list span {
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+  font-size: 0.74rem;
+  line-height: 1.5;
+}
+
+.activity-card > button {
+  min-height: 44px;
+  padding: 10px 14px;
+  align-self: end;
+  justify-self: end;
+  color: #fff;
+  background: #1555b7;
+  border: 1px solid #77b6ff;
+  border-radius: 3px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 740;
+}
+
+.activity-card > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .workspace-callouts button,
 .fixture-import-grid button,
 .settings-grid article > button,
@@ -1842,8 +1915,13 @@ footer code {
 
   .workspace-section-heading,
   .workspace-list > article,
-  .workspace-list.compact > article {
+  .workspace-list.compact > article,
+  .activity-list .activity-card {
     grid-template-columns: 1fr;
+  }
+
+  .activity-card > button {
+    justify-self: start;
   }
 
   .workspace-stat-grid,
@@ -1929,7 +2007,8 @@ footer code {
   .workspace-callouts,
   .fixture-import-grid,
   .settings-grid,
-  .workspace-list dl {
+  .workspace-list dl,
+  .activity-card .source-facts {
     grid-template-columns: 1fr;
   }
 

@@ -1,7 +1,15 @@
 import {
   M01_FIXTURES,
+  ARC_ACCOUNT_SNAPSHOT_PATH,
+  ARC_OBSERVATION_DISCLOSURE,
+  ARC_TESTNET,
+  ARC_TRANSACTION_EVIDENCE_PATH,
+  ArcAccountSnapshotRequestSchema,
+  ArcTransactionEvidenceRequestSchema,
   CAPABILITIES_PATH,
   CAPABILITY_DISCLOSURE,
+  type ArcObservationRecord,
+  type ArcObservationPermissionReceiptRecord,
   type CapabilitiesEnvelope,
   type AgentProfileRecord,
   type MonitoringPolicyRecord,
@@ -20,8 +28,15 @@ import { createPortal } from "react-dom";
 
 import type { BuildInfo } from "@openarc/shared";
 
-import { apiBoundaryEnabled } from "../app/availability.js";
+import { apiBoundaryEnabled, arcObservationEnabled } from "../app/availability.js";
+import { requestArcAccountSnapshot, requestArcTransactionEvidence } from "../api/arc-observation.js";
+import {
+  ArcObservationFinalizationError,
+  runArcObservationPermissionFlow,
+  type ArcObservationInput,
+} from "../api/arc-permission-flow.js";
 import { CapabilityRequestError, requestCapabilities } from "../api/capabilities.js";
+import { OpenArcRequestError } from "../api/client.js";
 import { PermissionFinalizationError, runCapabilityPermissionFlow } from "../api/permission-flow.js";
 
 import {
@@ -61,7 +76,7 @@ import type {
   VaultStorageStatus,
 } from "./types.js";
 
-type WorkspaceView = "overview" | "agents" | "policies" | "evidence" | "settings" | "sources";
+type WorkspaceView = "overview" | "agents" | "activity" | "policies" | "evidence" | "settings" | "sources";
 type Screen =
   | { phase: "probing" }
   | { phase: "unsupported" }
@@ -87,9 +102,11 @@ type SessionGuard = {
 
 const INACTIVITY_MS = 10 * 60 * 1_000;
 const API_BOUNDARY_ENABLED = apiBoundaryEnabled();
+const ARC_OBSERVATION_ENABLED = API_BOUNDARY_ENABLED && arcObservationEnabled();
 const VIEWS: readonly { id: WorkspaceView; label: string; note: string }[] = [
   { id: "overview", label: "Overview", note: "Local workspace status" },
   { id: "agents", label: "Agents", note: "Owner-supplied profiles" },
+  ...(ARC_OBSERVATION_ENABLED ? [{ id: "activity" as const, label: "Activity", note: "Explicit Arc observations" }] : []),
   { id: "policies", label: "Policies", note: "Local monitoring rules" },
   { id: "evidence", label: "Evidence", note: "Encrypted fixture records" },
   { id: "settings", label: "Settings", note: "Backup, recovery, delete" },
@@ -810,7 +827,9 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
         } });
       guard.assertActive();
       setBusy(false);
-      setNotice("Capability check completed. OpenArc reported no enabled source connectors in this M03 build.");
+      setNotice(result.capabilities.data.features.arcObservation
+        ? "Capability check completed. The Arc read-only observation connector is enabled in this build."
+        : "Capability check completed. Live Arc observation remains disabled in this build.");
       return result.capabilities;
     } catch (cause) {
       if (!guard.isActive()) return null;
@@ -827,6 +846,60 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
           ? "The capability request was not sent. Its encrypted approval remains in the permission history."
           : "The capability request may have reached OpenArc, but no valid result was accepted. Review the encrypted permission history."
         : vaultErrorMessage(cause));
+      return null;
+    }
+  };
+
+  const observeArc = async (input: ArcObservationInput): Promise<ArcObservationRecord | null> => {
+    const current = unlockedRef.current;
+    if (!current || !ARC_OBSERVATION_ENABLED) return null;
+    const guard = createSessionGuard();
+    let expected = current;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await runArcObservationPermissionFlow({ workspace: current,
+        origin: window.location.origin, input, signal: guard.signal,
+        assertActive: () => {
+          guard.assertActive();
+          if (unlockedRef.current !== expected) throw new Error("Vault session changed");
+        },
+        save: async (workspace, records, assertActive, signal) => {
+          const saved = await saveWorkspaceRecords(workspace, records, assertActive, signal);
+          assertActive();
+          expected = saved;
+          unlockedRef.current = saved;
+          deadlineRef.current = Date.now() + INACTIVITY_MS;
+          setScreen({ phase: "unlocked", workspace: saved });
+          broadcast("changed", saved.meta.vaultId);
+          return saved;
+        },
+        request: (requestInput, signal) => requestInput.kind === "account"
+          ? requestArcAccountSnapshot(requestInput.request, signal)
+          : requestArcTransactionEvidence(requestInput.request, signal),
+      });
+      guard.assertActive();
+      setBusy(false);
+      setNotice(input.kind === "account"
+        ? "Arc account snapshot validated and encrypted locally. Nothing was signed or broadcast."
+        : "Arc transaction evidence validated and encrypted locally. Matching ERC-20 logs were not double-counted.");
+      return result.observation;
+    } catch (cause) {
+      if (!guard.isActive()) return null;
+      const storageBoundary = cause instanceof ArcObservationFinalizationError ? cause.storageCause : cause;
+      if (await handleObservedVaultBoundary(storageBoundary, guard.isActive)) return null;
+      if (!guard.isActive()) return null;
+      setBusy(false);
+      setError(cause instanceof ArcObservationFinalizationError
+        ? cause.phase === "completed-request"
+          ? "The public identifier reached OpenArc and a result was accepted, but the result could not be saved. The encrypted approval remains; prior evidence was not changed."
+          : "The public identifier may have reached OpenArc, but the failed outcome could not be saved. The encrypted approval remains; prior evidence was not changed."
+        : cause instanceof OpenArcRequestError
+          ? cause.phase === "pre-send"
+            ? "The Arc request was not sent. Check the public identifier and try again."
+            : `No new Arc evidence was accepted (${cause.code}). Prior encrypted evidence remains unchanged and should be treated as stale.`
+          : vaultErrorMessage(cause));
       return null;
     }
   };
@@ -1045,6 +1118,7 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
           onSave={saveRecords}
           onDelete={deleteRecords}
           onCheckCapabilities={checkCapabilities}
+          onObserveArc={observeArc}
           onImport={importBackup}
           onAcceptCreated={acceptCreated}
           onDestroy={destroy}
@@ -1178,6 +1252,7 @@ function WorkspaceViewPanel(props: {
   onSave: (records: readonly WorkspaceRecord[], message: string) => Promise<boolean>;
   onDelete: (ids: readonly string[], message: string) => Promise<boolean>;
   onCheckCapabilities: () => Promise<CapabilitiesEnvelope | null>;
+  onObserveArc: (input: ArcObservationInput) => Promise<ArcObservationRecord | null>;
   onImport: (file: File, backupPassphrase: string, nextPassphrase: string) => Promise<void>;
   onAcceptCreated: (created: CreatedWorkspace, message: string) => void;
   onDestroy: () => Promise<void>;
@@ -1192,6 +1267,7 @@ function WorkspaceViewPanel(props: {
 }) {
   if (props.view === "overview") return <Overview records={props.workspace.records} onNavigate={navigateFromPanel} onOpenTour={props.onOpenTour} />;
   if (props.view === "agents") return <AgentsPanel {...props} />;
+  if (props.view === "activity") return <ActivityPanel {...props} />;
   if (props.view === "policies") return <PoliciesPanel {...props} />;
   if (props.view === "evidence") return <EvidencePanel {...props} />;
   if (props.view === "sources") return <SourcesPanel {...props} />;
@@ -1215,13 +1291,15 @@ function Overview({ records, onNavigate, onOpenTour }: { records: readonly Works
         <Stat value={counts.policies} label="Monitoring policies" />
         <Stat value={counts.actions} label="Action envelopes" />
         <Stat value={counts.evidence} label="Evidence records" />
+        {ARC_OBSERVATION_ENABLED ? <Stat value={counts.observations} label="Arc observations" /> : null}
       </div>
       <div className="workspace-callouts">
         <article><span>01</span><h3>Describe an agent</h3><p>Add only what you know and label wallet associations as owner-supplied.</p><button type="button" onClick={() => onNavigate("agents")}>Open Agents →</button></article>
         <article><span>02</span><h3>Define a local rule</h3><p>Record a monitoring boundary. OpenArc does not enforce or execute it in M02.</p><button type="button" onClick={() => onNavigate("policies")}>Open Policies →</button></article>
         <article><span>03</span><h3>Inspect evidence</h3><p>Copy one of the six synthetic M01 cases into your encrypted workspace.</p><button type="button" onClick={() => onNavigate("evidence")}>Open Evidence →</button></article>
+        {ARC_OBSERVATION_ENABLED ? <article><span>04</span><h3>Observe Arc explicitly</h3><p>Review exactly what is released, then read one public address or transaction at an exact final block.</p><button type="button" onClick={() => onNavigate("activity")}>Open Activity →</button></article> : null}
       </div>
-      <div className="privacy-strip"><strong>Nothing on this page calls the network.</strong><span>Reload starts locked. Hidden pages lock immediately. Backups use a separate password.</span></div>
+      <div className="privacy-strip"><strong>Nothing refreshes automatically.</strong><span>Only an approved Activity or Sources action may call the network. Reload starts locked.</span></div>
     </section>
   );
 }
@@ -1302,6 +1380,157 @@ function EvidencePanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "wo
   );
 }
 
+function ActivityPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "workspace" | "busy" | "onObserveArc" | "onOpenTour">) {
+  const [kind, setKind] = useState<"account" | "transaction">("account");
+  const [identifier, setIdentifier] = useState("");
+  const [pending, setPending] = useState<ArcObservationInput | null>(null);
+  const [validation, setValidation] = useState<string | null>(null);
+  const observations = props.workspace.records
+    .filter((record): record is ArcObservationRecord => record.kind === "arc_observation")
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const failedReceipts = props.workspace.records
+    .filter((record): record is ArcObservationPermissionReceiptRecord =>
+      record.kind === "permission_receipt" &&
+      record.recordSchema === "openarc.permission-receipt.v2" && record.outcome === "failed");
+
+  const review = (nextKind: "account" | "transaction", value: string) => {
+    const parsed = nextKind === "account"
+      ? ArcAccountSnapshotRequestSchema.safeParse({ network: ARC_TESTNET.caip2, address: value.trim() })
+      : ArcTransactionEvidenceRequestSchema.safeParse({ network: ARC_TESTNET.caip2, transactionHash: value.trim() });
+    if (!parsed.success) {
+      setValidation(nextKind === "account"
+        ? "Enter one complete 0x-prefixed Arc address (40 hexadecimal characters)."
+        : "Enter one complete 0x-prefixed transaction hash (64 hexadecimal characters).");
+      return;
+    }
+    setValidation(null);
+    setPending({ kind: nextKind, request: parsed.data } as ArcObservationInput);
+  };
+  const approve = async () => {
+    if (!pending) return;
+    const accepted = await props.onObserveArc(pending);
+    setPending(null);
+    if (accepted) {
+      setIdentifier("");
+    }
+  };
+  return (
+    <section className="workspace-section" aria-labelledby="activity-title">
+      <SectionHeading eyebrow="EXPLICIT · READ ONLY · ARC TESTNET" title="Activity" id="activity-title" onLearn={props.onOpenTour}>
+        Observe one public address or transaction at a time. OpenArc saves an encrypted permission receipt before contact, pins the exact final block, and never signs or broadcasts.
+      </SectionHeading>
+      <div className="settings-grid sources-grid activity-controls">
+        <article className="settings-wide">
+          <div className="access-mode-tabs" role="group" aria-label="Arc observation type">
+            <button type="button" aria-pressed={kind === "account"} onClick={() => { setKind("account"); setValidation(null); }}>Account snapshot</button>
+            <button type="button" aria-pressed={kind === "transaction"} onClick={() => { setKind("transaction"); setValidation(null); }}>Transaction evidence</button>
+          </div>
+          <form className="workspace-form" onSubmit={(event) => { event.preventDefault(); review(kind, identifier); }}>
+            <Field label={kind === "account" ? "Public Arc Testnet address" : "Public Arc Testnet transaction hash"}
+              hint="Only this public identifier and the fixed network ID will leave the browser after approval.">
+              <input required spellCheck={false} autoComplete="off" value={identifier}
+                placeholder={kind === "account" ? "0x…40 hex characters" : "0x…64 hex characters"}
+                onChange={(event) => { setIdentifier(event.target.value); setValidation(null); }} />
+            </Field>
+            {validation ? <DialogValidationError message={validation} /> : null}
+            <button className="button" disabled={props.busy}>Review permission</button>
+          </form>
+        </article>
+        <article>
+          <h3>What is proven</h3>
+          <p>Chain ID, exact block number/hash/time, deterministic finality, native USDC precision, and—when requested—receipt status, fee, and canonical USDC movements.</p>
+        </article>
+        <article>
+          <h3>What is not proven</h3>
+          <p>A wallet is not automatically an agent. A transaction does not prove intent, authorization, fulfillment, service quality, or ownership.</p>
+        </article>
+      </div>
+      <div className="workspace-list activity-list">
+        {observations.length === 0 ? <EmptyState title="No Arc observations yet"
+          body="Choose one public identifier above. Nothing refreshes automatically." /> : observations.map((record) => {
+          const observation = record.observation;
+          const accountObservation = observation.schemaVersion === "openarc.arc-account-snapshot.v1";
+          const connector = accountObservation ? "arc_account_snapshot" : "arc_transaction_evidence";
+          const subject = observation.schemaVersion === "openarc.arc-account-snapshot.v1"
+            ? observation.address
+            : observation.transaction.hash;
+          const failedAfter = failedReceipts.some((receipt) => {
+            if (receipt.connectorId !== connector || receipt.approvedAt < record.updatedAt) return false;
+            return observation.schemaVersion === "openarc.arc-account-snapshot.v1"
+              ? receipt.connectorId === "arc_account_snapshot" && receipt.released.address === subject
+              : receipt.connectorId === "arc_transaction_evidence" && receipt.released.transactionHash === subject;
+          });
+          const freshness = observationFreshness(record, failedAfter);
+          const explorerPath = accountObservation ? `/address/${subject}` : `/tx/${subject}`;
+          return <article key={record.recordId} className="activity-card">
+            <div>
+              <p className="eyebrow">{accountObservation ? "ACCOUNT SNAPSHOT" : "TRANSACTION EVIDENCE"}</p>
+              <h3>{freshness}</h3>
+              <ExactIdentifier label={accountObservation ? "Address" : "Transaction"} value={subject} />
+            </div>
+            <dl className="source-facts">
+              <div><dt>Observed</dt><dd><time dateTime={observation.source.observedAt}>{observation.source.observedAt}</time></dd></div>
+              <div><dt>Block</dt><dd>{observation.anchor.blockNumber}</dd></div>
+              <div><dt>Block hash</dt><dd><code>{observation.anchor.blockHash}</code></dd></div>
+              <div><dt>Finality</dt><dd>Deterministic · 1 inclusion</dd></div>
+              {observation.schemaVersion === "openarc.arc-account-snapshot.v1" ? <>
+                <div><dt>Native USDC</dt><dd>{observation.nativeUsdc.amount.decimal} USDC</dd></div>
+                <div><dt>ERC-20 view</dt><dd>{observation.erc20UsdcView.amount.decimal} USDC · 6 decimals, truncating</dd></div>
+              </> : <>
+                <div><dt>Receipt</dt><dd>{observation.receipt.status}</dd></div>
+                <div><dt>Fee</dt><dd>{observation.receipt.fee.decimal} USDC</dd></div>
+                <div><dt>Canonical movements</dt><dd>{observation.coverage.canonicalMovements} ({observation.coverage.corroboratedMovements} ERC-20 corroborated)</dd></div>
+              </>}
+              <div><dt>Source</dt><dd><a href={`${ARC_TESTNET.explorerOrigin}${explorerPath}`} target="_blank" rel="noreferrer">Verify in Arc explorer ↗</a></dd></div>
+            </dl>
+            <details><summary>Limitations and source details</summary>
+              <p><code>{observation.source.origin}</code> · adapter {observation.source.adapterVersion}</p>
+              {observation.schemaVersion === "openarc.arc-transaction-evidence.v1" && observation.movements.length > 0
+                ? <ol className="movement-list">{observation.movements.map((movement) =>
+                  <li key={movement.logIndex}>
+                    <strong>{movement.amount.decimal} USDC</strong>
+                    <span>Canonical system log {movement.logIndex}: <code>{movement.from}</code> → <code>{movement.to}</code></span>
+                    <span>{movement.erc20Corroboration
+                      ? `ERC-20 log ${movement.erc20Corroboration.logIndex} corroborates this movement; it is not counted twice.`
+                      : "No matching ERC-20 corroboration was present; the system event remains canonical."}</span>
+                  </li>)}</ol>
+                : null}
+              <ul>{observation.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul>
+            </details>
+            <button type="button" disabled={props.busy} onClick={() => review(accountObservation ? "account" : "transaction", subject)}>Review permission to refresh</button>
+          </article>;
+        })}
+      </div>
+      {pending ? <Modal title={pending.kind === "account" ? "Allow this account observation?" : "Allow this transaction observation?"}
+        onClose={() => setPending(null)}>
+        <p>{pending.kind === "account"
+          ? "Observe one public Arc Testnet address at one exact final block."
+          : "Observe one public Arc Testnet transaction, receipt, anchor, fee, and USDC movement set."}</p>
+        <dl className="permission-disclosure">
+          <div><dt>OpenArc request</dt><dd><code>POST {pending.kind === "account" ? ARC_ACCOUNT_SNAPSHOT_PATH : ARC_TRANSACTION_EVIDENCE_PATH}</code></dd></div>
+          <div><dt>Upstream source</dt><dd><code>{ARC_TESTNET.rpcHttp}</code></dd></div>
+          <div><dt>Released fields</dt><dd><code>{ARC_TESTNET.caip2}</code> and <code>{pending.kind === "account" ? pending.request.address : pending.request.transactionHash}</code></dd></div>
+          <div><dt>Credentials</dt><dd>Omitted; no cookies, wallet connection, private key, or account token</dd></div>
+          <div><dt>OpenArc retention</dt><dd>{ARC_OBSERVATION_DISCLOSURE.openArcRetention}</dd></div>
+          <div><dt>Provider handling</dt><dd>{ARC_OBSERVATION_DISCLOSURE.providerRetention}</dd></div>
+          <div><dt>Network metadata</dt><dd>{ARC_OBSERVATION_DISCLOSURE.hostingMetadata}</dd></div>
+        </dl>
+        <p>The approval is encrypted first. If that save fails, no request is sent. A failed refresh never replaces prior evidence.</p>
+        <div className="modal-actions"><button type="button" onClick={() => setPending(null)}>Cancel</button>
+          <button className="button" type="button" disabled={props.busy} onClick={() => void approve()}>Approve and observe</button></div>
+      </Modal> : null}
+    </section>
+  );
+}
+
+function observationFreshness(record: ArcObservationRecord, failedAfter: boolean): string {
+  if (failedAfter) return "STALE · LAST REFRESH FAILED";
+  const age = Date.now() - Date.parse(record.observation.source.observedAt);
+  if (!Number.isFinite(age) || age > 60 * 60 * 1_000) return "STALE · SAVED EVIDENCE";
+  if (age > 5 * 60 * 1_000) return "AGING · SAVED EVIDENCE";
+  return "FRESH · SAVED EVIDENCE";
+}
+
 function SourcesPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "workspace" | "busy" | "onCheckCapabilities" | "onOpenTour">) {
   const [confirming, setConfirming] = useState(false);
   const [capabilities, setCapabilities] = useState<CapabilitiesEnvelope | null>(null);
@@ -1326,7 +1555,7 @@ function SourcesPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "wor
           <button className="button" type="button" disabled={props.busy} onClick={() => setConfirming(true)}>Review permission and check</button>
         </article>
         <article>
-          <h3>Latest accepted result</h3>
+          <h3>Latest accepted capability result</h3>
           {capabilities ? <dl className="source-facts">
             <div><dt>Network</dt><dd>{capabilities.data.network}</dd></div>
             <div><dt>Writes</dt><dd>{capabilities.data.writes ? "Enabled" : "Disabled"}</dd></div>
@@ -1514,9 +1743,9 @@ function TourDialog({ onClose, returnFocus }: { onClose: () => void; returnFocus
   const [step, setStep] = useState(0);
   const steps = [
     ["What OpenArc can prove", "OpenArc can reconcile cited evidence and expose agreement, conflict, or missing facts. An owner label, attempted action, or fixture is never treated as proof of identity or settlement."],
-    ["Where private data lives", "Your browser encrypts every workspace record before IndexedDB persistence. M02 has no network path, and reload always begins locked."],
+    ["Where private data lives", "Your browser encrypts every workspace record before IndexedDB persistence. The API retains no request or response body, and reload always begins locked."],
     ["Add an agent wallet label", "Use Agents to attach an owner-supplied Arc Testnet address and optional context. The label organizes local records; it does not authenticate ownership."],
-    ["Permission before any future refresh", "This milestone never refreshes live sources. A later network-enabled milestone must show exactly what will leave the browser and obtain explicit permission first."],
+    ["Permission before every refresh", "Activity shows the exact OpenArc route, Arc RPC upstream, and public identifier before contact. The encrypted approval must save first, and nothing refreshes on unlock, navigation, focus, or a timer."],
     ["Read evidence and incomplete states", "Intent, attempt, authorization, fulfillment, settlement, and refund stay distinct. Missing or conflicting evidence remains visible instead of being guessed away."],
     ["Lock, export, recover, and delete", "Lock clears decrypted UI state. Backups use a separate password, recovery rotates local wrappers, and Settings can permanently delete this origin-bound workspace."],
   ] as const;
@@ -1610,6 +1839,7 @@ function recordCounts(records: readonly WorkspaceRecord[]) {
     policies: records.filter((record) => record.kind === "monitoring_policy").length,
     actions: records.filter((record) => record.kind === "action_envelope").length,
     evidence: records.filter((record) => record.kind === "evidence_record").length,
+    observations: records.filter((record) => record.kind === "arc_observation").length,
   };
 }
 

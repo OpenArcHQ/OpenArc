@@ -1,11 +1,33 @@
 import { createApp } from "./app.js";
+import { ArcAccountService } from "./arc/account-service.js";
+import { ArcRpcClient } from "./arc/rpc-client.js";
+import { ArcTransactionService } from "./arc/transaction-service.js";
 import { loadConfig } from "./config.js";
+import { connectBudgetRedis, SourceBudget } from "./limits/budget.js";
+import { AggregateMetrics } from "./ops/metrics.js";
+import { BoundedProviderClient } from "./providers/http.js";
 
 async function start(): Promise<void> {
   const config = loadConfig();
-  const app = createApp({ config });
+  const metrics = new AggregateMetrics();
+  const redis = config.ARC_OBSERVATION_ENABLED && config.REDIS_URL ? await connectBudgetRedis(config.REDIS_URL) : undefined;
+  const sourceBudget = redis && config.ABUSE_LIMIT_SECRET ? new SourceBudget(redis, {
+    secret: config.ABUSE_LIMIT_SECRET,
+    requestsPerPeerHour: config.REQUESTS_PER_IP_HOUR,
+    globalUnitsPerDay: config.GLOBAL_SOURCE_UNITS_PER_DAY,
+    maxSubcalls: config.SOURCE_MAX_SUBCALLS,
+    observe: (source, event) => metrics.recordBudget(source, event),
+  }) : undefined;
+  const rpc = config.ARC_OBSERVATION_ENABLED ? new ArcRpcClient(new BoundedProviderClient({
+    timeoutMs: config.SOURCE_TIMEOUT_MS,
+    maxResponseBytes: config.SOURCE_MAX_RESPONSE_BYTES,
+  })) : undefined;
+  const app = createApp({ config, metrics,
+    ...(sourceBudget ? { sourceBudget } : {}),
+    ...(rpc ? { arcAccountService: new ArcAccountService(rpc), arcTransactionService: new ArcTransactionService(rpc) } : {}) });
   const shutdown = async (): Promise<void> => {
     await app.close();
+    if (redis?.isOpen) redis.destroy();
     process.exit(0);
   };
   process.once("SIGINT", () => void shutdown());

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { apiBoundaryEnabled, encryptedWorkspaceEnabled } from "../src/app/availability.js";
+import { apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled } from "../src/app/availability.js";
 
 describe("encrypted workspace availability", () => {
   it("fails closed unless the build flag is exactly true", () => {
@@ -18,5 +18,13 @@ describe("API boundary availability", () => {
     for (const value of [undefined, "false", "TRUE", "1", false]) expect(apiBoundaryEnabled(value)).toBe(false);
     expect(apiBoundaryEnabled("true")).toBe(true);
     expect(apiBoundaryEnabled(true)).toBe(true);
+  });
+});
+
+describe("Arc observation availability", () => {
+  it("fails closed unless the build flag is exactly true", () => {
+    for (const value of [undefined, "false", "TRUE", "1", false]) expect(arcObservationEnabled(value)).toBe(false);
+    expect(arcObservationEnabled("true")).toBe(true);
+    expect(arcObservationEnabled(true)).toBe(true);
   });
 });

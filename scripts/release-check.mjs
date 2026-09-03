@@ -176,6 +176,54 @@ for (const forbiddenToken of ["rejectUnauthorized: false", "credentials: \"inclu
   if (m03Runtime.includes(forbiddenToken)) failures.push(`M03 privacy boundary contains forbidden behavior: ${forbiddenToken}`);
 }
 
+const m04Files = [
+  "docs/releases/04-arc-observation.md",
+  "packages/shared/src/arc-observation.ts",
+  "packages/shared/test/arc-observation.test.ts",
+  "packages/shared/test/permission.test.ts",
+  "apps/api/src/arc/rpc-client.ts",
+  "apps/api/src/arc/validation.ts",
+  "apps/api/src/arc/account-service.ts",
+  "apps/api/src/arc/transaction-service.ts",
+  "apps/api/test/arc-observation.test.ts",
+  "apps/api/test/arc-routes.test.ts",
+  "apps/web/src/api/client.ts",
+  "apps/web/src/api/arc-observation.ts",
+  "apps/web/src/api/arc-permission-flow.ts",
+  "apps/web/test/arc-client.test.ts",
+  "apps/web/test/arc-observation-flow.test.ts",
+  "e2e-arc-observation/observation.spec.ts",
+  "playwright.arc-observation.config.ts",
+  "playwright.arc-observation.production.config.ts",
+  "scripts/arc-rpc-fixture.mjs",
+];
+const m04Sources = new Map();
+for (const required of m04Files) {
+  try {
+    m04Sources.set(required, await readFile(path.join(root, required), "utf8"));
+  } catch {
+    failures.push(`Missing required M04 file: ${required}`);
+  }
+}
+const m04Runtime = [...m04Sources]
+  .filter(([file]) => !file.includes("test/") && !file.startsWith("docs/"))
+  .map(([, source]) => source).join("\n");
+for (const requiredToken of [
+  "openarc.arc-account-snapshot.v1", "openarc.arc-transaction-evidence.v1",
+  "openarc.permission-receipt.v2", "openarc.arc-observation-record.v1",
+  "arc_primary_rpc", "canonical_eip7708_usdc", "same_underlying_balance",
+  "SOURCE_WRONG_NETWORK", "SOURCE_CONFLICT", "credentials: \"omit\"",
+  "redirect: \"error\"", "cache: \"no-store\"", "referrerPolicy: \"no-referrer\"",
+]) {
+  if (!m04Runtime.includes(requiredToken)) failures.push(`M04 Arc observation contract is missing ${requiredToken}`);
+}
+for (const forbiddenToken of [
+  "sendTransaction", "broadcastTransaction", "window.ethereum", "setInterval(",
+  "credentials: \"include\"", "redirect: \"follow\"", "rejectUnauthorized: false",
+]) {
+  if (m04Runtime.includes(forbiddenToken)) failures.push(`M04 Arc observation runtime contains forbidden behavior: ${forbiddenToken}`);
+}
+
 const envExample = await readFile(path.join(root, ".env.example"), "utf8");
 const dockerignoreSource = await readFile(path.join(root, ".dockerignore"), "utf8");
 const webDockerfile = await readFile(path.join(root, "apps/web/Dockerfile"), "utf8");
@@ -185,6 +233,9 @@ if (!envExample.includes("VITE_ENCRYPTED_WORKSPACE_ENABLED=false")) {
 for (const featureFlag of ["API_BOUNDARY_ENABLED=false", "VITE_API_BOUNDARY_ENABLED=false"]) {
   if (!envExample.includes(featureFlag)) failures.push(`M03 feature flag must default false: ${featureFlag}`);
 }
+for (const featureFlag of ["ARC_OBSERVATION_ENABLED=false", "VITE_ARC_OBSERVATION_ENABLED=false"]) {
+  if (!envExample.includes(featureFlag)) failures.push(`M04 feature flag must default false: ${featureFlag}`);
+}
 if (!dockerignoreSource.includes("!.env.example")) {
   failures.push("The clean-room release image must include .env.example for release:check");
 }
@@ -193,6 +244,9 @@ if (!webDockerfile.includes("ARG VITE_ENCRYPTED_WORKSPACE_ENABLED=false")) {
 }
 if (!webDockerfile.includes("ARG VITE_API_BOUNDARY_ENABLED=false")) {
   failures.push("M03 API boundary must default to false in the web image");
+}
+if (!webDockerfile.includes("ARG VITE_ARC_OBSERVATION_ENABLED=false")) {
+  failures.push("M04 Arc observation must default to false in the web image");
 }
 
 const nginxSource = await readFile(path.join(root, "apps/web/nginx.conf"), "utf8");
@@ -208,6 +262,12 @@ if (!packageSource.includes("playwright test -c playwright.flag-off.config.ts"))
 }
 if (!packageSource.includes("playwright test -c playwright.production.config.ts")) {
   failures.push("M02 browser gate must define an exact production-artifact check");
+}
+if (!packageSource.includes("playwright test -c playwright.arc-observation.config.ts")) {
+  failures.push("M04 browser gate must exercise explicit Arc observation journeys");
+}
+if (!packageSource.includes("playwright test -c playwright.arc-observation.production.config.ts")) {
+  failures.push("M04 browser gate must define an exact production-source image journey");
 }
 const m02WorkflowSource = await readFile(path.join(root, ".github/workflows/release-gates.yml"), "utf8");
 for (const requiredToken of [
@@ -232,6 +292,16 @@ for (const requiredToken of [
   if (!m02WorkflowSource.includes(requiredToken)) {
     failures.push(`Hosted M02 production-artifact gate is missing ${requiredToken}`);
   }
+}
+for (const requiredToken of [
+  "openarc-web-m04:ci", "VITE_ARC_OBSERVATION_ENABLED=true",
+  "ARC_OBSERVATION_ENABLED=true", "e2e:arc-observation:production",
+  "arc-rpc-fixture.mjs", "NODE_EXTRA_CA_CERTS=/tmp/rpc-ca.crt",
+  "REDIS_URL=redis://openarc-redis-m04:6379", '"arcObservation":true',
+  "image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m04:ci",
+  "openarc-web-m04:ci -o cyclonedx-json > sbom-web-m04.cdx.json",
+]) {
+  if (!m02WorkflowSource.includes(requiredToken)) failures.push(`Hosted M04 exact-source/image gate is missing ${requiredToken}`);
 }
 
 const networkSource = await readFile(path.join(root, "packages/shared/src/network.ts"), "utf8");
@@ -323,4 +393,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log("[release-check] M03 API/privacy boundary, M02 workspace, M01 engine, and M00 foundation verified");
+console.log("[release-check] M04 Arc observation, M03 API/privacy boundary, M02 workspace, M01 engine, and M00 foundation verified");

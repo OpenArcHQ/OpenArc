@@ -82,20 +82,25 @@ export const ApiLimitsSchema = z.strictObject({
 });
 
 export const CapabilitiesSchema = z.strictObject({
-  capabilityVersion: z.literal("openarc.capabilities.m03.v1"),
+  capabilityVersion: z.literal("openarc.capabilities.m04.v1"),
   environment: z.literal("testnet"),
   network: z.literal(ARC_TESTNET.caip2),
   sourceRevision: z.literal(ARC_TESTNET.sourceRevision),
   reviewedAt: z.literal(ARC_TESTNET.reviewedAt),
   writes: z.literal(false),
-  enabledConnectors: z.tuple([]),
+  enabledConnectors: z.union([z.tuple([]), z.tuple([z.literal("arc_primary_rpc")])]),
   features: z.strictObject({
-    arcObservation: z.literal(false),
+    arcObservation: z.boolean(),
     agentRegistry: z.literal(false),
     agentJobs: z.literal(false),
     gatewayEvidence: z.literal(false),
   }),
   limits: ApiLimitsSchema,
+}).superRefine((value, context) => {
+  const expected = value.features.arcObservation ? ["arc_primary_rpc"] : [];
+  if (JSON.stringify(value.enabledConnectors) !== JSON.stringify(expected)) {
+    context.addIssue({ code: "custom", message: "Connector truth must match enabled source features" });
+  }
 });
 
 export const CapabilitiesEnvelopeSchema = z.strictObject({

@@ -21,6 +21,8 @@ describe("Arc Testnet registry", () => {
     expect(ARC_TESTNET.rpcHttp).toBe("https://rpc.testnet.arc.io");
     expect(ARC_TESTNET.rpcWebSocket).toBe("wss://rpc.testnet.arc.io");
     expect(ARC_TESTNET.caip2).toBe("eip155:5042002");
+    expect(ARC_TESTNET.usdcSystemEmitter).toBe("0xfffffffffffffffffffffffffffffffffffffffe");
+    expect(ARC_TESTNET.transferTopic).toBe("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
     expect(ARC_TESTNET.contracts).toEqual({
       usdc: "0x3600000000000000000000000000000000000000",
       gatewayWallet: "0x0077777d7eba4688bdef3e311b846f25870a19b9",

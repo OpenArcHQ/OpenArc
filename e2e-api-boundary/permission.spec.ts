@@ -15,6 +15,7 @@ test("requires explicit disclosure and encrypted approval before a capability re
   await page.getByRole("checkbox", { name: /I saved it somewhere private/u }).check();
   await page.getByRole("button", { name: "Continue to workspace" }).click();
   await page.getByRole("button", { name: "Skip" }).click();
+  await expect(page.getByRole("button", { name: /Activity/u })).toHaveCount(0);
   await page.getByRole("button", { name: /06 Sources/u }).click();
   expect(capabilityRequests).toEqual([]);
   await expect(page.getByText("No network permissions have been approved")).toBeVisible();

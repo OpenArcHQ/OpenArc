@@ -1,7 +1,7 @@
 # OpenArc frontend architecture
 
 Status: **normative frontend specification**  
-Specification version: **0.1.0-draft**  
+Specification version: **0.2.1-draft**
 Parent: `docs/engineering/openarc-engineering-source-of-truth.md`  
 Runtime target: **React, Vite, TypeScript, browser WebCrypto and IndexedDB**
 
@@ -428,6 +428,13 @@ M03's permission-before-network work, and investigation notes begin only in
 their later milestone. Unknown kinds remain opaque, exportable, and deletable,
 but this build does not decrypt or silently drop them.
 
+The cumulative M04 reader adds strict `permission_receipt` v1/v2 variants and
+`arc_observation`. It does not mutate an older record merely by unlocking it.
+An observation is valid only when its unique `permissionReceiptId` resolves to
+a completed v2 receipt whose connector, network, and released public identifier
+exactly match the observation. Orphans, mismatches, and one-receipt-to-many-
+observation relationships fail before encryption and on every unlock/import.
+
 Record IDs are opaque UUIDs and carry no domain meaning.
 
 ### Agent profile
@@ -543,6 +550,44 @@ approved receipt if the failed/completed update cannot save; UI distinguishes
 "nothing sent" from "request may have reached OpenArc; result not saved".
 Source-feature capability values remain false and live connector controls absent.
 
+### M04 Arc observation and receipt contract
+
+`VITE_ARC_OBSERVATION_ENABLED` defaults false and is effective only with the
+encrypted workspace and M03 API-boundary flags. The enabled Activity view offers
+two explicit actions: one account snapshot or one transaction evidence lookup.
+It performs no call on mount, unlock, navigation, focus, visibility change,
+timer, or retry.
+
+Each approval creates `openarc.permission-receipt.v2`. The account variant pins
+`POST /v1/private/arc/account-snapshot`, Arc's fixed primary RPC upstream, and
+only `network` plus the approved public address. The transaction variant pins
+`POST /v1/private/arc/transaction-evidence` and only `network` plus the approved
+public transaction hash. Both pin omitted credentials, OpenArc local/no-store
+handling, provider-handling copy, ordinary host/network metadata disclosure,
+purpose, approval/result timestamps, and a bounded failure code. Unknown keys,
+routes, upstreams, released fields, and impossible lifecycles fail closed.
+
+A successful response becomes `openarc.arc-observation-record.v1` and the
+completed receipt in one conditional IndexedDB transaction. Account records
+contain the exact native 18-decimal and truncating ERC-20 6-decimal views at one
+final block. Transaction records contain the exact transaction/receipt/anchor,
+fee, canonical 18-decimal system-emitter movements, optional scaled ERC-20
+corroboration, coverage, source identity, and limitations. Raw JSON-RPC payloads
+are never stored. The response address/hash must equal the approved request even
+when the response is otherwise schema-valid.
+
+Observation capacity is 1,000 and receipt capacity remains 1,000 under the
+unchanged combined 6,602-record and backup-size ceilings. Existing crypto,
+backup, recovery, rescue, and deletion formats remain unchanged. Deleting a
+completed receipt while retaining its observation is rejected; deleting both in
+one coherent transaction is allowed.
+
+Freshness is presentation metadata derived locally from the saved observation
+time and later matching failed receipts. A failed refresh saves only the failed
+receipt and leaves the prior encrypted observation envelope byte-for-byte
+unchanged; the UI labels the prior result stale/outage rather than replacing it.
+Successful explicit refreshes append independently anchored observations.
+
 ## 11. Permission-before-network transaction
 
 All source refreshes use the same flow:
@@ -556,6 +601,7 @@ All source refreshes use the same flow:
 7. Create/register AbortController.
 8. Send the minimum request.
 9. Validate response.
+   The normalized public identifier must exactly equal the approved identifier.
 10. Build source evidence and completed receipt update in memory.
 11. Assert session and conditionally write all affected records atomically.
 12. Update UI from the committed local result.

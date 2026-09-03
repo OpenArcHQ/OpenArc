@@ -4,7 +4,18 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-import { CAPABILITY_DISCLOSURE, M01_FIXTURES, PermissionReceiptRecordSchema, reconcileAction, type WorkspaceRecord } from "@openarc/shared";
+import {
+  ARC_ACCOUNT_SNAPSHOT_PATH,
+  ARC_OBSERVATION_DISCLOSURE,
+  ARC_TESTNET,
+  ArcAccountSnapshotSchema,
+  ArcObservationRecordSchema,
+  CAPABILITY_DISCLOSURE,
+  M01_FIXTURES,
+  PermissionReceiptRecordSchema,
+  reconcileAction,
+  type WorkspaceRecord,
+} from "@openarc/shared";
 
 import {
   createRevision,
@@ -22,6 +33,8 @@ import {
   readVaultSnapshot,
 } from "../src/vault/db.js";
 import { VaultError } from "../src/vault/errors.js";
+import { runArcObservationPermissionFlow } from "../src/api/arc-permission-flow.js";
+import { OpenArcRequestError } from "../src/api/client.js";
 import {
   assertWorkspaceIntegrity,
   createAgentProfileRecord,
@@ -44,6 +57,41 @@ import {
 const originalPassphrase = "correct horse battery staple";
 const backupPassphrase = "separate archive password";
 const restoredPassphrase = "a fresh restored password";
+
+function m04AccountRecords(recordRevision: string) {
+  const at = "2026-09-03T12:00:00Z";
+  const address = "0x1111111111111111111111111111111111111111";
+  const receipt = PermissionReceiptRecordSchema.parse({
+    recordSchema: "openarc.permission-receipt.v2", kind: "permission_receipt",
+    recordId: crypto.randomUUID(), recordRevision, createdAt: at, updatedAt: at,
+    connectorId: "arc_account_snapshot", destination: { origin: "https://app.example.test",
+      path: ARC_ACCOUNT_SNAPSHOT_PATH, method: "POST", upstreams: [ARC_TESTNET.rpcHttp] },
+    releasedFields: ["network", "address"], released: { network: ARC_TESTNET.caip2, address },
+    purpose: "Observe one public Arc Testnet address at one exact final block.",
+    ...ARC_OBSERVATION_DISCLOSURE, approvedAt: at, outcome: "completed", resolvedAt: at, failureCode: null,
+  });
+  const observation = ArcAccountSnapshotSchema.parse({
+    schemaVersion: "openarc.arc-account-snapshot.v1", network: ARC_TESTNET.caip2, address,
+    anchor: { blockNumber: "100", blockHash: `0x${"a".repeat(64)}`,
+      blockTimestamp: "2026-09-03T11:59:59Z", finality: "deterministic", confirmations: "1" },
+    nativeUsdc: { asset: "USDC", interface: "native",
+      amount: { baseUnits: "1000000000000000000", decimals: 18, decimal: "1" } },
+    erc20UsdcView: { asset: "USDC", interface: "erc20", contract: ARC_TESTNET.contracts.usdc,
+      amount: { baseUnits: "1000000", decimals: 6, decimal: "1" },
+      relationship: "same_underlying_balance", truncatesSubMicroUsdc: true },
+    source: { sourceId: "arc_primary_rpc", origin: ARC_TESTNET.rpcHttp,
+      explorerOrigin: ARC_TESTNET.explorerOrigin, network: ARC_TESTNET.caip2,
+      sourceRevision: ARC_TESTNET.sourceRevision, observedAt: at,
+      adapterVersion: "openarc.arc-observation.m04.v1" },
+    limitations: ["This is a read-only observation at one exact Arc Testnet block.",
+      "The 6-decimal ERC-20 view truncates native precision below one micro-USDC.",
+      "A public address is not proof that its owner or controller is an agent."],
+  });
+  const record = ArcObservationRecordSchema.parse({ recordSchema: "openarc.arc-observation-record.v1",
+    kind: "arc_observation", recordId: crypto.randomUUID(), recordRevision, createdAt: at, updatedAt: at,
+    permissionReceiptId: receipt.recordId, observation });
+  return { address, receipt, observation: record };
+}
 
 afterEach(async () => {
   await deleteDatabase();
@@ -738,6 +786,7 @@ describe("encrypted local workspace", () => {
   it("keeps receipt and combined capacities inside the unchanged manifest ceiling", () => {
     const fake = (kind: WorkspaceRecord["kind"], count: number) => Array.from({ length: count }, () => ({ kind })) as WorkspaceRecord[];
     expect(() => assertWorkspaceRecordCapacity(fake("permission_receipt", 1_001))).toThrow(/permission_receipt limit is 1000/u);
+    expect(() => assertWorkspaceRecordCapacity(fake("arc_observation", 1_001))).toThrow(/arc_observation limit is 1000/u);
     const maximum = [...fake("evidence_record", 5_000), ...fake("action_envelope", 600),
       ...fake("permission_receipt", 1_000), ...fake("workspace_settings", 1), ...fake("sentinel", 1)];
     expect(maximum).toHaveLength(6_602);
@@ -767,6 +816,70 @@ describe("encrypted local workspace", () => {
     expect(recovered.records).toContainEqual(expect.objectContaining({ recordId: receipt.recordId, kind: "permission_receipt" }));
     const deleted = await deleteWorkspaceRecords(recovered, [receipt.recordId]);
     expect(deleted.records.some((record) => record.kind === "permission_receipt")).toBe(false);
+  });
+
+  it("encrypts, exports, imports, recovers, and coherently deletes an M04 receipt and observation", async () => {
+    const created = await createLocalWorkspace(originalPassphrase);
+    const records = m04AccountRecords(created.meta.revision);
+    const saved = await saveWorkspaceRecords(created, [records.receipt, records.observation]);
+    const raw = JSON.stringify(await readRawDatabase());
+    expect(raw).not.toContain(records.address);
+    expect(raw).not.toContain(ARC_TESTNET.rpcHttp);
+
+    const unlocked = await unlockLocalWorkspace(saved.meta, originalPassphrase);
+    expect(unlocked.records).toContainEqual(expect.objectContaining({
+      kind: "arc_observation", permissionReceiptId: records.receipt.recordId,
+    }));
+    const backup = await exportLocalWorkspace(unlocked, backupPassphrase);
+    expect(JSON.stringify(backup)).not.toContain(records.address);
+    const imported = await importLocalWorkspace(backup, backupPassphrase, restoredPassphrase, saved.meta);
+    const recovered = await recoverLocalWorkspace(imported.meta, imported.recoverySecret, originalPassphrase);
+    expect(recovered.records).toContainEqual(expect.objectContaining({ recordId: records.observation.recordId }));
+    await expect(deleteWorkspaceRecords(recovered, [records.receipt.recordId]))
+      .rejects.toMatchObject({ code: "INVALID_BACKUP" });
+    const deleted = await deleteWorkspaceRecords(recovered, [records.receipt.recordId, records.observation.recordId]);
+    expect(deleted.records.some((record) => record.kind === "arc_observation")).toBe(false);
+  });
+
+  it("leaves prior encrypted observation bytes unchanged when an explicit refresh source fails", async () => {
+    const created = await createLocalWorkspace(originalPassphrase);
+    const records = m04AccountRecords(created.meta.revision);
+    const saved = await saveWorkspaceRecords(created, [records.receipt, records.observation]);
+    const before = await readRawDatabase();
+    const beforeEnvelope = before.records.find((candidate) =>
+      (candidate as { id?: string }).id === records.observation.recordId);
+    const controller = new AbortController();
+    await expect(runArcObservationPermissionFlow({ workspace: saved, origin: "https://app.example.test",
+      input: { kind: "account", request: { network: ARC_TESTNET.caip2, address: records.address } },
+      signal: controller.signal, assertActive: () => undefined, save: saveWorkspaceRecords,
+      request: async () => { throw new OpenArcRequestError("SOURCE_UNAVAILABLE", "post-send"); },
+    })).rejects.toMatchObject({ code: "SOURCE_UNAVAILABLE" });
+    const after = await readRawDatabase();
+    const afterEnvelope = after.records.find((candidate) =>
+      (candidate as { id?: string }).id === records.observation.recordId);
+    expect(afterEnvelope).toEqual(beforeEnvelope);
+    const currentMeta = await readVaultMeta();
+    if (!currentMeta) throw new Error("expected active vault");
+    const unlocked = await unlockLocalWorkspace(currentMeta, originalPassphrase);
+    expect(unlocked.records).toContainEqual(expect.objectContaining({ recordId: records.observation.recordId }));
+    expect(unlocked.records).toContainEqual(expect.objectContaining({
+      kind: "permission_receipt", recordSchema: "openarc.permission-receipt.v2",
+      connectorId: "arc_account_snapshot", outcome: "failed",
+    }));
+  });
+
+  it("rejects orphan, mismatched, and duplicate M04 observation relationships before encryption", async () => {
+    const created = await createLocalWorkspace(originalPassphrase);
+    const records = m04AccountRecords(created.meta.revision);
+    const mismatched = { ...records.observation,
+      observation: { ...records.observation.observation,
+        address: "0x2222222222222222222222222222222222222222" } };
+    for (const changes of [
+      [records.observation],
+      [records.receipt, mismatched],
+      [records.receipt, records.observation, { ...records.observation, recordId: crypto.randomUUID() }],
+    ]) await expect(saveWorkspaceRecords(created, changes)).rejects.toMatchObject({ code: "INVALID_BACKUP" });
+    expect((await readRawDatabase()).records).toHaveLength(2);
   });
 });
 

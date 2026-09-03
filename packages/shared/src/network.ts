@@ -25,12 +25,14 @@ export const ArcTestnetConfigSchema = z.strictObject({
   rpcWebSocket: z.literal("wss://rpc.testnet.arc.io"),
   explorerOrigin: z.literal("https://testnet.arcscan.app"),
   faucetOrigin: z.literal("https://faucet.circle.com"),
+  usdcSystemEmitter: z.literal("0xfffffffffffffffffffffffffffffffffffffffe"),
+  transferTopic: z.literal("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"),
   gatewayDomain: z.literal("26"),
   finality: z.literal("deterministic"),
   executionBaseline: z.literal("osaka"),
   contracts: ArcTestnetContractsSchema,
-  reviewedAt: z.literal("2026-09-01"),
-  sourceRevision: z.literal("arc-docs-2026-09-01"),
+  reviewedAt: z.literal("2026-09-03"),
+  sourceRevision: z.literal("arc-docs-2026-09-03"),
 });
 
 const parsedArcTestnet = ArcTestnetConfigSchema.parse({
@@ -46,6 +48,8 @@ const parsedArcTestnet = ArcTestnetConfigSchema.parse({
   rpcWebSocket: "wss://rpc.testnet.arc.io",
   explorerOrigin: "https://testnet.arcscan.app",
   faucetOrigin: "https://faucet.circle.com",
+  usdcSystemEmitter: "0xfffffffffffffffffffffffffffffffffffffffe",
+  transferTopic: "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
   gatewayDomain: "26",
   finality: "deterministic",
   executionBaseline: "osaka",
@@ -58,8 +62,8 @@ const parsedArcTestnet = ArcTestnetConfigSchema.parse({
     erc8004ValidationRegistry: "0x8004Cb1BF31DAf7788923b405b754f57acEB4272",
     erc8183AgenticCommerce: "0x0747EEf0706327138c69792bF28Cd525089e4583",
   },
-  reviewedAt: "2026-09-01",
-  sourceRevision: "arc-docs-2026-09-01",
+  reviewedAt: "2026-09-03",
+  sourceRevision: "arc-docs-2026-09-03",
 });
 
 export const ARC_TESTNET = Object.freeze({

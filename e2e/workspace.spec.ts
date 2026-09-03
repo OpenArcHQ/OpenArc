@@ -833,7 +833,7 @@ test("workspace and recovery dialogs pass serious accessibility checks on mobile
     "What OpenArc can prove",
     "Where private data lives",
     "Add an agent wallet label",
-    "Permission before any future refresh",
+    "Permission before every refresh",
     "Read evidence and incomplete states",
     "Lock, export, recover, and delete",
   ];

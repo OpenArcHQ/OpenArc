@@ -6,6 +6,7 @@ import {
   MonitoringPolicySchema,
 } from "./evidence.js";
 import { ARC_TESTNET } from "./network.js";
+import { ArcAccountSnapshotSchema, ArcTransactionEvidenceSchema } from "./arc-observation.js";
 import { PermissionReceiptRecordSchema } from "./permission.js";
 import { VaultRevisionSchema, WorkspaceRecordIdSchema } from "./workspace-primitives.js";
 export { VaultRevisionSchema, WorkspaceRecordIdSchema } from "./workspace-primitives.js";
@@ -79,6 +80,14 @@ export const WorkspaceSettingsRecordSchema = z.strictObject({
   defaultView: z.enum(["overview", "agents", "policies", "evidence", "settings"]),
 });
 
+export const ArcObservationRecordSchema = z.strictObject({
+  ...recordBase,
+  recordSchema: z.literal("openarc.arc-observation-record.v1"),
+  kind: z.literal("arc_observation"),
+  permissionReceiptId: WorkspaceRecordIdSchema,
+  observation: z.union([ArcAccountSnapshotSchema, ArcTransactionEvidenceSchema]),
+});
+
 export const SentinelRecordSchema = z.strictObject({
   ...recordBase,
   kind: z.literal("sentinel"),
@@ -100,7 +109,7 @@ export const SentinelRecordSchema = z.strictObject({
     ),
 });
 
-const WorkspaceRecordVariantSchema = z.discriminatedUnion("kind", [
+const WorkspaceRecordVariantSchema = z.union([
   AgentProfileRecordSchema,
   MonitoringPolicyRecordSchema,
   EvidenceRecordRecordSchema,
@@ -108,6 +117,7 @@ const WorkspaceRecordVariantSchema = z.discriminatedUnion("kind", [
   WorkspaceSettingsRecordSchema,
   SentinelRecordSchema,
   PermissionReceiptRecordSchema,
+  ArcObservationRecordSchema,
 ]);
 
 export const WorkspaceRecordSchema = WorkspaceRecordVariantSchema.superRefine((record, context) => {
@@ -128,3 +138,4 @@ export type MonitoringPolicyRecord = z.infer<typeof MonitoringPolicyRecordSchema
 export type SentinelRecord = z.infer<typeof SentinelRecordSchema>;
 export type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
 export type WorkspaceSettingsRecord = z.infer<typeof WorkspaceSettingsRecordSchema>;
+export type ArcObservationRecord = z.infer<typeof ArcObservationRecordSchema>;

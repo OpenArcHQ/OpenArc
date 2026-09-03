@@ -11,7 +11,7 @@ import { WorkspaceRecordSchema } from "../src/vault.js";
 const meta = { schemaVersion: API_SCHEMA_VERSION, requestId: "11111111-1111-4111-8111-111111111111", buildSha: "test-sha" };
 const limits = { requestBytes: 16384, responseBytes: 65536, sourceResponseBytes: 262144,
   sourceTimeoutMs: 5000, sourceMaxSubcalls: 8, requestsPerPeerHour: 60, globalSourceUnitsPerDay: 10000 };
-const capabilities = { ok: true, meta, data: { capabilityVersion: "openarc.capabilities.m03.v1",
+const capabilities = { ok: true, meta, data: { capabilityVersion: "openarc.capabilities.m04.v1",
   environment: "testnet", network: ARC_TESTNET.caip2, sourceRevision: ARC_TESTNET.sourceRevision,
   reviewedAt: ARC_TESTNET.reviewedAt, writes: false, enabledConnectors: [],
   features: { arcObservation: false, agentRegistry: false, agentJobs: false, gatewayEvidence: false }, limits } };
@@ -23,14 +23,17 @@ const approved = { ...CAPABILITY_DISCLOSURE,
   destination: { origin: "https://app.example.test", path: CAPABILITIES_PATH, method: "GET", upstreams: [] },
   releasedFields: [] };
 
-describe("M03 shared API boundary", () => {
-  it("accepts only a strict source-disabled capability contract", () => {
+describe("M04 shared API boundary", () => {
+  it("accepts only a strict capability contract with consistent connector truth", () => {
     expect(CapabilitiesEnvelopeSchema.safeParse(capabilities).success).toBe(true);
+    expect(CapabilitiesEnvelopeSchema.safeParse({ ...capabilities, data: { ...capabilities.data,
+      enabledConnectors: ["arc_primary_rpc"],
+      features: { ...capabilities.data.features, arcObservation: true } } }).success).toBe(true);
     for (const data of [
       { ...capabilities.data, rawProviderBody: {} },
       { ...capabilities.data, writes: true },
       { ...capabilities.data, network: "eip155:1" },
-      { ...capabilities.data, enabledConnectors: ["arc_rpc"] },
+      { ...capabilities.data, enabledConnectors: ["arc_primary_rpc"] },
       { ...capabilities.data, features: { ...capabilities.data.features, arcObservation: true } },
       { ...capabilities.data, limits: { ...limits, sourceMaxSubcalls: 17 } },
     ]) expect(CapabilitiesEnvelopeSchema.safeParse({ ...capabilities, data }).success).toBe(false);

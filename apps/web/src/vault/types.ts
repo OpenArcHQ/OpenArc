@@ -15,6 +15,7 @@ export const VAULT_RECORD_CAPS = Object.freeze({
   evidence_record: 5_000,
   action_envelope: 1_000,
   permission_receipt: 1_000,
+  arc_observation: 1_000,
   workspace_settings: 1,
   sentinel: 1,
 } as const);

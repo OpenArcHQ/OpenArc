@@ -9,6 +9,7 @@ vi.mock("node:https", () => ({ request: requestMock }));
 
 import { SourceLease, type BudgetEvent } from "../src/limits/budget.js";
 import { arcHttpsTransport, BoundedProviderClient, type ProviderResponse, type ProviderTransport } from "../src/providers/http.js";
+import { ArcRpcClient } from "../src/arc/rpc-client.js";
 
 const signal = () => new AbortController().signal;
 function lease(abortSignal = signal(), reserve = async () => undefined, events: BudgetEvent[] = []) {
@@ -143,5 +144,38 @@ describe("M03 pinned bounded provider transport", () => {
     };
     await expect(setup(response(), { transport }).client.postJson({}, lease(), controller.signal))
       .rejects.toMatchObject({ code: "SOURCE_UNAVAILABLE", message: "The approved source is temporarily unavailable." });
+  });
+});
+
+describe("M04 strict JSON-RPC envelope", () => {
+  it("uses an opaque request ID and returns only the exact matching result", async () => {
+    const transport = vi.fn(async (body: Buffer) => {
+      const request = JSON.parse(body.toString("utf8"));
+      expect(request).toMatchObject({ jsonrpc: "2.0", method: "eth_chainId", params: [] });
+      expect(request.id).toMatch(/^oa_[0-9a-f-]{36}$/u);
+      expect(JSON.stringify(request)).not.toContain("PRIVATE_CANARY");
+      return response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: ARC_TESTNET.chainIdHex }));
+    });
+    const rpc = new ArcRpcClient(new BoundedProviderClient({ timeoutMs: 100, maxResponseBytes: 1_024, transport }));
+    await expect(rpc.call("eth_chainId", [], lease(), signal())).resolves.toBe(ARC_TESTNET.chainIdHex);
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it("rejects wrong IDs, errors, and extra envelope fields", async () => {
+    for (const build of [
+      (id: string) => ({ jsonrpc: "2.0", id: `${id}-wrong`, result: "0x1" }),
+      (id: string) => ({ jsonrpc: "2.0", id, error: { code: -1, message: "PRIVATE_CANARY" } }),
+      (id: string) => ({ jsonrpc: "2.0", id, result: "0x1", extra: "PRIVATE_CANARY" }),
+      (id: string) => ({ jsonrpc: "1.0", id, result: "0x1" }),
+    ]) {
+      const transport: ProviderTransport = async (body) => {
+        const id = JSON.parse(body.toString("utf8")).id as string;
+        return response(JSON.stringify(build(id)));
+      };
+      const rpc = new ArcRpcClient(new BoundedProviderClient({ timeoutMs: 100, maxResponseBytes: 1_024, transport }));
+      await expect(rpc.call("eth_chainId", [], lease(), signal())).rejects.toMatchObject({
+        code: "SOURCE_MALFORMED", message: "The source response did not match its supported contract.",
+      });
+    }
   });
 });
