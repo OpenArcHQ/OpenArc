@@ -1,9 +1,9 @@
 # Milestone 03 — API and privacy boundary
 
-Status: **active implementation**
+Status: **complete — `rc/03-api-privacy-boundary/1` merged into `main`**
 Base: `main` closure `61af347b586a9c5e2d1fb1467139887559e4a378` after immutable
 `rc/02-encrypted-workspace/1` at `298c695ae615ea090b02b0410b7ae37125c625b1`
-Active branch: `codex/03-api-privacy-boundary`
+Closed candidate branch: `codex/03-api-privacy-boundary`
 Live-source review: **not applicable — all adapters remain absent/disabled**
 
 ## Frozen scope and order
@@ -52,7 +52,7 @@ browser variables. No existing user key is rotated or read for M03.
 - [x] Chromium/WebKit/mobile/Axe/flag-off and exact production-proxy tests
 - [x] Full Node 22 gate, audit/licenses, exact images/scans/SBOM/hosted CI
 - [x] Exact staging identity, lifecycle/headers/proxy walkthrough and rollback
-- [ ] Independent no-P0/P1 review, immutable RC and `main` closure
+- [x] Independent no-P0/P1 review, immutable RC and `main` closure
 
 ## Local pre-push evidence — 2026-09-03
 
@@ -163,3 +163,37 @@ M02 local-only CSP, health/readiness, and absence of enabled private routes.
 Preserve the origin and local encrypted Vault bytes; a rollback must not delete,
 rewrite, downgrade, or claim to recover them. No destructive rollback drill was
 needed or claimed.
+
+## Final exact candidate and closure — 2026-09-03
+
+The evidence-only successor
+`10172744b6316b21b7b228a9c89d4541b7dd8f3e` passed exact GitHub
+Actions run `33793712725`. All verification, browser, and image jobs succeeded,
+including the real-Redis API tests, 46 baseline and 2 flag-off browser journeys,
+the immutable-M02 compatibility journey, 12 M03 permission journeys through
+verified TLS, wrong-SNI rejection, the explicit web-metrics 404, and four
+HIGH/CRITICAL image scans. Four CycloneDX 1.7 SBOMs are in unexpired artifact
+`9908409814`, with digest
+`sha256:0f50d9c2acad293b0e50ba3b6c7d969241ec6fc76e52af4518696085506b5848`.
+GitHub reported zero billable runner milliseconds.
+
+Final exact Railway deployments both reached `SUCCESS`:
+
+- API `<deployment-id>`, image
+  `sha256:cb88296bf8b9a807f214edfe8cf70d992ecb643cfc4864f1ef0e4ddf593cc147`.
+- Web `<deployment-id>`, image
+  `sha256:04a985a6a6e6c8f6bf9717a365584063bb07705c9704b1e00decac12615d4434`.
+
+API readiness, the web shell, and direct/proxied capability envelopes exposed
+the full final SHA. The concise live recheck confirmed empty capability truth,
+disabled future sources, authenticated direct-only metrics, web metrics 404,
+and HSTS. All 12 Chromium/WebKit production permission journeys passed again
+against the final Railway marker.
+
+Immutable annotated tag `rc/03-api-privacy-boundary/1` was created and pushed
+at `10172744b6316b21b7b228a9c89d4541b7dd8f3e`, then fast-forwarded into
+`main`. This subsequent documentation-only closure records completed operations
+without moving or reusing the tag. M04 has not been created or implemented; it
+may begin only from updated production `main`. M03 approval is Testnet capability
+bootstrap approval, not live-source, public-launch, mainnet, signing, custody,
+or transaction-execution approval.
