@@ -224,11 +224,20 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
       const current = unlockedRef.current;
       if (!current) return;
       const lockSignal = signalWorkspaceLock(current.meta);
-      clearPrivateState({ phase: "locked", meta: current.meta }, message);
+      // Release private state immediately, but do not expose unlock controls
+      // until the durable coordination revision written by signalWorkspaceLock
+      // has been read back. Otherwise a slow unlock can start against the old
+      // revision and then be invalidated by this tab's own lock signal.
+      clearPrivateState({ phase: "locking", meta: current.meta }, message);
       const boundaryGeneration = generationRef.current;
       void lockSignal
         .then((meta) => {
-          if (boundaryGeneration === generationRef.current && meta.deletionPending) enterDeleting(meta);
+          if (boundaryGeneration !== generationRef.current) return;
+          if (meta.deletionPending) {
+            enterDeleting(meta);
+            return;
+          }
+          setScreen({ phase: "locked", meta });
         })
         .catch((cause) => void handleObservedVaultBoundary(
           cause,
