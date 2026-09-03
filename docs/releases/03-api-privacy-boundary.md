@@ -49,9 +49,9 @@ browser variables. No existing user key is rotated or read for M03.
 - [x] Permission commit precedes request; failed commit proves zero calls
 - [x] Cancellation/session boundaries prove zero late UI or writes
 - [x] M02/receipt backup/import/recovery/delete and encrypted persistence tests
-- [ ] Chromium/WebKit/mobile/Axe/flag-off and exact production-proxy tests
-- [ ] Full Node 22 gate, audit/licenses, exact images/scans/SBOM/hosted CI
-- [ ] Exact staging identity, lifecycle/headers/proxy walkthrough and rollback
+- [x] Chromium/WebKit/mobile/Axe/flag-off and exact production-proxy tests
+- [x] Full Node 22 gate, audit/licenses, exact images/scans/SBOM/hosted CI
+- [x] Exact staging identity, lifecycle/headers/proxy walkthrough and rollback
 - [ ] Independent no-P0/P1 review, immutable RC and `main` closure
 
 ## Local pre-push evidence — 2026-09-03
@@ -68,3 +68,98 @@ browser variables. No existing user key is rotated or read for M03.
 - Independent review reports no P0/P1 blocker. Exact Docker image, internal TLS,
   HSTS/error-path, scan, SBOM, and clean-room evidence remains gated on hosted CI
   because the local Docker daemon is unavailable.
+
+## Exact implementation candidate evidence — 2026-09-03
+
+Implementation `ceab9be7cd91ba6734c67e69b7240b90224f52eb` was clean,
+pushed, and equal to its remote branch head before final staging. GitHub Actions
+run `33792431990` completed successfully on that exact SHA:
+
+- Node 22 release checks, production dependency audit, license policy, lint,
+  typecheck, 54 shared / 39 API / 55 web tests, and all builds passed. API
+  integration used real disposable Redis 8; no limiter or budget test was
+  skipped.
+- All 46 baseline Chromium/WebKit journeys and 2 flag-off journeys passed. The
+  immutable M02 production image passed its exact-image browser journey.
+- Exact M03 API/web images passed the two-engine 12-test permission suite
+  through a same-origin proxy and a certificate-verified, SNI-bound internal
+  TLS hop. The persistent-profile M03-to-immutable-M02 receipt journey passed;
+  wrong internal SNI returned 502 with HSTS.
+- Four production images built and passed exact-marker smoke tests and all
+  HIGH/CRITICAL Trivy scans. Syft generated four CycloneDX 1.7 SBOMs. Unexpired
+  artifact `9907941523` (`openarc-sboms`) has digest
+  `sha256:47647afb139106ff5474de0b9239f43a278ab1b8fdbdfc1f80793c063545c14c`.
+- GitHub reported zero billable runner milliseconds.
+
+The earlier exact implementation run `33791013434` also passed. Its staging
+walkthrough then found that web `/metrics` was not proxied but inherited the SPA
+fallback's HTTP 200. No metrics data was exposed; nevertheless, that status did
+not satisfy the direct-API-only contract. The final implementation adds an
+exact HSTS-protected web 404 and a hosted release assertion for it. A separate
+Docker fail-fast check also proves the M03 Nginx template and proxy parameters
+exist before the image can enter browser testing.
+
+Independent read-only review of the implementation, contracts, failure states,
+privacy boundaries, and tests found no P0/P1 blocker. It approved only exact-SHA
+staging; immutable tagging, evidence-successor verification, and closure remain
+separately gated.
+
+## Exact implementation staging evidence — 2026-09-03
+
+The implementation SHA `ceab9be7cd91ba6734c67e69b7240b90224f52eb`
+was deployed API-first to the existing `openarc-staging` project's `staging`
+environment. Both deployments reached `SUCCESS`:
+
+- API `<deployment-id>`, image
+  `sha256:bcd650459c02502d0366b2dfd33a620bdc6ae275ecd54663ecc8308192393b96`.
+- Web `<deployment-id>`, image
+  `sha256:b4affb7ca335c7e748be13d61e5c08ec28d82766039b3eafc2d7b6c421ceac0c`.
+
+API `/healthz` and `/readyz`, the web shell marker, and both direct and proxied
+capability envelopes exposed the full exact SHA. Readiness reported
+configuration up, source routes disabled, and Redis not required. Capability
+truth reported Arc Testnet `eip155:5042002`, read-only behavior, zero enabled
+connectors, and every future source feature false.
+
+The live HTTP boundary passed the following controlled checks:
+
+- the exact preflight returned 204;
+- missing and wrong Origin requests returned 403;
+- a query mutation returned 400;
+- unauthenticated direct API metrics returned 401;
+- web `/metrics` returned 404 with HSTS and exposed no operator metrics;
+- direct and proxied future source routes returned 503 `FEATURE_DISABLED`;
+- shell, proxy-success, and proxy-error paths retained HSTS; the shell retained
+  no-store and the M03 same-origin-only CSP.
+
+All 12 production permission journeys passed again against the actual Railway
+web origin in Chromium and WebKit. They covered explicit disclosure before the
+single capability request, encrypted approval/completion receipts, failed
+approval-write zero-call behavior, post-network completion uncertainty,
+revision-conflict invalidation, lock-during-request cancellation, mobile
+layout, and serious/critical accessibility scanning. Each test used an isolated
+browser context; no existing user profile or Vault was touched. A bounded scan
+of 22 API and 65 web application-log lines found neither the synthetic
+passphrase nor synthetic private label.
+
+### Live-proof, cost, and rollback boundary
+
+Live Arc address/transaction/registry/job/Gateway proof is not applicable to
+M03: no source adapter exists or is enabled, the capability route accepts no
+identifier and makes no upstream call, and its response explicitly reports
+zero connectors. M04 owns the first live chain-read proof. Claiming provider,
+Redis-runtime, or mainnet proof here would be false.
+
+Only the two existing capped services were used. Both retained one replica,
+1 vCPU / 1 GB ceilings, serverless sleep, and zero volumes. No project, service,
+database, managed Redis, paid provider, PAYG path, or recurring resource was
+created. The generated operator metrics secret was sent directly to Railway;
+it was neither printed, read back, nor committed.
+
+If the boundary or same-origin TLS proxy fails after promotion, stop further
+promotion and roll both services back to the last known-good immutable M02
+images, or rebuild with both M03 flags false. Verify the exact API/web markers,
+M02 local-only CSP, health/readiness, and absence of enabled private routes.
+Preserve the origin and local encrypted Vault bytes; a rollback must not delete,
+rewrite, downgrade, or claim to recover them. No destructive rollback drill was
+needed or claimed.
