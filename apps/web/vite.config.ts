@@ -27,6 +27,9 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5173,
     strictPort: true,
+    ...(process.env.OPENARC_DEV_API_ORIGIN === "http://127.0.0.1:3003" ? {
+      proxy: { "/v1/private": { target: process.env.OPENARC_DEV_API_ORIGIN, changeOrigin: false } },
+    } : {}),
   },
   preview: {
     host: "127.0.0.1",

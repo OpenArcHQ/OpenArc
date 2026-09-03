@@ -1,6 +1,6 @@
 # OpenArc marketing and technical product package
 
-Status: **Milestone 02 encrypted workspace active; Arc Testnet fixture-only**
+Status: **Milestone 03 API/privacy boundary active; live Arc sources disabled**
 Prepared: **2026-08-15; network facts re-verified 2026-09-01**
 
 OpenArc is the proposed private intelligence, policy, and investigation layer for
@@ -34,9 +34,9 @@ parity, and a separately reviewed mainnet release exist.
 
 ## Current implementation
 
-The immutable Milestone 00 foundation and Milestone 01 evidence engine are
-complete. Milestone 02 is adding an encrypted local workspace around the strict,
-fixture-only evidence engine without introducing any live connector:
+The immutable Milestone 00 foundation, Milestone 01 evidence engine, and Milestone
+02 encrypted local workspace are complete. Milestone 03 is building the
+consent-first API/privacy boundary without introducing a live connector:
 
 - `packages/shared` owns the fail-closed Arc Testnet registry and primitive
   schemas, versioned evidence records, append-only action states, deterministic
@@ -64,8 +64,10 @@ The foundation evidence record is in
 [`docs/releases/00-foundation.md`](docs/releases/00-foundation.md). The Milestone
 01 boundary and completed exit evidence are in
 [`docs/releases/01-evidence-engine.md`](docs/releases/01-evidence-engine.md). The
-active local-only M02 boundary is in
+completed local-only M02 boundary is in
 [`docs/releases/02-encrypted-workspace.md`](docs/releases/02-encrypted-workspace.md).
+The active M03 boundary and ordered work are in
+[`docs/releases/03-api-privacy-boundary.md`](docs/releases/03-api-privacy-boundary.md).
 
 ## Logo
 

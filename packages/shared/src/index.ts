@@ -4,3 +4,5 @@ export * from "./network.js";
 export * from "./primitives.js";
 export * from "./reconciliation.js";
 export * from "./vault.js";
+export * from "./api.js";
+export * from "./permission.js";

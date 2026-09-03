@@ -559,6 +559,10 @@ export function assertVaultCapacity(meta: PublicVaultMeta, records: readonly Enc
 }
 
 export function assertWorkspaceRecordCapacity(records: readonly WorkspaceRecord[]): void {
+  const withSentinel = records.length + (records.some((record) => record.kind === "sentinel") ? 0 : 1);
+  if (withSentinel > VAULT_MAX_RECORDS) {
+    throw new VaultError("VAULT_CAPACITY", `Encrypted workspaces are limited to ${VAULT_MAX_RECORDS} total records.`);
+  }
   const counts = new Map<WorkspaceRecord["kind"], number>();
   for (const record of records) counts.set(record.kind, (counts.get(record.kind) ?? 0) + 1);
   for (const [kind, maximum] of Object.entries(VAULT_RECORD_CAPS)) {

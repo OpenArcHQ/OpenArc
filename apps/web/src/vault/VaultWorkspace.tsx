@@ -1,5 +1,8 @@
 import {
   M01_FIXTURES,
+  CAPABILITIES_PATH,
+  CAPABILITY_DISCLOSURE,
+  type CapabilitiesEnvelope,
   type AgentProfileRecord,
   type MonitoringPolicyRecord,
   type WorkspaceRecord,
@@ -16,6 +19,10 @@ import {
 import { createPortal } from "react-dom";
 
 import type { BuildInfo } from "@openarc/shared";
+
+import { apiBoundaryEnabled } from "../app/availability.js";
+import { CapabilityRequestError, requestCapabilities } from "../api/capabilities.js";
+import { PermissionFinalizationError, runCapabilityPermissionFlow } from "../api/permission-flow.js";
 
 import {
   observeVaultDatabase,
@@ -54,7 +61,7 @@ import type {
   VaultStorageStatus,
 } from "./types.js";
 
-type WorkspaceView = "overview" | "agents" | "policies" | "evidence" | "settings";
+type WorkspaceView = "overview" | "agents" | "policies" | "evidence" | "settings" | "sources";
 type Screen =
   | { phase: "probing" }
   | { phase: "unsupported" }
@@ -79,12 +86,14 @@ type SessionGuard = {
 };
 
 const INACTIVITY_MS = 10 * 60 * 1_000;
+const API_BOUNDARY_ENABLED = apiBoundaryEnabled();
 const VIEWS: readonly { id: WorkspaceView; label: string; note: string }[] = [
   { id: "overview", label: "Overview", note: "Local workspace status" },
   { id: "agents", label: "Agents", note: "Owner-supplied profiles" },
   { id: "policies", label: "Policies", note: "Local monitoring rules" },
   { id: "evidence", label: "Evidence", note: "Encrypted fixture records" },
   { id: "settings", label: "Settings", note: "Backup, recovery, delete" },
+  ...(API_BOUNDARY_ENABLED ? [{ id: "sources" as const, label: "Sources", note: "Explicit connection checks" }] : []),
 ];
 
 export function VaultWorkspace({ build }: { build: BuildInfo }) {
@@ -177,12 +186,18 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
         );
         return true;
       }
+      clearPrivateState(
+        meta ? { phase: "locked", meta } : { phase: "empty" },
+        meta
+          ? "The encrypted workspace changed while this action was finishing. Unlock again to load the latest revision."
+          : "The local workspace was deleted while this action was finishing.",
+      );
+      return true;
     } catch (readCause) {
       if (!isActive()) return true;
       clearPrivateState({ phase: "fatal", message: vaultErrorMessage(readCause) });
       return true;
     }
-    return false;
   }, [clearPrivateState, enterDeleting]);
 
   const broadcast = useCallback((type: CoordinationMessage["type"], vaultId: string) => {
@@ -761,6 +776,52 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
     }
   };
 
+  const checkCapabilities = async (): Promise<CapabilitiesEnvelope | null> => {
+    const current = unlockedRef.current;
+    if (!current || !API_BOUNDARY_ENABLED) return null;
+    const guard = createSessionGuard();
+    let expected = current;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await runCapabilityPermissionFlow({ workspace: current, origin: window.location.origin,
+        signal: guard.signal, assertActive: () => {
+          guard.assertActive();
+          if (unlockedRef.current !== expected) throw new Error("Vault session changed");
+        },
+        save: (workspace, receipts, assertActive, signal) => saveWorkspaceRecords(workspace, receipts, assertActive, signal),
+        request: requestCapabilities,
+        onCommitted: (workspace) => {
+          expected = workspace;
+          unlockedRef.current = workspace;
+          deadlineRef.current = Date.now() + INACTIVITY_MS;
+          setScreen({ phase: "unlocked", workspace });
+          broadcast("changed", workspace.meta.vaultId);
+        } });
+      guard.assertActive();
+      setBusy(false);
+      setNotice("Capability check completed. OpenArc reported no enabled source connectors in this M03 build.");
+      return result.capabilities;
+    } catch (cause) {
+      if (!guard.isActive()) return null;
+      const storageBoundary = cause instanceof PermissionFinalizationError ? cause.storageCause : cause;
+      if (await handleObservedVaultBoundary(storageBoundary, guard.isActive)) return null;
+      if (!guard.isActive()) return null;
+      setBusy(false);
+      setError(cause instanceof PermissionFinalizationError
+        ? cause.phase === "completed-request"
+          ? "The request reached OpenArc and its response was accepted, but completion could not be saved. The encrypted approval remains in your permission history."
+          : "The request may have reached OpenArc, but its failed outcome could not be saved. The encrypted approval remains in your permission history."
+        : cause instanceof CapabilityRequestError
+        ? cause.phase === "pre-send"
+          ? "The capability request was not sent. Its encrypted approval remains in the permission history."
+          : "The capability request may have reached OpenArc, but no valid result was accepted. Review the encrypted permission history."
+        : vaultErrorMessage(cause));
+      return null;
+    }
+  };
+
   const deleteRecords = async (ids: readonly string[], message: string) => {
     const current = unlockedRef.current;
     if (!current) return false;
@@ -852,7 +913,7 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
 
   const messageRegion = (
     <div className="workspace-messages" aria-live="polite" aria-atomic="true">
-      {error ? <p className="workspace-error" tabIndex={-1}>{error}</p> : null}
+      {error ? <p className="workspace-error" role="alert" tabIndex={-1}>{error}</p> : null}
       {notice ? <p className="workspace-notice">{notice}</p> : null}
     </div>
   );
@@ -974,6 +1035,7 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
           busy={busy}
           onSave={saveRecords}
           onDelete={deleteRecords}
+          onCheckCapabilities={checkCapabilities}
           onImport={importBackup}
           onAcceptCreated={acceptCreated}
           onDestroy={destroy}
@@ -990,7 +1052,7 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
           broadcast={broadcast}
         />
         <footer className="workspace-footer">
-          <span>LOCAL-ONLY · ZERO NETWORK CALLS</span>
+          <span>{API_BOUNDARY_ENABLED ? "LOCAL PRIVATE DATA · EXPLICIT NETWORK PERMISSION" : "LOCAL-ONLY · ZERO NETWORK CALLS"}</span>
           <code data-testid="build-sha">BUILD {build.commitSha}</code>
         </footer>
       </main>
@@ -1106,6 +1168,7 @@ function WorkspaceViewPanel(props: {
   busy: boolean;
   onSave: (records: readonly WorkspaceRecord[], message: string) => Promise<boolean>;
   onDelete: (ids: readonly string[], message: string) => Promise<boolean>;
+  onCheckCapabilities: () => Promise<CapabilitiesEnvelope | null>;
   onImport: (file: File, backupPassphrase: string, nextPassphrase: string) => Promise<void>;
   onAcceptCreated: (created: CreatedWorkspace, message: string) => void;
   onDestroy: () => Promise<void>;
@@ -1122,6 +1185,7 @@ function WorkspaceViewPanel(props: {
   if (props.view === "agents") return <AgentsPanel {...props} />;
   if (props.view === "policies") return <PoliciesPanel {...props} />;
   if (props.view === "evidence") return <EvidencePanel {...props} />;
+  if (props.view === "sources") return <SourcesPanel {...props} />;
   return <SettingsPanel {...props} />;
 
   function navigateFromPanel(view: WorkspaceView) {
@@ -1225,6 +1289,63 @@ function EvidencePanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "wo
           <article key={record.recordId}><div><p className="eyebrow">{record.action.kind.replaceAll("_", " ")}</p><h3>Encrypted action</h3><ExactIdentifier label="Action ID" value={record.action.actionId} /></div><dl><div><dt>Agent</dt><dd>{record.action.agentId}</dd></div><div><dt>State</dt><dd>{record.action.reconciliation?.state ?? "NOT RECONCILED"}</dd></div><div><dt>Cited evidence</dt><dd>{record.action.reconciliation?.evidenceIds.length ?? 0}</dd></div></dl></article>
         ))}
       </div>
+    </section>
+  );
+}
+
+function SourcesPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "workspace" | "busy" | "onCheckCapabilities" | "onOpenTour">) {
+  const [confirming, setConfirming] = useState(false);
+  const [capabilities, setCapabilities] = useState<CapabilitiesEnvelope | null>(null);
+  const receipts = props.workspace.records
+    .filter((record) => record.kind === "permission_receipt")
+    .sort((left, right) => right.approvedAt.localeCompare(left.approvedAt));
+  const confirm = async () => {
+    setConfirming(false);
+    const result = await props.onCheckCapabilities();
+    if (result) setCapabilities(result);
+  };
+  return (
+    <section className="workspace-section" aria-labelledby="sources-title">
+      <SectionHeading eyebrow="CONSENTED NETWORK BOUNDARY" title="Sources" id="sources-title" onLearn={props.onOpenTour}>
+        Nothing checks automatically. You choose when OpenArc may contact its own same-origin API, and an encrypted receipt is saved before the request leaves this tab.
+      </SectionHeading>
+      <div className="settings-grid sources-grid">
+        <article className="settings-wide">
+          <p className="eyebrow">OPENARC CAPABILITIES</p>
+          <h3>Check what this build can connect to</h3>
+          <p>This reads configuration metadata only. It releases no wallet, transaction, label, policy, note, prompt, or workspace field, and it contacts no Arc provider.</p>
+          <button className="button" type="button" disabled={props.busy} onClick={() => setConfirming(true)}>Review permission and check</button>
+        </article>
+        <article>
+          <h3>Latest accepted result</h3>
+          {capabilities ? <dl className="source-facts">
+            <div><dt>Network</dt><dd>{capabilities.data.network}</dd></div>
+            <div><dt>Writes</dt><dd>{capabilities.data.writes ? "Enabled" : "Disabled"}</dd></div>
+            <div><dt>Connectors</dt><dd>{capabilities.data.enabledConnectors.length}</dd></div>
+            <div><dt>Build</dt><dd><code>{capabilities.meta.buildSha}</code></dd></div>
+          </dl> : <p>No accepted result in this unlocked session. Results are displayed only after strict schema validation.</p>}
+        </article>
+        <article>
+          <h3>Encrypted permission history</h3>
+          <p>{receipts.length === 0 ? "No network permissions have been approved in this workspace." : `${receipts.length} encrypted receipt${receipts.length === 1 ? "" : "s"} stored locally.`}</p>
+          {receipts[0] ? <p>Latest: <strong>{receipts[0].outcome}</strong> at <time dateTime={receipts[0].updatedAt}>{receipts[0].updatedAt}</time>{receipts[0].failureCode ? ` · ${receipts[0].failureCode}` : ""}</p> : null}
+        </article>
+      </div>
+      {confirming ? <Modal title="Allow this capability check?" onClose={() => setConfirming(false)}>
+        <p>{CAPABILITY_DISCLOSURE.purpose}</p>
+        <dl className="permission-disclosure">
+          <div><dt>Destination</dt><dd>This OpenArc site at <code>{window.location.origin}</code></dd></div>
+          <div><dt>Request</dt><dd><code>GET {CAPABILITIES_PATH}</code></dd></div>
+          <div><dt>Released workspace fields</dt><dd>None</dd></div>
+          <div><dt>Credentials</dt><dd>Omitted; no cookies or account token</dd></div>
+          <div><dt>Upstream providers</dt><dd>None</dd></div>
+          <div><dt>OpenArc retention</dt><dd>{CAPABILITY_DISCLOSURE.openArcRetention}</dd></div>
+          <div><dt>Provider retention</dt><dd>{CAPABILITY_DISCLOSURE.providerRetention}</dd></div>
+          <div><dt>Hosting metadata</dt><dd>{CAPABILITY_DISCLOSURE.hostingMetadata}</dd></div>
+        </dl>
+        <p>The approval is encrypted into this workspace first. If that local save fails, no request is sent.</p>
+        <div className="modal-actions"><button type="button" onClick={() => setConfirming(false)}>Cancel</button><button className="button" type="button" onClick={() => void confirm()}>Approve and check</button></div>
+      </Modal> : null}
     </section>
   );
 }

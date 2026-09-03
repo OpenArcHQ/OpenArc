@@ -14,13 +14,12 @@ export const VAULT_RECORD_CAPS = Object.freeze({
   monitoring_policy: 500,
   evidence_record: 5_000,
   action_envelope: 1_000,
+  permission_receipt: 1_000,
   workspace_settings: 1,
   sentinel: 1,
 } as const);
-export const VAULT_MAX_RECORDS = Object.values(VAULT_RECORD_CAPS).reduce(
-  (sum, maximum) => sum + maximum,
-  0,
-);
+// Combined capacity is independent of per-kind ceilings; keep the M02 manifest bound.
+export const VAULT_MAX_RECORDS = 6_602;
 export const VAULT_MAX_BACKUP_BYTES = 32 * 1024 * 1024;
 export const VAULT_MAX_RESCUE_BYTES = 64 * 1024 * 1024;
 

@@ -127,9 +127,10 @@ The concrete Zod schema lives in `apps/api/src/config/env.ts`.
 NODE_ENV                         development | test | production
 PORT                             positive integer
 APP_ORIGIN                       exact HTTPS origin in production
-BUILD_SHA                        exact deployed commit marker
+COMMIT_SHA                       exact deployed commit marker (existing M00 name)
 LOG_LEVEL                        bounded enum
 
+API_BOUNDARY_ENABLED             false by default; M03 capabilities only
 ARC_OBSERVATION_ENABLED          false by default
 AGENT_REGISTRY_ENABLED           false by default
 AGENT_JOBS_ENABLED               false by default
@@ -693,3 +694,124 @@ A backend milestone is complete only when:
 - Treating Arc deterministic finality as permission to combine different anchors.
 - Adding server evidence persistence because it is convenient.
 - Enabling Gateway or Circle credentials without the documented review gate.
+
+## 21. M03 frozen boundary decisions
+
+### HTTP and capability bootstrap
+
+M03 enables only `GET /v1/private/capabilities`, behind the false-by-default
+`API_BOUNDARY_ENABLED` flag. Its `openarc.api.v1` envelope has a fresh UUID
+request ID, the existing `COMMIT_SHA` marker, and strict metadata: Testnet
+configuration/review revision, empty enabled connectors, false source-feature
+flags, and bounded operational limits. There are no provider URLs supplied by
+the browser, identifiers, user data, or upstream calls. Known later source
+routes return bounded `FEATURE_DISABLED`; unknown paths return `NOT_FOUND`.
+Setting any not-yet-implemented source flag true is a startup failure.
+
+Protected requests require `X-OpenArc-Client: browser-v1`. A supplied Origin must
+equal `APP_ORIGIN` byte-for-byte; `null`, arrays, multiple values, and mismatches
+fail. Same-origin browser GET normally omits Origin, so only the capabilities
+GET may omit it, and only with `Sec-Fetch-Site: same-origin` plus the custom
+header. Supplied Fetch-Metadata cannot be cross-site, same-site, or navigation.
+Source POST requires the exact Origin. Missing Fetch-Metadata may coexist with
+an exact Origin for clients whose browser omits it; it never authorizes a
+missing-Origin GET. This is a browser/CSRF boundary, not user authentication.
+
+Credentialless routes reject Cookie, Authorization, and Proxy-Authorization.
+They reject query strings, root arrays, unknown keys, and unexpected bodies.
+Allowed preflights require the exact Origin, the exact route method, and only
+`content-type` / `x-openarc-client` requested headers; they emit the exact
+allow-origin, no credentials, no-store, and no caching grant. Disabled routes
+stay disabled on OPTIONS; HEAD never bypasses a protected GET guard. Status
+405 uses `METHOD_NOT_ALLOWED`; metrics auth failure uses `METRICS_UNAUTHORIZED`.
+All application errors use fixed shared messages, never raw parser/provider
+errors. Fastify hooks run privacy/limit checks before parsing request bodies.
+
+The initial maximum request body is 16 KiB, response 64 KiB for capabilities,
+provider request 16 KiB, and provider response 256 KiB. Source timeout defaults
+to 5 seconds (bounded 100–10,000 ms); maximum route subcalls defaults to 8
+(bounded 1–16). The provider client accepts the exact approved HTTPS endpoint,
+fixed POST JSON, identity content encoding only, no redirects/retries, and
+bounded streamed bytes and JSON structure. Compressed bodies fail closed rather
+than being implicitly decompressed without a separate verified bound.
+
+The generic M03 transport also caps response headers at 8 KiB, JSON depth at
+16, visited JSON nodes at 8,192, each collection at 2,048 entries, and each
+string or key at 65,536 code units. UTF-8 is decoded strictly. Duplicate
+media-type headers, invalid Content-Length, and unsafe object keys fail closed.
+An early declared-size failure does not consume the body. The 64 KiB normalized
+API-response ceiling applies to the reusable source boundary as well. No M03
+production route instantiates a provider adapter; method, chain, and anchor
+validation are introduced only in M04.
+
+### Abuse identity and budget accounting
+
+`trustProxy` is false. Only the socket peer, normalized for IPv4-mapped IPv6,
+selects the HMAC abuse bucket; all forwarded-address headers are ignored.
+Unknown peers share one conservative bucket. Requests arriving through one
+reverse proxy may share a bucket. This cannot be advertised as precise end-user
+quota allocation; a later trusted-proxy design needs a separately tested trust
+boundary before live source enablement.
+
+Standalone Redis Lua uses Redis server time and atomic fixed UTC hour/day
+windows. Keys contain only a versioned namespace, a fixed source/route class,
+or an HMAC digest; values contain only window numbers and bounded counters.
+Expiry is the window end plus a 60-second cleanup grace, and counters reset
+inside the same script when the window changes.
+
+Every enabled source-route attempt first consumes one per-peer/hour attempt
+and one daily route unit before Origin, credentials, type, size, or body checks.
+This includes rejected methods and preflights for an enabled source route.
+An already exhausted hourly bucket is charged/clamped without consuming more
+daily units. Each prospective upstream subcall then reserves one further daily
+unit atomically, and a per-request lease caps subcalls. A reservation is never
+refunded, even if cancellation or transport failure prevents completion; this
+is conservative spend control, not a claim that every reservation reached a
+provider. Metrics distinguish reservations from dispatched calls. Missing Redis,
+script errors, disconnection, or timeout fail closed without outbound calls.
+There is no offline queue or implicit retry that can perform a late operation.
+
+An already transmitted Redis command cannot be recalled: a timeout may consume
+one reservation after the caller has failed closed. It must never cause a retry
+or a provider dispatch. Exceeding a per-request subcall lease fails with the
+fixed `SOURCE_UNAVAILABLE` error. Dispatch metrics count transport invocations,
+not proof that the provider received a packet. The Redis command deadline is
+750 ms (internally bounded 25–2,000 ms), with no reconnect strategy and at most
+256 pending commands. Lease closure and route cancellation prevent further
+calls.
+
+Defaults are 60 attempts/hour and 10,000 combined units/day, both bounded at
+configuration time. Capability metadata is not a source route and requires no
+Redis or provider budget. Its payload and request lifetime remain bounded.
+Disposable real Redis tests must cover concurrent independent clients, global
+exhaustion across peers, window reset/TTL, outage, and raw-canary absence.
+
+### Operational/privacy surface
+
+Production requires an exact HTTPS `APP_ORIGIN`, an exact commit SHA, and a
+unique 32–128-character `METRICS_TOKEN`. Any supplied abuse secret meets the
+same bound and cannot equal the metrics token; it becomes required with source
+routes. Values are never logged. Configuration errors emit a fixed startup
+failure, not the environment or a Zod/provider stack.
+
+`GET /metrics` is direct-API only, authenticated with a constant-time bearer
+comparison. It is never proxied into the browser shell. Labels come exclusively
+from bounded route/status/source/error enums; counts and duration buckets are
+aggregate. Automatic Fastify request/error logs and Nginx request logs are off;
+application completion logs are built from an allowlist. Nginx upstream/error
+logs must also be suppressed or proven not to contain URI/query/referrer
+canaries; access-log suppression alone is insufficient. Health/readiness keep
+the existing `commitSha` field. Readiness distinguishes Redis-not-required from
+verified Redis availability and never probes a metered source.
+
+The enabled web build proxies only the named `/v1/private` routes and health/
+readiness paths to one configured HTTPS API origin with SNI and certificate
+verification. No browser-supplied upstream, redirect, or general proxy exists.
+Only this build changes CSP from `connect-src 'none'` to `connect-src 'self'`.
+External browser sources remain blocked. The disabled web build retains its
+local-only configuration. Production proxy tests use an isolated trusted test
+CA/HTTPS fixture, never a live provider or a shipped test trust root.
+
+Design references reviewed 2026-09-03: [browser Origin behavior](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Origin),
+[Fastify hook lifecycle](https://fastify.dev/docs/latest/Reference/Hooks/), and
+[Redis atomic Lua execution](https://redis.io/docs/latest/develop/programmability/eval-intro/).

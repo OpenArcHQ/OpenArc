@@ -62,8 +62,9 @@ describe("M00 API shell", () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.headers["cache-control"]).toBe("no-store");
-    expect(response.json()).toEqual({
-      error: { code: "NOT_FOUND", message: "Route not found." },
+    expect(response.json()).toMatchObject({ ok: false,
+      error: { code: "NOT_FOUND", message: "Route not found.", retryable: false },
+      meta: { schemaVersion: "openarc.api.v1", buildSha: "test-sha" },
     });
   });
 });

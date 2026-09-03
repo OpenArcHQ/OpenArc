@@ -6,6 +6,9 @@ import {
   MonitoringPolicySchema,
 } from "./evidence.js";
 import { ARC_TESTNET } from "./network.js";
+import { PermissionReceiptRecordSchema } from "./permission.js";
+import { VaultRevisionSchema, WorkspaceRecordIdSchema } from "./workspace-primitives.js";
+export { VaultRevisionSchema, WorkspaceRecordIdSchema } from "./workspace-primitives.js";
 import {
   EvmAddressSchema,
   IsoTimestampSchema,
@@ -20,9 +23,7 @@ const uniqueArray = <T extends z.ZodType>(item: T, maximum: number) =>
     message: "Expected unique values",
   });
 
-export const WorkspaceRecordIdSchema = z.string().uuid();
 export const AgentIdSchema = z.string().regex(/^agent_[0-9a-f]{32}$/u);
-export const VaultRevisionSchema = z.string().regex(/^[A-Za-z0-9_-]{32}$/u);
 export const WorkspaceRecordSchemaVersion = "openarc.workspace-record.v1" as const;
 
 const recordBase = {
@@ -106,9 +107,11 @@ const WorkspaceRecordVariantSchema = z.discriminatedUnion("kind", [
   ActionEnvelopeRecordSchema,
   WorkspaceSettingsRecordSchema,
   SentinelRecordSchema,
+  PermissionReceiptRecordSchema,
 ]);
 
 export const WorkspaceRecordSchema = WorkspaceRecordVariantSchema.superRefine((record, context) => {
+  if (!IsoTimestampSchema.safeParse(record.updatedAt).success || !IsoTimestampSchema.safeParse(record.createdAt).success) return;
   if (compareIsoTimestamps(record.updatedAt, record.createdAt) < 0) {
     context.addIssue({
       code: "custom",

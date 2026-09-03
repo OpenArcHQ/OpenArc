@@ -108,7 +108,6 @@ for (const requiredToken of [
     failures.push(`M02 encrypted-workspace contract is missing ${requiredToken}`);
   }
 }
-
 for (const forbiddenToken of [
   "fetch(",
   "XMLHttpRequest",
@@ -130,11 +129,51 @@ for (const forbiddenToken of [
   }
 }
 
-for (const futureKind of ["permission_receipt", "investigation_note"]) {
+for (const futureKind of ["investigation_note"]) {
   const sharedVaultSource = m02Sources.get("packages/shared/src/vault.ts") ?? "";
   if (sharedVaultSource.includes(futureKind)) {
     failures.push(`M02 record union implements later-milestone kind: ${futureKind}`);
   }
+}
+
+const m03Files = [
+  "docs/releases/03-api-privacy-boundary.md",
+  "packages/shared/src/api.ts",
+  "packages/shared/src/permission.ts",
+  "apps/api/src/http/origin.ts",
+  "apps/api/src/http/source-route.ts",
+  "apps/api/src/limits/budget.ts",
+  "apps/api/src/ops/metrics.ts",
+  "apps/api/src/providers/http.ts",
+  "apps/api/test/budget.test.ts",
+  "apps/api/test/provider.test.ts",
+  "apps/web/src/api/capabilities.ts",
+  "apps/web/src/api/permission-flow.ts",
+  "apps/web/nginx-api.conf",
+  "apps/web/proxy_params",
+  "scripts/test-m02-receipt-compat.mjs",
+];
+const m03Sources = new Map();
+for (const required of m03Files) {
+  try {
+    m03Sources.set(required, await readFile(path.join(root, required), "utf8"));
+  } catch {
+    failures.push(`Missing required M03 file: ${required}`);
+  }
+}
+const m03Runtime = [...m03Sources].filter(([file]) => !file.includes("test/") && !file.startsWith("docs/"))
+  .map(([, source]) => source).join("\n");
+for (const requiredToken of [
+  "openarc.api.v1", "openarc.permission-receipt.v1", "browser-v1", "credentials: \"omit\"",
+  "disableOfflineQueue: true", "reconnectStrategy: false", "timingSafeEqual", "proxy_ssl_verify on",
+  "connect-src 'self'", "error_log /dev/null emerg", "access_log off",
+  "add_header Cache-Control \"no-store\" always", "add_header Pragma \"no-cache\" always",
+  "add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always",
+]) {
+  if (!m03Runtime.includes(requiredToken)) failures.push(`M03 privacy boundary is missing ${requiredToken}`);
+}
+for (const forbiddenToken of ["rejectUnauthorized: false", "credentials: \"include\"", "redirect: \"follow\""]) {
+  if (m03Runtime.includes(forbiddenToken)) failures.push(`M03 privacy boundary contains forbidden behavior: ${forbiddenToken}`);
 }
 
 const envExample = await readFile(path.join(root, ".env.example"), "utf8");
@@ -143,11 +182,17 @@ const webDockerfile = await readFile(path.join(root, "apps/web/Dockerfile"), "ut
 if (!envExample.includes("VITE_ENCRYPTED_WORKSPACE_ENABLED=false")) {
   failures.push("M02 feature flag must default to false in .env.example");
 }
+for (const featureFlag of ["API_BOUNDARY_ENABLED=false", "VITE_API_BOUNDARY_ENABLED=false"]) {
+  if (!envExample.includes(featureFlag)) failures.push(`M03 feature flag must default false: ${featureFlag}`);
+}
 if (!dockerignoreSource.includes("!.env.example")) {
   failures.push("The clean-room release image must include .env.example for release:check");
 }
 if (!webDockerfile.includes("ARG VITE_ENCRYPTED_WORKSPACE_ENABLED=false")) {
   failures.push("M02 feature flag must default to false in the web image");
+}
+if (!webDockerfile.includes("ARG VITE_API_BOUNDARY_ENABLED=false")) {
+  failures.push("M03 API boundary must default to false in the web image");
 }
 
 const nginxSource = await readFile(path.join(root, "apps/web/nginx.conf"), "utf8");
@@ -165,6 +210,18 @@ if (!packageSource.includes("playwright test -c playwright.production.config.ts"
   failures.push("M02 browser gate must define an exact production-artifact check");
 }
 const m02WorkflowSource = await readFile(path.join(root, ".github/workflows/release-gates.yml"), "utf8");
+for (const requiredToken of [
+  "openarc-web-m03:ci", "VITE_API_BOUNDARY_ENABLED=true", "pnpm e2e:api-boundary:production",
+  "API_UPSTREAM_SNI=wrong.openarc.test", "image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m03:ci",
+  "api_ready=0", "test \"${api_ready}\" = \"1\"",
+  "shell.headers", "proxy.headers", "proxy-502.headers", "Strict-Transport-Security: max-age=31536000; includeSubDomains",
+  "OPENARC_TEST_REDIS_URL: redis://127.0.0.1:6379", "OPENARC_TEST_REDIS_DISPOSABLE: \"true\"",
+  "openarc-web-m02-reader:ci", "m02_reader_ready=0", "test-m02-receipt-compat.mjs seed",
+  "test-m02-receipt-compat.mjs verify", "fetch-depth: 0",
+  "openarc-web-m03:ci -o cyclonedx-json > sbom-web-m03.cdx.json",
+]) {
+  if (!m02WorkflowSource.includes(requiredToken)) failures.push(`Hosted M03 image/proxy gate is missing ${requiredToken}`);
+}
 for (const requiredToken of [
   "VITE_ENCRYPTED_WORKSPACE_ENABLED=true",
   "openarc-web-m02:ci",
@@ -191,6 +248,12 @@ const dockerfiles = await Promise.all(
     async (relativePath) => [relativePath, await readFile(path.join(root, relativePath), "utf8")],
   ),
 );
+
+const cleanRoomGate = dockerfiles.find(([candidate]) => candidate === "scripts/Dockerfile.node22-gate")?.[1] ?? "";
+for (const requiredToken of ["redis:8-bookworm@sha256:", "COPY --from=redis-test /usr/local/bin/redis-server",
+  "OPENARC_TEST_REDIS_SERVER=/usr/local/bin/redis-server"]) {
+  if (!cleanRoomGate.includes(requiredToken)) failures.push(`Clean-room gate is missing disposable Redis fixture wiring: ${requiredToken}`);
+}
 
 for (const [relativePath, source] of dockerfiles) {
   for (const instruction of source.matchAll(/^FROM\s+(\S+)/gmu)) {
@@ -260,4 +323,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log("[release-check] M02 encrypted workspace, M01 evidence engine, and M00 foundation verified");
+console.log("[release-check] M03 API/privacy boundary, M02 workspace, M01 engine, and M00 foundation verified");

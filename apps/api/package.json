@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@openarc/shared": "workspace:*",
+    "@redis/client": "6.2.1",
     "fastify": "5.12.1",
     "zod": "4.5.4"
   },

@@ -16,8 +16,10 @@ COPY assets assets
 
 ARG COMMIT_SHA=local
 ARG VITE_ENCRYPTED_WORKSPACE_ENABLED=false
+ARG VITE_API_BOUNDARY_ENABLED=false
 ENV VITE_COMMIT_SHA=${COMMIT_SHA}
 ENV VITE_ENCRYPTED_WORKSPACE_ENABLED=${VITE_ENCRYPTED_WORKSPACE_ENABLED}
+ENV VITE_API_BOUNDARY_ENABLED=${VITE_API_BOUNDARY_ENABLED}
 RUN pnpm --filter @openarc/shared build && pnpm --filter @openarc/web build
 
 FROM nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de AS runtime
@@ -32,7 +34,17 @@ RUN apk add --no-cache \
     libxml2=2.13.9-r1 \
     nghttp2-libs=1.69.0-r0
 
-COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
+ARG VITE_API_BOUNDARY_ENABLED=false
+COPY apps/web/nginx.conf apps/web/nginx-api.conf apps/web/proxy_params /tmp/openarc-nginx/
+RUN if [ "${VITE_API_BOUNDARY_ENABLED}" = "true" ]; then \
+      cp /tmp/openarc-nginx/nginx-api.conf /etc/nginx/templates/default.conf.template; \
+      cp /tmp/openarc-nginx/proxy_params /etc/nginx/proxy_params; \
+      rm -f /etc/nginx/conf.d/default.conf; \
+    else \
+      cp /tmp/openarc-nginx/nginx.conf /etc/nginx/conf.d/default.conf; \
+    fi && rm -rf /tmp/openarc-nginx
+ENV API_TRUST_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    NGINX_ENVSUBST_FILTER=^API_(UPSTREAM_(HOST|SNI)|TRUST_BUNDLE)$
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 
 EXPOSE 8080

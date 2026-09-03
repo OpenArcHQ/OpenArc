@@ -1234,6 +1234,40 @@ footer code {
   line-height: 1.6;
 }
 
+.sources-grid .button {
+  margin-top: 1rem;
+}
+
+.source-facts,
+.permission-disclosure {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.source-facts > div,
+.permission-disclosure > div {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0.3rem;
+  padding-top: 0.65rem;
+}
+
+.source-facts dt,
+.permission-disclosure dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.source-facts dd,
+.permission-disclosure dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .workspace-callouts button,
 .fixture-import-grid button,
 .settings-grid article > button,

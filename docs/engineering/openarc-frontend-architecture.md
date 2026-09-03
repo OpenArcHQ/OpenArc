@@ -499,6 +499,50 @@ Rules:
 - no address, hash, ID, policy, or provider message enters console logs;
 - abort is a neutral session event, not a visible provider failure after lock.
 
+### M03 bootstrap and receipt contract
+
+`VITE_API_BOUNDARY_ENABLED` defaults false and requires the encrypted workspace
+flag. It adds an unlocked Sources view with an explicit capability-check action,
+not an automatic fetch. Before confirmation, fixed local copy names the current
+same-origin OpenArc API, no upstream provider, no user-entered released fields,
+omitted cookies/credentials, and ordinary hosting/network metadata (including
+IP and user-agent) visible to the API/host. No response is needed to display this
+initial disclosure. A denied/cancelled prompt performs no request or write.
+
+The new `permission_receipt` kind uses `recordSchema:
+"openarc.permission-receipt.v1"`, opaque record/revision IDs, and the ordinary
+created/updated timestamps. Its strict payload contains the fixed
+`openarc_capabilities` connector, same-origin destination plus the exact GET
+path, empty upstream/released-field arrays, fixed purpose/retention/credential
+descriptions, approval time, and `approved | completed | failed` outcome.
+`approved` has null resolution/failure; `completed` has a resolution no earlier
+than approval and no failure; `failed` has a resolution and one bounded shared
+failure code. Creation equals approval and update equals resolution or approval.
+Unknown schema, keys, destinations, outcomes, or impossible times fail closed.
+No wallet identifiers or live-source evidence are accepted by this M03 receipt.
+
+Receipt capacity is 1,000 under the existing combined ceiling of 6,602 records
+including the sentinel. Keep the existing 6,601-entry manifest and 32 MiB backup
+cap; save/export/import enforce both per-kind and combined bounds. Existing M02
+records retain their schemas and are not migrated merely by unlocking. M03
+reads them, while M02 rejects a newer receipt without overwriting it and still
+offers opaque rescue/delete. Outer crypto and backup formats remain unchanged.
+
+Capability fetch uses only the fixed relative route, `credentials: "omit"`,
+`redirect: "error"`, `cache: "no-store"`, `referrerPolicy: "no-referrer"`, and
+the fixed client header. It is bounded to 64 KiB and a 10-second total deadline,
+validates the strict envelope/DTO, and accepts no response-supplied URL as a
+future destination. A persisted completed receipt proves this configuration
+check completed, not that Arc was contacted or any agent was verified.
+
+Receipt commit updates the active local revision before dispatch. The same
+generation/abort guard covers the request and final receipt commit. Lock,
+hidden/pagehide, delete, import, recovery, cross-tab changes, and replacement
+abort work and prevent all late UI/writes. Failure after dispatch preserves the
+approved receipt if the failed/completed update cannot save; UI distinguishes
+"nothing sent" from "request may have reached OpenArc; result not saved".
+Source-feature capability values remain false and live connector controls absent.
+
 ## 11. Permission-before-network transaction
 
 All source refreshes use the same flow:

@@ -4,7 +4,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-import { M01_FIXTURES, reconcileAction } from "@openarc/shared";
+import { CAPABILITY_DISCLOSURE, M01_FIXTURES, PermissionReceiptRecordSchema, reconcileAction, type WorkspaceRecord } from "@openarc/shared";
 
 import {
   createRevision,
@@ -734,6 +734,40 @@ describe("encrypted local workspace", () => {
       /agent_profile limit is 100/u,
     );
   });
+
+  it("keeps receipt and combined capacities inside the unchanged manifest ceiling", () => {
+    const fake = (kind: WorkspaceRecord["kind"], count: number) => Array.from({ length: count }, () => ({ kind })) as WorkspaceRecord[];
+    expect(() => assertWorkspaceRecordCapacity(fake("permission_receipt", 1_001))).toThrow(/permission_receipt limit is 1000/u);
+    const maximum = [...fake("evidence_record", 5_000), ...fake("action_envelope", 600),
+      ...fake("permission_receipt", 1_000), ...fake("workspace_settings", 1), ...fake("sentinel", 1)];
+    expect(maximum).toHaveLength(6_602);
+    expect(() => assertWorkspaceRecordCapacity(maximum)).not.toThrow();
+    expect(() => assertWorkspaceRecordCapacity([...maximum, ...fake("agent_profile", 1)])).toThrow(/6602 total records/u);
+  });
+
+  it("encrypts, unlocks, exports, imports, recovers, and deletes mixed M02/M03 receipt records", async () => {
+    const created = await createLocalWorkspace(originalPassphrase);
+    const at = "2026-09-03T12:00:00Z";
+    const receipt = PermissionReceiptRecordSchema.parse({ recordSchema: "openarc.permission-receipt.v1",
+      kind: "permission_receipt", recordId: crypto.randomUUID(), recordRevision: created.meta.revision,
+      createdAt: at, updatedAt: at, connectorId: CAPABILITY_DISCLOSURE.connectorId,
+      destination: { origin: "https://private-origin-canary.example.test", path: "/v1/private/capabilities", method: "GET", upstreams: [] },
+      releasedFields: [], purpose: CAPABILITY_DISCLOSURE.purpose, credentials: CAPABILITY_DISCLOSURE.credentials,
+      openArcRetention: CAPABILITY_DISCLOSURE.openArcRetention, providerRetention: CAPABILITY_DISCLOSURE.providerRetention,
+      hostingMetadata: CAPABILITY_DISCLOSURE.hostingMetadata, approvedAt: at, outcome: "approved", resolvedAt: null, failureCode: null });
+    const saved = await saveWorkspaceRecords(created, [receipt]);
+    expect(JSON.stringify(await readRawDatabase())).not.toContain("private-origin-canary");
+    const unlocked = await unlockLocalWorkspace(saved.meta, originalPassphrase);
+    expect(unlocked.records).toContainEqual(expect.objectContaining({ kind: "permission_receipt", outcome: "approved" }));
+    const backup = await exportLocalWorkspace(unlocked, backupPassphrase);
+    expect(JSON.stringify(backup)).not.toContain("private-origin-canary");
+    const imported = await importLocalWorkspace(backup, backupPassphrase, restoredPassphrase, saved.meta);
+    expect(imported.records).toContainEqual(expect.objectContaining({ kind: "permission_receipt", outcome: "approved" }));
+    const recovered = await recoverLocalWorkspace(imported.meta, imported.recoverySecret, originalPassphrase);
+    expect(recovered.records).toContainEqual(expect.objectContaining({ recordId: receipt.recordId, kind: "permission_receipt" }));
+    const deleted = await deleteWorkspaceRecords(recovered, [receipt.recordId]);
+    expect(deleted.records.some((record) => record.kind === "permission_receipt")).toBe(false);
+  });
 });
 
 describe("M02 static privacy boundary", () => {
@@ -778,6 +812,7 @@ describe("M02 static privacy boundary", () => {
     expect(nginx).toContain("connect-src 'none'");
     expect(nginx).toContain("worker-src 'none'");
     expect(nginx).toContain("object-src 'none'");
+    expect(nginx).toContain('Strict-Transport-Security "max-age=31536000; includeSubDomains" always');
     expect(workflow).toContain("VITE_ENCRYPTED_WORKSPACE_ENABLED=true");
     expect(workflow).toContain("pnpm e2e:production");
     expect(productionTest).toContain("connect-src 'none'");

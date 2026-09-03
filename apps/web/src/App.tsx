@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { BuildInfo } from "@openarc/shared";
 
 import { FixtureExplorer } from "./evidence/FixtureExplorer.js";
-import { encryptedWorkspaceEnabled } from "./app/availability.js";
+import { apiBoundaryEnabled, encryptedWorkspaceEnabled } from "./app/availability.js";
 import { VaultWorkspace } from "./vault/VaultWorkspace.js";
 
 interface AppProps {
@@ -55,7 +55,7 @@ export function App({ build }: AppProps) {
           {workspaceEnabled ? <a href="/workspace">Workspace</a> : null}
           <a href="#fixture-explorer">Explorer</a>
           <a href="#network">Network</a>
-          <span className="phase">M02 · ENCRYPTED WORKSPACE</span>
+          <span className="phase">{apiBoundaryEnabled() ? "M03 · API PRIVACY BOUNDARY" : "M02 · ENCRYPTED WORKSPACE"}</span>
         </div>
       </nav>
 

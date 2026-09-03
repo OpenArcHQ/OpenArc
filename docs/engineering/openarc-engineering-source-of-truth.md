@@ -482,6 +482,9 @@ Feature flags fail closed and exist on both sides when a server route and UI are
 paired.
 
 ```text
+API_BOUNDARY_ENABLED
+VITE_API_BOUNDARY_ENABLED
+
 ARC_OBSERVATION_ENABLED
 VITE_ARC_OBSERVATION_ENABLED
 
@@ -609,6 +612,37 @@ Exit gate:
 - logs and Redis contain no raw privacy canaries;
 - receipt save failure proves zero outbound calls;
 - lock during a delayed call proves zero late writes.
+
+M03's frozen implementation boundary:
+
+- `API_BOUNDARY_ENABLED` and `VITE_API_BOUNDARY_ENABLED` default false. When
+  enabled, the only functional product route is credentialless
+  `GET /v1/private/capabilities`. It returns strict, versioned configuration
+  metadata with an empty enabled-connector list and every source feature false.
+  Source adapters and live-source evidence records are not implemented early.
+- Capability discovery is an explicit unlocked-workspace action, never startup,
+  navigation, unlock, focus, or interval work. A locally fixed disclosure names
+  the same-origin API and hosting/network metadata it receives. An encrypted
+  `openarc_capabilities` receipt is committed before the first request; it has
+  no user-entered released fields and no upstream provider destination.
+- `openarc.permission-receipt.v1` is a new encrypted record schema, not a change
+  to the six frozen `openarc.workspace-record.v1` kinds or M01 evidence v1.
+  M03 accepts existing M02 records without rewriting them. A workspace containing
+  a receipt fails closed in M02, whose opaque rescue/delete paths remain usable.
+  The outer crypto/database/backup formats are unchanged. Receipt capacity is
+  1,000, within a combined ceiling of 6,602 records including the sentinel; the
+  6,601-entry manifest and 32 MiB backup bounds are not widened.
+- Redis is required for enabled source routes, not for the source-disabled
+  capabilities shell. M03 nevertheless implements real Redis atomic controls
+  and tests them with disposable Redis. There is no in-memory production
+  fallback, new managed Redis deployment, or live provider call in M03.
+- Missing/null Origin handling, a browser-only custom-header/Fetch-Metadata
+  check, conservative socket-peer abuse identity, attempt/subcall accounting,
+  metrics authentication, and verified-TLS same-origin proxying are frozen in
+  the backend specification before implementation. Consent/session behavior is
+  owned by the frontend specification.
+- Staging uses the existing disposable web/API services only. It is not a
+  permanent-origin, live-source, public-launch, or mainnet approval.
 
 ### Milestone 04 - Arc account and transaction observation
 
