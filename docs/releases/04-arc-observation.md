@@ -90,8 +90,8 @@ substitution. This is an engineering record, not legal advice.
 - [x] Real Redis accounting, timeout, abort, response cap, and privacy tests
 - [x] Receipt-before-request and atomic encrypted observation persistence
 - [x] Outage leaves prior encrypted observation bytes unchanged and visibly stale
-- [ ] Chromium/WebKit/mobile/accessibility and exact production-image journeys
-- [ ] Full Node 22 gate, audit/licenses/scans/SBOM and hosted CI
+- [x] Chromium/WebKit/mobile/accessibility and exact production-image journeys
+- [x] Full Node 22 gate, audit/licenses/scans/SBOM and hosted CI
 - [ ] Controlled live Testnet read on exact staged SHA with no write transaction
 - [ ] Independent no-P0/P1 review, immutable RC, and `main` closure
 
@@ -120,4 +120,32 @@ Hosted release plumbing now builds a feature-on M04 web image and runs the
 actual feature-on API image through its real Redis limiter, verified TLS proxy,
 and fixed HTTPS RPC transport against a local certificate-pinned JSON-RPC
 fixture. It also adds M04 HIGH/CRITICAL scanning and a CycloneDX SBOM. Those
-hosted claims remain unchecked until the exact candidate workflow succeeds.
+The exact candidate workflow results are recorded below.
+
+## Exact implementation hosted evidence — 2026-09-03
+
+Implementation `e6ba27323295069f1db3c1d7687e44da82efbc45` was clean,
+pushed, and equal to its remote branch head. GitHub Actions run
+`33798917937` completed successfully on that exact SHA:
+
+- verify passed the release check, production audit, license policy, lint,
+  type checks, 64 shared / 65 API / 67 web tests with real Redis, and builds;
+- the browser job passed 46 baseline, 2 feature-off, 12 M03, and 4 local M04
+  Chromium/WebKit journeys plus the immutable M02 and exact M03 image paths;
+- the exact feature-on M04 web/API images reported source routes enabled with
+  real Redis, verified both internal TLS hops, and exercised the fixed HTTPS
+  JSON-RPC transport against the certificate-pinned local source fixture;
+- both Chromium and WebKit completed account and transaction observation through
+  those exact containers. The two exact-source outage cases were intentionally
+  skipped because the source fixture is success-only; both-engine injected
+  outage journeys and API/unit failure matrices passed earlier in the same run;
+- all production images, including feature-on M04, passed HIGH/CRITICAL Trivy
+  scanning. Syft produced CycloneDX 1.7 artifact `9910382888` (`openarc-sboms`),
+  digest `sha256:a73538bce29db822aa2ef0786ebaf17da7d1f28bf4a223314fe4871ba83f65df`,
+  expiring 2026-12-02;
+- GitHub reported zero billable runner milliseconds.
+
+No request in this candidate or its hosted tests contacted Arc, created a
+Railway resource, or changed the M03 rollback deployment. Controlled live
+Public Testnet proof, independent review, staging, immutable RC, and closure
+remain separate gates.
