@@ -1,0 +1,1506 @@
+import {
+  M01_FIXTURES,
+  type AgentProfileRecord,
+  type MonitoringPolicyRecord,
+  type WorkspaceRecord,
+  type WorkspaceSettingsRecord,
+} from "@openarc/shared";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
+
+import type { BuildInfo } from "@openarc/shared";
+
+import {
+  observeVaultDatabase,
+  readStorageStatus,
+  readVaultMeta,
+  requestPersistentStorage,
+} from "./db.js";
+import { VaultError, vaultErrorMessage } from "./errors.js";
+import {
+  bootstrapWorkspace,
+  createAgentProfileRecord,
+  createFixtureWorkspaceRecords,
+  createLocalWorkspace,
+  createMonitoringPolicyRecord,
+  deleteWorkspaceRecords,
+  destroyLocalWorkspace,
+  exportLocalWorkspace,
+  exportOpaqueRescue,
+  importLocalWorkspace,
+  markTourSeen,
+  parseBackupFile,
+  prepareLocalWorkspaceDeletion,
+  recoverLocalWorkspace,
+  saveWorkspaceRecords,
+  signalWorkspaceLock,
+  unlockLocalWorkspace,
+  updateWorkspacePassphrase,
+  type AgentProfileDraft,
+  type MonitoringPolicyDraft,
+} from "./service.js";
+import { probeVaultPlatform } from "./crypto.js";
+import type {
+  CreatedWorkspace,
+  PublicVaultMeta,
+  UnlockedWorkspace,
+  VaultStorageStatus,
+} from "./types.js";
+
+type WorkspaceView = "overview" | "agents" | "policies" | "evidence" | "settings";
+type Screen =
+  | { phase: "probing" }
+  | { phase: "unsupported" }
+  | { phase: "empty" }
+  | { phase: "locked"; meta: PublicVaultMeta }
+  | { phase: "unlocking"; meta: PublicVaultMeta }
+  | { phase: "unlocked"; workspace: UnlockedWorkspace }
+  | { phase: "locking"; meta: PublicVaultMeta }
+  | { phase: "deleting"; meta: PublicVaultMeta | null }
+  | { phase: "fatal"; message: string };
+
+type CoordinationMessage = {
+  sender: string;
+  type: "changed" | "lock" | "deleting";
+  vaultId: string;
+};
+
+type SessionGuard = {
+  signal: AbortSignal;
+  assertActive: () => void;
+  isActive: () => boolean;
+};
+
+const INACTIVITY_MS = 10 * 60 * 1_000;
+const VIEWS: readonly { id: WorkspaceView; label: string; note: string }[] = [
+  { id: "overview", label: "Overview", note: "Local workspace status" },
+  { id: "agents", label: "Agents", note: "Owner-supplied profiles" },
+  { id: "policies", label: "Policies", note: "Local monitoring rules" },
+  { id: "evidence", label: "Evidence", note: "Encrypted fixture records" },
+  { id: "settings", label: "Settings", note: "Backup, recovery, delete" },
+];
+
+export function VaultWorkspace({ build }: { build: BuildInfo }) {
+  const [screen, setScreen] = useState<Screen>({ phase: "probing" });
+  const [view, setViewState] = useState<WorkspaceView>(() => viewFromLocation());
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusyState] = useState(false);
+  const [recoverySecret, setRecoverySecret] = useState<string | null>(null);
+  const [tourOpen, setTourOpen] = useState(false);
+  const [fatalDeleteConfirmed, setFatalDeleteConfirmed] = useState(false);
+  const [sessionGeneration, setSessionGeneration] = useState(0);
+  const screenRef = useRef<Screen>({ phase: "probing" });
+  const unlockedRef = useRef<UnlockedWorkspace | null>(null);
+  const generationRef = useRef(0);
+  const channelRef = useRef<BroadcastChannel | null>(null);
+  const senderRef = useRef("");
+  const deadlineRef = useRef(0);
+  const tourReturnFocusRef = useRef<HTMLElement | null>(null);
+  const sessionAbortRef = useRef(new AbortController());
+  const pendingRef = useRef(false);
+
+  const setBusy = useCallback((value: boolean) => {
+    pendingRef.current = value;
+    setBusyState(value);
+  }, []);
+
+  useEffect(() => {
+    screenRef.current = screen;
+  }, [screen]);
+
+  const rotateSessionBoundary = useCallback(() => {
+    sessionAbortRef.current.abort(new Error("Vault session changed"));
+    sessionAbortRef.current = new AbortController();
+    generationRef.current += 1;
+    setSessionGeneration(generationRef.current);
+  }, []);
+
+  const createSessionGuard = useCallback((): SessionGuard => {
+    const generation = generationRef.current;
+    const signal = sessionAbortRef.current.signal;
+    const isActive = () => !signal.aborted && generation === generationRef.current;
+    return {
+      signal,
+      isActive,
+      assertActive: () => {
+        if (!isActive()) throw new Error("Vault session changed");
+      },
+    };
+  }, []);
+
+  const clearPrivateState = useCallback((next: Screen, message?: string) => {
+    rotateSessionBoundary();
+    unlockedRef.current = null;
+    deadlineRef.current = 0;
+    setRecoverySecret(null);
+    setTourOpen(false);
+    setBusy(false);
+    setScreen(next);
+    setNotice(message ?? null);
+    setError(null);
+  }, [rotateSessionBoundary, setBusy]);
+
+  const enterDeleting = useCallback((meta: PublicVaultMeta): boolean => {
+    if (!meta.deletionPending) return false;
+    clearPrivateState(
+      { phase: "deleting", meta },
+      "This workspace is being deleted. Workspace controls are unavailable.",
+    );
+    return true;
+  }, [clearPrivateState]);
+
+  const handleObservedVaultBoundary = useCallback(async (
+    cause: unknown,
+    isActive: () => boolean,
+  ): Promise<boolean> => {
+    if (!(cause instanceof VaultError) || !["VAULT_CONFLICT", "VAULT_EXISTS"].includes(cause.code)) {
+      return false;
+    }
+    try {
+      const meta = await readVaultMeta();
+      if (!isActive()) return true;
+      if (meta && enterDeleting(meta)) return true;
+      if (cause.code === "VAULT_EXISTS") {
+        clearPrivateState(
+          meta
+            ? { phase: "locked", meta }
+            : { phase: "fatal", message: "Encrypted workspace bytes exist without readable metadata." },
+          meta ? "An encrypted workspace already exists here. Unlock it to continue." : undefined,
+        );
+        return true;
+      }
+    } catch (readCause) {
+      if (!isActive()) return true;
+      clearPrivateState({ phase: "fatal", message: vaultErrorMessage(readCause) });
+      return true;
+    }
+    return false;
+  }, [clearPrivateState, enterDeleting]);
+
+  const broadcast = useCallback((type: CoordinationMessage["type"], vaultId: string) => {
+    channelRef.current?.postMessage({ sender: senderRef.current, type, vaultId } satisfies CoordinationMessage);
+  }, []);
+
+  const acceptUnlocked = useCallback(
+    (workspace: UnlockedWorkspace, options: { boundary?: boolean; message?: string } = {}) => {
+      if (options.boundary !== false) {
+        rotateSessionBoundary();
+      }
+      unlockedRef.current = workspace;
+      deadlineRef.current = Date.now() + INACTIVITY_MS;
+      setScreen({ phase: "unlocked", workspace });
+      setBusy(false);
+      setError(null);
+      setNotice(options.message ?? null);
+    },
+    [rotateSessionBoundary, setBusy],
+  );
+
+  const lockImmediately = useCallback(
+    (message = "Workspace locked. The in-memory key and decrypted UI state were released.") => {
+      const current = unlockedRef.current;
+      if (!current) return;
+      const lockSignal = signalWorkspaceLock(current.meta);
+      clearPrivateState({ phase: "locked", meta: current.meta }, message);
+      const boundaryGeneration = generationRef.current;
+      void lockSignal
+        .then((meta) => {
+          if (boundaryGeneration === generationRef.current && meta.deletionPending) enterDeleting(meta);
+        })
+        .catch((cause) => void handleObservedVaultBoundary(
+          cause,
+          () => boundaryGeneration === generationRef.current,
+        ));
+      broadcast("lock", current.meta.vaultId);
+    },
+    [broadcast, clearPrivateState, enterDeleting, handleObservedVaultBoundary],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        if (!(await probeVaultPlatform())) {
+          if (!cancelled) setScreen({ phase: "unsupported" });
+          return;
+        }
+        const meta = await bootstrapWorkspace();
+        if (!cancelled) {
+          setScreen(
+            meta
+              ? meta.deletionPending
+                ? { phase: "deleting", meta }
+                : { phase: "locked", meta }
+              : { phase: "empty" },
+          );
+        }
+      } catch (cause) {
+        if (!cancelled) setScreen({ phase: "fatal", message: vaultErrorMessage(cause) });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    // React development StrictMode intentionally runs an effect cleanup/setup
+    // probe without unmounting the component. Start that second setup with a
+    // fresh boundary while retaining the real-unmount abort behavior.
+    if (sessionAbortRef.current.signal.aborted) {
+      sessionAbortRef.current = new AbortController();
+    }
+    return () => {
+      sessionAbortRef.current.abort(new Error("Workspace unmounted"));
+      generationRef.current += 1;
+      unlockedRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined" || typeof crypto.randomUUID !== "function") return;
+    senderRef.current = crypto.randomUUID();
+    const channel = new BroadcastChannel("openarc-vault-coordination-v1");
+    channelRef.current = channel;
+    channel.onmessage = (event: MessageEvent<unknown>) => {
+      const value = event.data;
+      if (!isCoordinationMessage(value) || value.sender === senderRef.current) return;
+      const current = unlockedRef.current;
+      const currentScreen = screenRef.current;
+      const currentMeta =
+        current?.meta ??
+        (currentScreen.phase === "locked" ||
+        currentScreen.phase === "unlocking" ||
+        currentScreen.phase === "locking" ||
+        currentScreen.phase === "deleting"
+          ? currentScreen.meta
+          : null);
+      if (!currentMeta && currentScreen.phase === "empty") {
+        void readVaultMeta()
+          .then((meta) => {
+            if (!meta || meta.vaultId !== value.vaultId) return;
+            clearPrivateState(
+              meta.deletionPending ? { phase: "deleting", meta } : { phase: "locked", meta },
+              meta.deletionPending
+                ? "Another tab is deleting this workspace. Workspace controls are unavailable."
+                : "An encrypted workspace was created or restored in another tab. Unlock it here to continue.",
+            );
+          })
+          .catch((cause) => {
+            clearPrivateState({ phase: "fatal", message: vaultErrorMessage(cause) });
+          });
+        return;
+      }
+      if (!currentMeta || currentMeta.vaultId !== value.vaultId) return;
+      if (value.type === "deleting") {
+        void readVaultMeta().then((meta) => {
+          if (meta?.vaultId === value.vaultId && meta.deletionPending) {
+            clearPrivateState({ phase: "deleting", meta }, "Another tab is deleting this workspace.");
+          }
+        }).catch(() => undefined);
+      } else {
+        clearPrivateState(
+          { phase: "locked", meta: currentMeta },
+          value.type === "changed"
+            ? "Workspace changed in another tab. Unlock again to load the latest encrypted revision."
+            : "Workspace locked from another tab.",
+        );
+      }
+    };
+    return () => {
+      channelRef.current = null;
+      channel.close();
+    };
+  }, [clearPrivateState]);
+
+  useEffect(() => {
+    if (screen.phase !== "unlocked" && screen.phase !== "locked") return;
+    let cancelled = false;
+    let closeObserver: (() => void) | null = null;
+    void observeVaultDatabase((reason) => {
+      if (cancelled) return;
+      if (reason === "deletion") {
+        const currentScreen = screenRef.current;
+        const currentMeta =
+          unlockedRef.current?.meta ??
+          (currentScreen.phase === "locked" ? currentScreen.meta : null);
+        clearPrivateState(
+          { phase: "deleting", meta: currentMeta },
+          "The local database is being deleted. Workspace controls are unavailable.",
+        );
+      } else if (reason === "versionchange") {
+        const currentScreen = screenRef.current;
+        const currentMeta =
+          unlockedRef.current?.meta ??
+          (currentScreen.phase === "locked" ? currentScreen.meta : null);
+        clearPrivateState(
+          currentMeta ? { phase: "locking", meta: currentMeta } : { phase: "probing" },
+          "The local database changed. OpenArc is rechecking it before exposing any controls.",
+        );
+        const boundaryGeneration = generationRef.current;
+        void readVaultMeta()
+          .then((meta) => {
+            if (boundaryGeneration !== generationRef.current) return;
+            if (!meta) {
+              setScreen({ phase: "empty" });
+              setNotice("The local workspace database was removed outside OpenArc.");
+            } else if (meta.deletionPending) {
+              setScreen({ phase: "deleting", meta });
+              setNotice("Another tab is deleting this workspace. Workspace controls are unavailable.");
+            } else {
+              setScreen({ phase: "locked", meta });
+              setNotice("The local database changed. Unlock again only after verifying this build.");
+            }
+          })
+          .catch((cause) => {
+            if (boundaryGeneration !== generationRef.current) return;
+            setScreen({ phase: "fatal", message: vaultErrorMessage(cause) });
+            setNotice(null);
+          });
+      } else {
+        const currentScreen = screenRef.current;
+        if (unlockedRef.current) {
+          lockImmediately("The local database closed unexpectedly. Unlock again before continuing.");
+        } else if (currentScreen.phase === "locked") {
+          clearPrivateState(
+            { phase: "locked", meta: currentScreen.meta },
+            "The local database closed unexpectedly. Unlock again only after verifying this browser state.",
+          );
+        }
+      }
+    }).then((close) => {
+      if (cancelled) close();
+      else closeObserver = close;
+    });
+    return () => {
+      cancelled = true;
+      closeObserver?.();
+    };
+  }, [clearPrivateState, lockImmediately, screen.phase, sessionGeneration]);
+
+  useEffect(() => {
+    if (!["empty", "unlocked", "locked", "unlocking"].includes(screen.phase)) return;
+    let stopped = false;
+    const verifyRevision = async () => {
+      try {
+        const currentWorkspace = unlockedRef.current;
+        const currentMeta =
+          currentWorkspace?.meta ??
+          (screen.phase === "locked" || screen.phase === "unlocking" ? screen.meta : null);
+        const meta = await readVaultMeta();
+        if (!currentMeta) {
+          if (!stopped && meta) {
+            clearPrivateState(
+              meta.deletionPending ? { phase: "deleting", meta } : { phase: "locked", meta },
+              meta.deletionPending
+                ? "Another tab is deleting this workspace. Workspace controls are unavailable."
+                : "An encrypted workspace was created or restored in another tab. Unlock it here to continue.",
+            );
+          }
+          return;
+        }
+        if (
+          !stopped &&
+          (!meta ||
+            meta.vaultId !== currentMeta.vaultId ||
+            meta.revision !== currentMeta.revision ||
+            meta.coordinationRevision !== currentMeta.coordinationRevision ||
+            meta.deletionPending)
+        ) {
+          clearPrivateState(
+            meta?.deletionPending
+              ? { phase: "deleting", meta }
+              : meta
+                ? { phase: "locked", meta }
+                : { phase: "empty" },
+            meta
+              ? meta.deletionPending
+                ? "Another tab is deleting this workspace. Workspace controls are unavailable."
+                : "Workspace changed or locked in another tab. Unlock again to load the latest encrypted revision."
+              : "The local workspace was deleted in another tab.",
+          );
+        }
+      } catch (cause) {
+        if (!stopped) {
+          clearPrivateState({ phase: "fatal", message: vaultErrorMessage(cause) });
+        }
+      }
+    };
+    const interval = window.setInterval(() => void verifyRevision(), 2_000);
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+    };
+  }, [clearPrivateState, screen, sessionGeneration]);
+
+  useEffect(() => {
+    if (screen.phase !== "deleting") return;
+    let cancelled = false;
+    if (screen.meta?.deletionPending) {
+      void destroyLocalWorkspace(() => {
+        if (!cancelled) {
+          setNotice(
+            "Deletion is waiting for another tab to release the database. No workspace controls are available.",
+          );
+        }
+      })
+        .then(() => {
+          if (!cancelled) {
+            clearPrivateState({ phase: "empty" }, "The encrypted workspace was permanently deleted from this browser.");
+          }
+        })
+        .catch((cause) => {
+          if (!cancelled) {
+            setError(vaultErrorMessage(cause));
+          }
+        });
+    }
+    const interval = window.setInterval(() => {
+      void readVaultMeta()
+        .then((meta) => {
+          if (cancelled) return;
+          if (!meta) {
+            clearPrivateState({ phase: "empty" }, "The local encrypted workspace was deleted.");
+          } else if (meta.deletionPending && screenRef.current.phase === "deleting") {
+            const current = screenRef.current.meta;
+            if (!current?.deletionPending || current.coordinationRevision !== meta.coordinationRevision) {
+              setScreen({ phase: "deleting", meta });
+            }
+          }
+        })
+        .catch(() => undefined);
+    }, 500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [clearPrivateState, screen]);
+
+  useEffect(() => {
+    const cancelPendingOrLock = () => {
+      const current = unlockedRef.current;
+      if (current) {
+        lockImmediately("Workspace locked when this page was hidden or left.");
+        return;
+      }
+      const currentScreen = screenRef.current;
+      if (currentScreen.phase === "unlocking") {
+        clearPrivateState(
+          { phase: "locked", meta: currentScreen.meta },
+          "Pending local unlock was cancelled when this page was hidden or left.",
+        );
+      } else if (currentScreen.phase === "locked") {
+        clearPrivateState(
+          currentScreen,
+          pendingRef.current
+            ? "Pending local operation was cancelled when this page was hidden or left."
+            : "Private access drafts were cleared when this page was hidden or left.",
+        );
+      } else if (currentScreen.phase === "empty") {
+        clearPrivateState(
+          currentScreen,
+          pendingRef.current
+            ? "Pending local operation was cancelled when this page was hidden or left."
+            : "Private access drafts were cleared when this page was hidden or left.",
+        );
+      }
+    };
+    const visibility = () => {
+      if (document.visibilityState === "hidden") cancelPendingOrLock();
+    };
+    window.addEventListener("pagehide", cancelPendingOrLock);
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      window.removeEventListener("pagehide", cancelPendingOrLock);
+      document.removeEventListener("visibilitychange", visibility);
+    };
+  }, [clearPrivateState, lockImmediately]);
+
+  useEffect(() => {
+    if (screen.phase !== "unlocked") return;
+    const activity = () => {
+      deadlineRef.current = Date.now() + INACTIVITY_MS;
+    };
+    const checkDeadline = () => {
+      if (deadlineRef.current > 0 && Date.now() >= deadlineRef.current) {
+        lockImmediately("Workspace locked after 10 minutes of inactivity.");
+      }
+    };
+    const timer = window.setInterval(checkDeadline, 1_000);
+    window.addEventListener("pointerdown", activity, { passive: true });
+    window.addEventListener("keydown", activity);
+    window.addEventListener("pageshow", checkDeadline);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("pointerdown", activity);
+      window.removeEventListener("keydown", activity);
+      window.removeEventListener("pageshow", checkDeadline);
+    };
+  }, [lockImmediately, screen.phase, sessionGeneration]);
+
+  useEffect(() => {
+    const popState = () => setViewState(viewFromLocation());
+    window.addEventListener("popstate", popState);
+    return () => window.removeEventListener("popstate", popState);
+  }, []);
+
+  useEffect(() => {
+    if (error) requestAnimationFrame(() => document.querySelector<HTMLElement>(".workspace-error")?.focus());
+  }, [error]);
+
+  const navigate = (next: WorkspaceView) => {
+    window.history.pushState(null, "", `/workspace?view=${next}`);
+    setViewState(next);
+  };
+
+  const create = async (passphrase: string) => {
+    const guard = createSessionGuard();
+    let metaRead = false;
+    setBusy(true);
+    setError(null);
+    try {
+      const existing = await readVaultMeta();
+      metaRead = true;
+      guard.assertActive();
+      if (existing) {
+        if (enterDeleting(existing)) return;
+        clearPrivateState(
+          { phase: "locked", meta: existing },
+          "An encrypted workspace already exists here. Unlock it to continue.",
+        );
+        return;
+      }
+      const created = await createLocalWorkspace(passphrase, guard.assertActive, guard.signal);
+      guard.assertActive();
+      acceptCreated(created, "Encrypted workspace created in this browser.");
+      broadcast("changed", created.meta.vaultId);
+    } catch (cause) {
+      if (!guard.isActive()) return;
+      if (await handleObservedVaultBoundary(cause, guard.isActive)) return;
+      if (!guard.isActive()) return;
+      if (!metaRead) {
+        clearPrivateState({ phase: "fatal", message: vaultErrorMessage(cause) });
+        return;
+      }
+      setBusy(false);
+      setError(vaultErrorMessage(cause));
+    }
+  };
+
+  const acceptCreated = (created: CreatedWorkspace, message: string) => {
+    acceptUnlocked(created, { message });
+    setRecoverySecret(created.recoverySecret || null);
+  };
+
+  const unlock = async (passphrase: string) => {
+    const guard = createSessionGuard();
+    let currentMeta: PublicVaultMeta | null = null;
+    let metaRead = false;
+    setBusy(true);
+    setError(null);
+    try {
+      currentMeta = await readVaultMeta();
+      metaRead = true;
+      guard.assertActive();
+      if (!currentMeta) {
+        clearPrivateState({ phase: "empty" }, "No local workspace remains in this browser.");
+        return;
+      }
+      if (enterDeleting(currentMeta)) return;
+      setScreen({ phase: "unlocking", meta: currentMeta });
+      const workspace = await unlockLocalWorkspace(currentMeta, passphrase);
+      guard.assertActive();
+      acceptUnlocked(workspace);
+      const settings = workspace.records.find(
+        (record): record is WorkspaceSettingsRecord => record.kind === "workspace_settings",
+      );
+      if (settings && !settings.tourSeen) setTourOpen(true);
+    } catch (cause) {
+      if (!guard.isActive()) return;
+      if (await handleObservedVaultBoundary(cause, guard.isActive)) return;
+      if (!guard.isActive()) return;
+      if (!metaRead) {
+        clearPrivateState({ phase: "fatal", message: vaultErrorMessage(cause) });
+        return;
+      }
+      setScreen(currentMeta ? { phase: "locked", meta: currentMeta } : { phase: "empty" });
+      setBusy(false);
+      setError(vaultErrorMessage(cause));
+    }
+  };
+
+  const recover = async (secret: string, nextPassphrase: string) => {
+    const guard = createSessionGuard();
+    let metaRead = false;
+    setBusy(true);
+    setError(null);
+    try {
+      const currentMeta = await readVaultMeta();
+      metaRead = true;
+      guard.assertActive();
+      if (!currentMeta) {
+        clearPrivateState({ phase: "empty" });
+        return;
+      }
+      if (enterDeleting(currentMeta)) return;
+      const recovered = await recoverLocalWorkspace(
+        currentMeta,
+        secret,
+        nextPassphrase,
+        guard.assertActive,
+        guard.signal,
+      );
+      guard.assertActive();
+      acceptCreated(recovered, "Recovery succeeded. Save the new recovery secret now.");
+      broadcast("changed", recovered.meta.vaultId);
+    } catch (cause) {
+      if (!guard.isActive()) return;
+      if (await handleObservedVaultBoundary(cause, guard.isActive)) return;
+      if (!guard.isActive()) return;
+      if (!metaRead) {
+        clearPrivateState({ phase: "fatal", message: vaultErrorMessage(cause) });
+        return;
+      }
+      setBusy(false);
+      setError(vaultErrorMessage(cause));
+    }
+  };
+
+  const importBackup = async (file: File, backupPassphrase: string, nextPassphrase: string) => {
+    const guard = createSessionGuard();
+    let metaRead = false;
+    setBusy(true);
+    setError(null);
+    try {
+      const freshMeta = await readVaultMeta();
+      metaRead = true;
+      guard.assertActive();
+      if (freshMeta && enterDeleting(freshMeta)) return;
+      const expected = unlockedRef.current?.meta ?? freshMeta;
+      const parsed = await parseBackupFile(file);
+      guard.assertActive();
+      const restored = await importLocalWorkspace(
+        parsed,
+        backupPassphrase,
+        nextPassphrase,
+        expected,
+        guard.assertActive,
+        guard.signal,
+      );
+      guard.assertActive();
+      acceptCreated(restored, "Backup restored into fresh encryption keys. Save the new recovery secret.");
+      broadcast("changed", restored.meta.vaultId);
+    } catch (cause) {
+      if (!guard.isActive()) return;
+      if (await handleObservedVaultBoundary(cause, guard.isActive)) return;
+      if (!guard.isActive()) return;
+      if (!metaRead) {
+        clearPrivateState({ phase: "fatal", message: vaultErrorMessage(cause) });
+        return;
+      }
+      setBusy(false);
+      setError(vaultErrorMessage(cause));
+    }
+  };
+
+  const downloadOpaqueRescue = async () => {
+    const guard = createSessionGuard();
+    setBusy(true);
+    setError(null);
+    try {
+      const rescue = await exportOpaqueRescue();
+      guard.assertActive();
+      downloadJson(
+        rescue,
+        `openarc-opaque-rescue-${new Date().toISOString().slice(0, 10)}.json`,
+      );
+      setBusy(false);
+      setNotice(
+        "Opaque encrypted rescue downloaded. This build cannot import it; retain it for diagnostics or future recovery tooling.",
+      );
+    } catch (cause) {
+      if (!guard.isActive()) return;
+      if (await handleObservedVaultBoundary(cause, guard.isActive)) return;
+      if (!guard.isActive()) return;
+      setBusy(false);
+      setError(vaultErrorMessage(cause));
+    }
+  };
+
+  const saveRecords = async (records: readonly WorkspaceRecord[], message: string) => {
+    const current = unlockedRef.current;
+    if (!current) return false;
+    const guard = createSessionGuard();
+    setBusy(true);
+    setError(null);
+    try {
+      const assertActive = () => {
+        guard.assertActive();
+        if (unlockedRef.current !== current) throw new Error("Vault session changed");
+      };
+      const saved = await saveWorkspaceRecords(current, records, assertActive, guard.signal);
+      assertActive();
+      acceptUnlocked(saved, { boundary: false, message });
+      broadcast("changed", saved.meta.vaultId);
+      return true;
+    } catch (cause) {
+      if (!guard.isActive()) return false;
+      if (await handleObservedVaultBoundary(cause, guard.isActive)) return false;
+      if (!guard.isActive()) return false;
+      setBusy(false);
+      setError(vaultErrorMessage(cause));
+      return false;
+    }
+  };
+
+  const deleteRecords = async (ids: readonly string[], message: string) => {
+    const current = unlockedRef.current;
+    if (!current) return false;
+    const guard = createSessionGuard();
+    setBusy(true);
+    setError(null);
+    try {
+      const assertActive = () => {
+        guard.assertActive();
+        if (unlockedRef.current !== current) throw new Error("Vault session changed");
+      };
+      const saved = await deleteWorkspaceRecords(current, ids, assertActive, guard.signal);
+      assertActive();
+      acceptUnlocked(saved, { boundary: false, message });
+      broadcast("changed", saved.meta.vaultId);
+      return true;
+    } catch (cause) {
+      if (!guard.isActive()) return false;
+      if (await handleObservedVaultBoundary(cause, guard.isActive)) return false;
+      if (!guard.isActive()) return false;
+      setBusy(false);
+      setError(vaultErrorMessage(cause));
+      return false;
+    }
+  };
+
+  const manualLock = () => {
+    const current = unlockedRef.current;
+    if (!current) return;
+    lockImmediately("Workspace locked locally and signalled to other active tabs.");
+  };
+
+  const destroy = async () => {
+    let meta = unlockedRef.current?.meta ?? null;
+    let metaUnreadable = false;
+    if (!meta) {
+      try {
+        meta = await readVaultMeta();
+      } catch {
+        metaUnreadable = true;
+      }
+    }
+    rotateSessionBoundary();
+    unlockedRef.current = null;
+    setRecoverySecret(null);
+    setTourOpen(false);
+    setBusy(true);
+    setScreen({ phase: "deleting", meta });
+    if (metaUnreadable) {
+      try {
+        await destroyLocalWorkspace(() => {
+          setNotice("Deletion is waiting for another tab to release the unreadable database.");
+        });
+        clearPrivateState({ phase: "empty" }, "The unreadable local workspace was permanently deleted.");
+      } catch (cause) {
+        clearPrivateState({ phase: "fatal", message: vaultErrorMessage(cause) });
+      }
+      return;
+    }
+    if (!meta) {
+      clearPrivateState({ phase: "empty" }, "No local encrypted workspace remains.");
+      return;
+    }
+    try {
+      const marked = await prepareLocalWorkspaceDeletion(meta);
+      setScreen({ phase: "deleting", meta: marked });
+      broadcast("deleting", marked.vaultId);
+    } catch (cause) {
+      try {
+        const current = await readVaultMeta();
+        clearPrivateState(current ? { phase: "locked", meta: current } : { phase: "empty" });
+        setError(vaultErrorMessage(cause));
+      } catch (readCause) {
+        clearPrivateState({ phase: "fatal", message: vaultErrorMessage(readCause) });
+      }
+    }
+  };
+
+  const closeTour = async () => {
+    setTourOpen(false);
+    const current = unlockedRef.current;
+    const settings = current?.records.find(
+      (record): record is WorkspaceSettingsRecord => record.kind === "workspace_settings",
+    );
+    if (settings && !settings.tourSeen) {
+      await saveRecords([markTourSeen(settings)], "Tour preference saved inside the encrypted workspace.");
+    }
+  };
+
+  const messageRegion = (
+    <div className="workspace-messages" aria-live="polite" aria-atomic="true">
+      {error ? <p className="workspace-error" tabIndex={-1}>{error}</p> : null}
+      {notice ? <p className="workspace-notice">{notice}</p> : null}
+    </div>
+  );
+
+  if (screen.phase === "probing") return <WorkspaceWait label="Checking local encryption support…" />;
+  if (screen.phase === "unsupported") {
+    return (
+      <WorkspaceGate title="Encrypted workspace unavailable" build={build}>
+        <p>
+          OpenArc needs a secure context, WebCrypto with AES-GCM/AES-KW/PBKDF2, secure randomness,
+          and IndexedDB. This browser did not pass the capability probe, so no private controls were mounted.
+        </p>
+      </WorkspaceGate>
+    );
+  }
+  if (screen.phase === "fatal") {
+    return (
+      <WorkspaceGate title="Local workspace could not start" build={build}>
+        <p>{screen.message}</p>
+        {messageRegion}
+        <label className="confirm-row">
+          <input type="checkbox" checked={fatalDeleteConfirmed} onChange={(event) => setFatalDeleteConfirmed(event.target.checked)} />
+          I understand deleting unreadable local data cannot be undone without a rescue or backup.
+        </label>
+        <div className="modal-actions">
+          <button type="button" disabled={busy} onClick={() => void downloadOpaqueRescue()}>Export opaque rescue</button>
+          <button type="button" disabled={busy || !fatalDeleteConfirmed} onClick={() => void destroy()}>Delete unreadable local data</button>
+          <button className="button" disabled={busy} onClick={() => window.location.reload()}>Retry safely</button>
+        </div>
+      </WorkspaceGate>
+    );
+  }
+  if (screen.phase === "deleting") {
+    return (
+      <WorkspaceGate title="Deleting encrypted workspace" build={build}>
+        <p>No unlock, create, import, or recovery action is available while browser deletion is pending.</p>
+        {messageRegion}
+        <div className="workspace-spinner" aria-hidden="true" />
+      </WorkspaceGate>
+    );
+  }
+  if (screen.phase === "empty" || screen.phase === "locked" || screen.phase === "unlocking") {
+    return (
+      <AccessScreen
+        key={`access:${sessionGeneration}`}
+        build={build}
+        locked={screen.phase !== "empty"}
+        busy={busy || screen.phase === "unlocking"}
+        messages={messageRegion}
+        onCreate={create}
+        onUnlock={unlock}
+        onRecover={recover}
+        onImport={importBackup}
+        onRescue={downloadOpaqueRescue}
+        onDestroy={destroy}
+      />
+    );
+  }
+  if (screen.phase === "locking") return <WorkspaceWait label="Locking every active local view…" />;
+
+  const workspace = screen.workspace;
+  return (
+    <div className="workspace-shell" key={`${workspace.meta.vaultId}:${sessionGeneration}`}>
+      <a className="skip-link" href="#workspace-main" onClick={() => {
+        requestAnimationFrame(() => document.querySelector<HTMLElement>("#workspace-main")?.focus());
+      }}>
+        Skip workspace navigation
+      </a>
+      <aside className="workspace-rail" aria-label="Workspace navigation">
+        <a className="workspace-brand" href="/" aria-label="OpenArc home">
+          <img src="/openarc-logo.jpeg" alt="" />
+          <span><strong>OPENARC</strong><small>PRIVATE WORKSPACE</small></span>
+        </a>
+        <div className="workspace-rail-state">
+          <span className="status-dot" aria-hidden="true" />
+          <span>UNLOCKED LOCALLY</span>
+        </div>
+        <nav>
+          {VIEWS.map((item, index) => (
+            <button
+              key={item.id}
+              type="button"
+              aria-current={view === item.id ? "page" : undefined}
+              onClick={() => navigate(item.id)}
+            >
+              <span>{String(index + 1).padStart(2, "0")}</span>
+              <strong>{item.label}</strong>
+              <small>{item.note}</small>
+            </button>
+          ))}
+        </nav>
+        <button className="workspace-tour" type="button" onClick={(event) => {
+          tourReturnFocusRef.current = event.currentTarget;
+          setTourOpen(true);
+        }} disabled={busy}>
+          Show quick tour
+        </button>
+        <button className="workspace-lock" type="button" onClick={() => void manualLock()}>
+          Lock workspace
+        </button>
+      </aside>
+      <main className="workspace-main" id="workspace-main" tabIndex={-1}>
+        <header className="workspace-mobile-header">
+          <a href="/" className="brand"><img src="/openarc-logo.jpeg" alt="" /><span>OPENARC</span></a>
+          <button type="button" className="button button-small" onClick={() => void manualLock()}>Lock</button>
+        </header>
+        <nav className="workspace-mobile-nav" aria-label="Compact workspace navigation">
+          {VIEWS.map((item) => (
+            <button key={item.id} type="button" aria-current={view === item.id ? "page" : undefined} onClick={() => navigate(item.id)}>
+              {item.label}
+            </button>
+          ))}
+        </nav>
+        {messageRegion}
+        <WorkspaceViewPanel
+          key={`${sessionGeneration}:${view}`}
+          view={view}
+          workspace={workspace}
+          busy={busy}
+          onSave={saveRecords}
+          onDelete={deleteRecords}
+          onImport={importBackup}
+          onAcceptCreated={acceptCreated}
+          onDestroy={destroy}
+          onLock={lockImmediately}
+          onOpenTour={(target) => {
+            tourReturnFocusRef.current = target;
+            setTourOpen(true);
+          }}
+          setBusy={setBusy}
+          setError={setError}
+          setNotice={setNotice}
+          onOperationError={handleObservedVaultBoundary}
+          createSessionGuard={createSessionGuard}
+          broadcast={broadcast}
+        />
+        <footer className="workspace-footer">
+          <span>LOCAL-ONLY · ZERO NETWORK CALLS</span>
+          <code data-testid="build-sha">BUILD {build.commitSha}</code>
+        </footer>
+      </main>
+      {recoverySecret ? (
+        <RecoveryDialog secret={recoverySecret} onClose={() => {
+          setRecoverySecret(null);
+          const settings = unlockedRef.current?.records.find(
+            (record): record is WorkspaceSettingsRecord => record.kind === "workspace_settings",
+          );
+          setTourOpen(Boolean(settings && !settings.tourSeen));
+        }} />
+      ) : null}
+      {tourOpen && !recoverySecret ? <TourDialog returnFocus={tourReturnFocusRef.current} onClose={() => void closeTour()} /> : null}
+    </div>
+  );
+}
+
+function AccessScreen(props: {
+  build: BuildInfo;
+  locked: boolean;
+  busy: boolean;
+  messages: ReactNode;
+  onCreate: (passphrase: string) => Promise<void>;
+  onUnlock: (passphrase: string) => Promise<void>;
+  onRecover: (secret: string, nextPassphrase: string) => Promise<void>;
+  onImport: (file: File, backupPassphrase: string, nextPassphrase: string) => Promise<void>;
+  onRescue: () => Promise<void>;
+  onDestroy: () => Promise<void>;
+}) {
+  const [mode, setMode] = useState<"primary" | "recover" | "import" | "rescue" | "delete">("primary");
+  const [passphrase, setPassphrase] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [recovery, setRecovery] = useState("");
+  const [backupPassphrase, setBackupPassphrase] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [deleteConfirmed, setDeleteConfirmed] = useState(false);
+  const submitPrimary = (event: FormEvent) => {
+    event.preventDefault();
+    if (props.locked) void props.onUnlock(passphrase);
+    else if (passphrase === confirmation) void props.onCreate(passphrase);
+  };
+  return (
+    <WorkspaceGate title={props.locked ? "Unlock your private workspace" : "Create a private workspace"} build={props.build}>
+      <p>
+        Records are encrypted in this browser before IndexedDB persistence. OpenArc does not receive
+        the workspace passphrase, recovery secret, key, profiles, policies, or evidence.
+      </p>
+      {props.messages}
+      <div className="access-mode-tabs" role="group" aria-label="Workspace access method">
+        <button type="button" aria-pressed={mode === "primary"} onClick={() => setMode("primary")}>{props.locked ? "Unlock" : "Create"}</button>
+        <button type="button" aria-pressed={mode === "import"} onClick={() => setMode("import")}>Import backup</button>
+        {props.locked ? <button type="button" aria-pressed={mode === "recover"} onClick={() => setMode("recover")}>Recovery</button> : null}
+        {props.locked ? <button type="button" aria-pressed={mode === "rescue"} onClick={() => setMode("rescue")}>Rescue</button> : null}
+        {props.locked ? <button type="button" aria-pressed={mode === "delete"} onClick={() => setMode("delete")}>Delete</button> : null}
+      </div>
+      {mode === "primary" ? (
+        <form className="workspace-form" onSubmit={submitPrimary}>
+          <Field label="Workspace passphrase" hint="12–128 characters. It never leaves this browser.">
+            <input type="password" autoComplete={props.locked ? "current-password" : "new-password"} value={passphrase} onChange={(event) => setPassphrase(event.target.value)} required minLength={12} maxLength={128} />
+          </Field>
+          {!props.locked ? (
+            <Field label="Confirm passphrase"><input type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required minLength={12} maxLength={128} /></Field>
+          ) : null}
+          {!props.locked && confirmation && confirmation !== passphrase ? <p className="field-error">Passphrases do not match.</p> : null}
+          <button className="button" disabled={props.busy || (!props.locked && confirmation !== passphrase)}>{props.busy ? "Working locally…" : props.locked ? "Unlock workspace" : "Create encrypted workspace"}</button>
+        </form>
+      ) : null}
+      {mode === "recover" ? (
+        <form className="workspace-form" onSubmit={(event) => { event.preventDefault(); if (confirmation === passphrase) void props.onRecover(recovery, passphrase); }}>
+          <Field label="Recovery secret" hint="Use the current secret saved when this workspace was created or last recovered."><input value={recovery} onChange={(event) => setRecovery(event.target.value)} required autoComplete="off" /></Field>
+          <Field label="New workspace passphrase"><input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} required minLength={12} maxLength={128} autoComplete="new-password" /></Field>
+          <Field label="Confirm new passphrase"><input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required minLength={12} maxLength={128} autoComplete="new-password" /></Field>
+          <button className="button" disabled={props.busy || confirmation !== passphrase}>Recover and rotate credentials</button>
+        </form>
+      ) : null}
+      {mode === "import" ? (
+        <form className="workspace-form" onSubmit={(event) => { event.preventDefault(); if (file && confirmation === passphrase) void props.onImport(file, backupPassphrase, passphrase); }}>
+          <Field label="Encrypted .openarc backup"><input type="file" accept="application/json,.openarc" required onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></Field>
+          <Field label="Backup passphrase"><input type="password" value={backupPassphrase} onChange={(event) => setBackupPassphrase(event.target.value)} required minLength={12} maxLength={128} /></Field>
+          <Field label="New workspace passphrase" hint="Import creates new local encryption and a new recovery secret."><input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} required minLength={12} maxLength={128} /></Field>
+          <Field label="Confirm new passphrase"><input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required minLength={12} maxLength={128} /></Field>
+          {props.locked ? <p className="warning-copy">This replaces the current encrypted workspace only if its revision has not changed.</p> : null}
+          <button className="button" disabled={props.busy || !file || confirmation !== passphrase}>Verify and restore backup</button>
+        </form>
+      ) : null}
+      {mode === "rescue" ? (
+        <div className="danger-panel">
+          <h2>Export unreadable encrypted bytes</h2>
+          <p>
+            This does not decrypt or validate records. It preserves the opaque IndexedDB values for
+            diagnostics or possible future tooling and cannot be imported by this build.
+          </p>
+          <button className="button" type="button" disabled={props.busy} onClick={() => void props.onRescue()}>
+            Download opaque rescue
+          </button>
+        </div>
+      ) : null}
+      {mode === "delete" ? (
+        <div className="danger-panel">
+          <h2>Delete this browser’s workspace?</h2>
+          <p>This permanently removes the encrypted records and wrappers. Export a backup first if you may need them.</p>
+          <label className="confirm-row"><input type="checkbox" checked={deleteConfirmed} onChange={(event) => setDeleteConfirmed(event.target.checked)} /> I understand this cannot be undone without a backup.</label>
+          <button className="button button-danger" type="button" disabled={props.busy || !deleteConfirmed} onClick={() => void props.onDestroy()}>Permanently delete local workspace</button>
+        </div>
+      ) : null}
+    </WorkspaceGate>
+  );
+}
+
+function WorkspaceViewPanel(props: {
+  view: WorkspaceView;
+  workspace: UnlockedWorkspace;
+  busy: boolean;
+  onSave: (records: readonly WorkspaceRecord[], message: string) => Promise<boolean>;
+  onDelete: (ids: readonly string[], message: string) => Promise<boolean>;
+  onImport: (file: File, backupPassphrase: string, nextPassphrase: string) => Promise<void>;
+  onAcceptCreated: (created: CreatedWorkspace, message: string) => void;
+  onDestroy: () => Promise<void>;
+  onLock: (message?: string) => void;
+  onOpenTour: (target: HTMLElement) => void;
+  setBusy: (value: boolean) => void;
+  setError: (value: string | null) => void;
+  setNotice: (value: string | null) => void;
+  onOperationError: (cause: unknown, isActive: () => boolean) => Promise<boolean>;
+  createSessionGuard: () => SessionGuard;
+  broadcast: (type: CoordinationMessage["type"], vaultId: string) => void;
+}) {
+  if (props.view === "overview") return <Overview records={props.workspace.records} onNavigate={navigateFromPanel} onOpenTour={props.onOpenTour} />;
+  if (props.view === "agents") return <AgentsPanel {...props} />;
+  if (props.view === "policies") return <PoliciesPanel {...props} />;
+  if (props.view === "evidence") return <EvidencePanel {...props} />;
+  return <SettingsPanel {...props} />;
+
+  function navigateFromPanel(view: WorkspaceView) {
+    window.history.pushState(null, "", `/workspace?view=${view}`);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+}
+
+function Overview({ records, onNavigate, onOpenTour }: { records: readonly WorkspaceRecord[]; onNavigate: (view: WorkspaceView) => void; onOpenTour: (target: HTMLElement) => void }) {
+  const counts = recordCounts(records);
+  return (
+    <section className="workspace-section" aria-labelledby="workspace-overview-title">
+      <SectionHeading eyebrow="ENCRYPTED LOCAL CONTROL LAYER" title="Your agent evidence, held here." id="workspace-overview-title" onLearn={onOpenTour}>
+        OpenArc keeps owner-supplied profiles, monitoring rules, actions, and evidence distinct. This milestone makes those records private and durable without introducing a server data plane.
+      </SectionHeading>
+      <div className="workspace-stat-grid">
+        <Stat value={counts.agents} label="Agent profiles" />
+        <Stat value={counts.policies} label="Monitoring policies" />
+        <Stat value={counts.actions} label="Action envelopes" />
+        <Stat value={counts.evidence} label="Evidence records" />
+      </div>
+      <div className="workspace-callouts">
+        <article><span>01</span><h3>Describe an agent</h3><p>Add only what you know and label wallet associations as owner-supplied.</p><button type="button" onClick={() => onNavigate("agents")}>Open Agents →</button></article>
+        <article><span>02</span><h3>Define a local rule</h3><p>Record a monitoring boundary. OpenArc does not enforce or execute it in M02.</p><button type="button" onClick={() => onNavigate("policies")}>Open Policies →</button></article>
+        <article><span>03</span><h3>Inspect evidence</h3><p>Copy one of the six synthetic M01 cases into your encrypted workspace.</p><button type="button" onClick={() => onNavigate("evidence")}>Open Evidence →</button></article>
+      </div>
+      <div className="privacy-strip"><strong>Nothing on this page calls the network.</strong><span>Reload starts locked. Hidden pages lock immediately. Backups use a separate password.</span></div>
+    </section>
+  );
+}
+
+function AgentsPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "workspace" | "busy" | "onSave" | "onDelete" | "onOpenTour">) {
+  const agents = props.workspace.records.filter((record): record is AgentProfileRecord => record.kind === "agent_profile");
+  const [editing, setEditing] = useState<AgentProfileRecord | null | undefined>(undefined);
+  return (
+    <section className="workspace-section" aria-labelledby="agents-title">
+      <SectionHeading eyebrow="OWNER-SUPPLIED IDENTITY" title="Agents" id="agents-title" onLearn={props.onOpenTour}>Profiles organize local evidence. A wallet entered here is not discovered, authenticated, or proven to belong to an agent.</SectionHeading>
+      <button className="button" type="button" disabled={props.busy} onClick={() => setEditing(null)}>Add agent profile</button>
+      <div className="workspace-list">
+        {agents.length === 0 ? <EmptyState title="No agent profiles yet" body="Create one locally or import a synthetic evidence fixture." /> : agents.map((agent) => (
+          <article key={agent.recordId}>
+            <div><p className="eyebrow">{agent.frameworkLabel ?? "UNLABELED FRAMEWORK"}</p><h3>{agent.displayName}</h3><ExactIdentifier label="Agent ID" value={agent.agentId} /></div>
+            <dl><div><dt>Wallets</dt><dd>{agent.wallets.length}</dd></div><div><dt>Linked policy records</dt><dd>{agent.policyRecordIds.length}</dd></div><div><dt>Purpose note</dt><dd>{agent.purposeNote ?? "Not supplied"}</dd></div></dl>
+            <div className="row-actions"><button type="button" onClick={() => setEditing(agent)}>Edit</button><button type="button" className="danger-link" onClick={() => void props.onDelete([agent.recordId], "Agent profile deleted from the encrypted workspace.")}>Delete</button></div>
+          </article>
+        ))}
+      </div>
+      {editing !== undefined ? <AgentDialog key={editing?.recordId ?? "new"} existing={editing} busy={props.busy} onClose={() => setEditing(undefined)} onSave={async (draft) => {
+        const saved = await props.onSave([createAgentProfileRecord(draft, props.workspace.meta.revision, editing ?? undefined)], editing ? "Agent profile updated." : "Agent profile encrypted and saved.");
+        if (saved) setEditing(undefined);
+        return saved;
+      }} /> : null}
+    </section>
+  );
+}
+
+function PoliciesPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "workspace" | "busy" | "onSave" | "onDelete" | "onOpenTour">) {
+  const policies = props.workspace.records.filter((record): record is MonitoringPolicyRecord => record.kind === "monitoring_policy");
+  const [editing, setEditing] = useState<MonitoringPolicyRecord | null | undefined>(undefined);
+  return (
+    <section className="workspace-section" aria-labelledby="policies-title">
+      <SectionHeading eyebrow="LOCAL MONITORING ONLY" title="Policies" id="policies-title" onLearn={props.onOpenTour}>Policies describe review boundaries. They do not grant permission, stop an agent, sign a transaction, or broadcast anything.</SectionHeading>
+      <button className="button" type="button" disabled={props.busy} onClick={() => setEditing(null)}>Add monitoring policy</button>
+      <div className="workspace-list">
+        {policies.length === 0 ? <EmptyState title="No monitoring policies" body="Add a bounded amount or recipient rule for local review." /> : policies.map((record) => (
+          <article key={record.recordId}>
+            <div><p className="eyebrow">REVISION {record.revision}</p><h3>{record.policy.label}</h3><ExactIdentifier label="Policy ID" value={record.policy.policyId} /></div>
+            <dl><div><dt>Max base units</dt><dd>{record.policy.maximumAmountBaseUnits ?? "Not set"}</dd></div><div><dt>Recipients</dt><dd>{record.policy.allowedRecipients.length || "Any"}</dd></div><div><dt>Expires</dt><dd>{record.policy.expiresAt ?? "No expiry"}</dd></div></dl>
+            <div className="row-actions"><button type="button" onClick={() => setEditing(record)}>Edit</button><button type="button" className="danger-link" onClick={() => void props.onDelete([record.recordId], "Monitoring policy deleted.")}>Delete</button></div>
+          </article>
+        ))}
+      </div>
+      {editing !== undefined ? <PolicyDialog key={editing?.recordId ?? "new"} existing={editing} busy={props.busy} onClose={() => setEditing(undefined)} onSave={async (draft) => {
+        const saved = await props.onSave([createMonitoringPolicyRecord(draft, props.workspace.meta.revision, editing ?? undefined)], editing ? "Monitoring policy updated." : "Monitoring policy encrypted and saved.");
+        if (saved) setEditing(undefined);
+        return saved;
+      }} /> : null}
+    </section>
+  );
+}
+
+function EvidencePanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "workspace" | "busy" | "onSave" | "onOpenTour">) {
+  const actions = props.workspace.records.filter((record) => record.kind === "action_envelope");
+  const evidence = props.workspace.records.filter((record) => record.kind === "evidence_record");
+  const actionIds = new Set(actions.map((record) => record.action.actionId));
+  const importFixture = async (fixture: (typeof M01_FIXTURES)[number]) => {
+    await props.onSave(createFixtureWorkspaceRecords(fixture, props.workspace.meta.revision), `${fixture.title} copied into encrypted local records.`);
+  };
+  return (
+    <section className="workspace-section" aria-labelledby="evidence-workspace-title">
+      <SectionHeading eyebrow="M01 ENGINE · NOW ENCRYPTED" title="Evidence" id="evidence-workspace-title" onLearn={props.onOpenTour}>Import deterministic examples to inspect how the private workspace retains actions and their cited evidence separately.</SectionHeading>
+      <div className="fixture-import-grid">
+        {M01_FIXTURES.map((fixture) => {
+          const imported = actionIds.has(fixture.action.actionId);
+          return <article key={fixture.fixtureId}><span className={`state-badge state-${fixture.expectedState.toLowerCase()}`}>{fixture.expectedState.replaceAll("_", " ")}</span><h3>{fixture.title}</h3><p>{fixture.summary}</p><button type="button" disabled={props.busy || imported} onClick={() => void importFixture(fixture)}>{imported ? "Already encrypted" : "Copy into workspace"}</button></article>;
+        })}
+      </div>
+      <div className="workspace-record-summary"><strong>{actions.length} action envelopes</strong><span>{evidence.length} evidence records</span></div>
+      <div className="workspace-list compact">
+        {actions.map((record) => (
+          <article key={record.recordId}><div><p className="eyebrow">{record.action.kind.replaceAll("_", " ")}</p><h3>Encrypted action</h3><ExactIdentifier label="Action ID" value={record.action.actionId} /></div><dl><div><dt>Agent</dt><dd>{record.action.agentId}</dd></div><div><dt>State</dt><dd>{record.action.reconciliation?.state ?? "NOT RECONCILED"}</dd></div><div><dt>Cited evidence</dt><dd>{record.action.reconciliation?.evidenceIds.length ?? 0}</dd></div></dl></article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SettingsPanel(props: Omit<Parameters<typeof WorkspaceViewPanel>[0], "view">) {
+  const [backupPassphrase, setBackupPassphrase] = useState("");
+  const [currentPassphrase, setCurrentPassphrase] = useState("");
+  const [nextPassphrase, setNextPassphrase] = useState("");
+  const [nextPassphraseConfirmation, setNextPassphraseConfirmation] = useState("");
+  const [importPassphrase, setImportPassphrase] = useState("");
+  const [importNewPassphrase, setImportNewPassphrase] = useState("");
+  const [importNewConfirmation, setImportNewConfirmation] = useState("");
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [storage, setStorage] = useState<VaultStorageStatus | null>(null);
+  const [deleteConfirmed, setDeleteConfirmed] = useState(false);
+  useEffect(() => { void readStorageStatus().then(setStorage).catch(() => setStorage(null)); }, []);
+
+  const exportBackup = async () => {
+    const guard = props.createSessionGuard();
+    props.setBusy(true);
+    props.setError(null);
+    try {
+      const backup = await exportLocalWorkspace(props.workspace, backupPassphrase);
+      guard.assertActive();
+      downloadJson(backup, `openarc-workspace-${new Date().toISOString().slice(0, 10)}.openarc`);
+      setBackupPassphrase("");
+      props.setBusy(false);
+      props.setNotice("Encrypted logical backup downloaded. It requires its separate backup passphrase.");
+    } catch (cause) {
+      if (!guard.isActive()) return;
+      if (await props.onOperationError(cause, guard.isActive)) return;
+      if (!guard.isActive()) return;
+      props.setBusy(false);
+      props.setError(vaultErrorMessage(cause));
+    }
+  };
+
+  const exportRescue = async () => {
+    const guard = props.createSessionGuard();
+    props.setBusy(true);
+    props.setError(null);
+    try {
+      const rescue = await exportOpaqueRescue();
+      guard.assertActive();
+      downloadJson(rescue, `openarc-opaque-rescue-${new Date().toISOString().slice(0, 10)}.json`);
+      props.setBusy(false);
+      props.setNotice("Opaque encrypted rescue downloaded. This build cannot import it; keep it for diagnostics or future recovery tooling.");
+    } catch (cause) {
+      if (!guard.isActive()) return;
+      if (await props.onOperationError(cause, guard.isActive)) return;
+      if (!guard.isActive()) return;
+      props.setBusy(false);
+      props.setError(vaultErrorMessage(cause));
+    }
+  };
+
+  const changePassphrase = async () => {
+    const guard = props.createSessionGuard();
+    props.setBusy(true);
+    props.setError(null);
+    try {
+      const updated = await updateWorkspacePassphrase(
+        props.workspace,
+        currentPassphrase,
+        nextPassphrase,
+        guard.assertActive,
+        guard.signal,
+      );
+      guard.assertActive();
+      props.broadcast("changed", updated.meta.vaultId);
+      props.onAcceptCreated({ ...updated, recoverySecret: "" }, "Workspace passphrase changed. Existing backups still require their own backup passphrases.");
+      setCurrentPassphrase("");
+      setNextPassphrase("");
+      setNextPassphraseConfirmation("");
+    } catch (cause) {
+      if (!guard.isActive()) return;
+      if (await props.onOperationError(cause, guard.isActive)) return;
+      if (!guard.isActive()) return;
+      props.setBusy(false);
+      props.setError(vaultErrorMessage(cause));
+    }
+  };
+
+  return (
+    <section className="workspace-section" aria-labelledby="settings-title">
+      <SectionHeading eyebrow="LOCAL CUSTODY" title="Settings" id="settings-title" onLearn={props.onOpenTour}>Manage browser storage, export a portable encrypted backup, rotate the passphrase, or permanently delete this origin-bound workspace.</SectionHeading>
+      <div className="settings-grid">
+        <article><h3>Encrypted backup</h3><p>A separate password encrypts validated logical records. It does not reuse or contain the local Vault wrappers.</p><Field label="Backup passphrase"><input type="password" minLength={12} maxLength={128} value={backupPassphrase} onChange={(event) => setBackupPassphrase(event.target.value)} /></Field><button className="button" type="button" disabled={props.busy || backupPassphrase.length < 12} onClick={() => void exportBackup()}>Download encrypted backup</button></article>
+        <article><h3>Replace from backup</h3><p>Import verifies the whole file, then creates fresh local keys, revisions, IVs, and a new recovery secret.</p><Field label="Backup file"><input type="file" accept="application/json,.openarc" onChange={(event) => setImportFile(event.target.files?.[0] ?? null)} /></Field><Field label="Backup passphrase"><input type="password" minLength={12} maxLength={128} value={importPassphrase} onChange={(event) => setImportPassphrase(event.target.value)} /></Field><Field label="New local passphrase"><input type="password" minLength={12} maxLength={128} value={importNewPassphrase} onChange={(event) => setImportNewPassphrase(event.target.value)} /></Field><Field label="Confirm new local passphrase"><input type="password" minLength={12} maxLength={128} value={importNewConfirmation} onChange={(event) => setImportNewConfirmation(event.target.value)} /></Field><button className="button" type="button" disabled={props.busy || !importFile || importPassphrase.length < 12 || importNewPassphrase.length < 12 || importNewConfirmation !== importNewPassphrase} onClick={() => { if (importFile) void props.onImport(importFile, importPassphrase, importNewPassphrase); }}>Replace after verification</button></article>
+        <article><h3>Change local passphrase</h3><p>This rotates only the local passphrase wrapper after authenticating every encrypted record.</p><Field label="Current passphrase"><input type="password" minLength={12} maxLength={128} value={currentPassphrase} onChange={(event) => setCurrentPassphrase(event.target.value)} /></Field><Field label="New passphrase"><input type="password" minLength={12} maxLength={128} value={nextPassphrase} onChange={(event) => setNextPassphrase(event.target.value)} /></Field><Field label="Confirm new passphrase"><input type="password" minLength={12} maxLength={128} value={nextPassphraseConfirmation} onChange={(event) => setNextPassphraseConfirmation(event.target.value)} /></Field><button className="button" type="button" disabled={props.busy || currentPassphrase.length < 12 || nextPassphrase.length < 12 || nextPassphraseConfirmation !== nextPassphrase} onClick={() => void changePassphrase()}>Change passphrase</button></article>
+        <article><h3>Browser storage</h3><p>{storage ? `Usage ${formatBytes(storage.usage)} of ${formatBytes(storage.quota)}. Persistence ${storage.persistent === true ? "granted" : storage.persistent === false ? "not granted" : "not reported"}.` : "Storage estimate unavailable."}</p><button type="button" onClick={() => void requestPersistentStorage().then(setStorage)}>Request persistent storage</button><button type="button" onClick={(event) => props.onOpenTour(event.currentTarget)}>Open workspace tour</button><button type="button" onClick={() => void exportRescue()}>Export opaque rescue</button></article>
+        <article className="settings-wide"><h3>What local encryption does—and does not—protect</h3><p>Encryption protects private records at rest from casual IndexedDB or backup inspection and authenticates record contents. It does not protect an unlocked tab, XSS or hostile future same-origin code, browser extensions, a compromised browser, operating system, or device, screen or clipboard capture, JavaScript heap recovery, deliberate storage clearing, whole-database rollback, or availability.</p><p>Public metadata can reveal that a workspace exists, format and KDF versions, approximate record count, ciphertext and file sizes, and access/write timing. Weak passwords remain vulnerable to offline guessing even though the KDF raises the cost.</p><div className="row-actions"><a href="/#fixture-explorer">Read the evidence guide</a><a href="/#network">Review the pinned network registry</a></div></article>
+        <article className="danger-panel"><h3>Delete workspace</h3><p>Deletion is permanent for this browser and removes encrypted records, metadata, and wrappers. A blocked request stays pending and non-interactive.</p><label className="confirm-row"><input type="checkbox" checked={deleteConfirmed} onChange={(event) => setDeleteConfirmed(event.target.checked)} /> I understand this cannot be undone without a backup.</label><button className="button button-danger" type="button" disabled={props.busy || !deleteConfirmed} onClick={() => void props.onDestroy()}>Permanently delete</button></article>
+      </div>
+    </section>
+  );
+}
+
+function AgentDialog({ existing, busy, onClose, onSave }: { existing: AgentProfileRecord | null; busy: boolean; onClose: () => void; onSave: (draft: AgentProfileDraft) => Promise<boolean> }) {
+  const [draft, setDraft] = useState<AgentProfileDraft>({ displayName: existing?.displayName ?? "", walletAddress: existing?.wallets[0]?.address ?? "", frameworkLabel: existing?.frameworkLabel ?? "", purposeNote: existing?.purposeNote ?? "" });
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setValidationError(null);
+    try {
+      if (!(await onSave(draft))) {
+        setValidationError("OpenArc could not save this encrypted profile. Nothing changed. Close this dialog to review the local storage or revision-conflict details.");
+      }
+    } catch {
+      setValidationError("Check the profile fields. The display name must contain visible text, and optional values must match the stated formats and limits.");
+    }
+  };
+  return <Modal title={existing ? "Edit agent profile" : "Add agent profile"} onClose={onClose}><form className="workspace-form" onChange={() => setValidationError(null)} onSubmit={(event) => void submit(event)}>{validationError ? <DialogValidationError message={validationError} /> : null}<Field label="Display name"><input required maxLength={80} value={draft.displayName} onChange={(event) => setDraft({ ...draft, displayName: event.target.value })} /></Field><Field label="Arc Testnet wallet (optional)" hint="Owner-supplied association; not proof of identity."><input pattern="0x[0-9a-fA-F]{40}" value={draft.walletAddress} onChange={(event) => setDraft({ ...draft, walletAddress: event.target.value })} /></Field><Field label="Framework label (optional)"><input maxLength={80} value={draft.frameworkLabel} onChange={(event) => setDraft({ ...draft, frameworkLabel: event.target.value })} /></Field><Field label="Purpose note (optional)"><textarea maxLength={500} value={draft.purposeNote} onChange={(event) => setDraft({ ...draft, purposeNote: event.target.value })} /></Field><div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className="button" disabled={busy}>Encrypt and save</button></div></form></Modal>;
+}
+
+function PolicyDialog({ existing, busy, onClose, onSave }: { existing: MonitoringPolicyRecord | null; busy: boolean; onClose: () => void; onSave: (draft: MonitoringPolicyDraft) => Promise<boolean> }) {
+  const [draft, setDraft] = useState<MonitoringPolicyDraft>({ label: existing?.policy.label ?? "", maximumAmountBaseUnits: existing?.policy.maximumAmountBaseUnits ?? "0", allowedRecipient: existing?.policy.allowedRecipients[0] ?? "", expiresAt: existing?.policy.expiresAt ?? "" });
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setValidationError(null);
+    try {
+      if (!(await onSave(draft))) {
+        setValidationError("OpenArc could not save this encrypted policy. Nothing changed. Close this dialog to review the local storage or revision-conflict details.");
+      }
+    } catch {
+      setValidationError("Check the policy fields. Use a visible label, a whole-number amount, an optional Arc Testnet address, and an optional UTC timestamp ending in Z.");
+    }
+  };
+  return <Modal title={existing ? "Edit monitoring policy" : "Add monitoring policy"} onClose={onClose}><form className="workspace-form" onChange={() => setValidationError(null)} onSubmit={(event) => void submit(event)}>{validationError ? <DialogValidationError message={validationError} /> : null}<Field label="Policy label"><input required maxLength={100} value={draft.label} onChange={(event) => setDraft({ ...draft, label: event.target.value })} /></Field><Field label="Maximum amount (base units)"><input required inputMode="numeric" pattern="[0-9]+" value={draft.maximumAmountBaseUnits} onChange={(event) => setDraft({ ...draft, maximumAmountBaseUnits: event.target.value })} /></Field><Field label="Allowed recipient (optional)"><input pattern="0x[0-9a-fA-F]{40}" value={draft.allowedRecipient} onChange={(event) => setDraft({ ...draft, allowedRecipient: event.target.value })} /></Field><Field label="Expiry (UTC ISO timestamp, optional)" hint="Example: 2026-09-16T12:00:00Z"><input value={draft.expiresAt} onChange={(event) => setDraft({ ...draft, expiresAt: event.target.value })} /></Field><div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className="button" disabled={busy}>Encrypt and save</button></div></form></Modal>;
+}
+
+function DialogValidationError({ message }: { message: string }) {
+  const errorRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    errorRef.current?.focus();
+  }, []);
+  return <p ref={errorRef} className="workspace-error" role="alert" tabIndex={-1}>{message}</p>;
+}
+
+function RecoveryDialog({ secret, onClose }: { secret: string; onClose: () => void }) {
+  const [confirmed, setConfirmed] = useState(false);
+  const [copyStatus, setCopyStatus] = useState("");
+  const copy = async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(secret);
+      setCopyStatus("Recovery secret copied locally.");
+    } catch {
+      setCopyStatus("Copy is unavailable in this browser. Nothing was sent. Select and copy the recovery secret manually.");
+    }
+  };
+  return <Modal title="Save this recovery secret now" onClose={() => { if (confirmed) onClose(); }} closeDisabled={!confirmed}><p>This is shown once. It can rotate the local passphrase and recovery wrapper, but it cannot decrypt a separately password-protected backup.</p><code className="recovery-secret" data-testid="recovery-secret">{secret}</code><button type="button" onClick={() => void copy()}>Copy recovery secret</button><small role="status">{copyStatus}</small><label className="confirm-row"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> I saved it somewhere private.</label><button className="button" type="button" disabled={!confirmed} onClick={onClose}>Continue to workspace</button></Modal>;
+}
+
+function TourDialog({ onClose, returnFocus }: { onClose: () => void; returnFocus: HTMLElement | null }) {
+  const [step, setStep] = useState(0);
+  const steps = [
+    ["What OpenArc can prove", "OpenArc can reconcile cited evidence and expose agreement, conflict, or missing facts. An owner label, attempted action, or fixture is never treated as proof of identity or settlement."],
+    ["Where private data lives", "Your browser encrypts every workspace record before IndexedDB persistence. M02 has no network path, and reload always begins locked."],
+    ["Add an agent wallet label", "Use Agents to attach an owner-supplied Arc Testnet address and optional context. The label organizes local records; it does not authenticate ownership."],
+    ["Permission before any future refresh", "This milestone never refreshes live sources. A later network-enabled milestone must show exactly what will leave the browser and obtain explicit permission first."],
+    ["Read evidence and incomplete states", "Intent, attempt, authorization, fulfillment, settlement, and refund stay distinct. Missing or conflicting evidence remains visible instead of being guessed away."],
+    ["Lock, export, recover, and delete", "Lock clears decrypted UI state. Backups use a separate password, recovery rotates local wrappers, and Settings can permanently delete this origin-bound workspace."],
+  ] as const;
+  return <Modal title={steps[step]![0]} onClose={onClose} returnFocus={returnFocus}><p className="tour-count">STEP {step + 1} OF {steps.length}</p><p>{steps[step]![1]}</p><div className="tour-dots" aria-label={`Tour step ${step + 1} of ${steps.length}`}>{steps.map((_, index) => <span key={index} className={index === step ? "active" : ""} />)}</div><div className="modal-actions">{step > 0 ? <button type="button" onClick={() => setStep(step - 1)}>Back</button> : <button type="button" onClick={onClose}>Skip</button>}<button className="button" type="button" onClick={() => { if (step === steps.length - 1) onClose(); else setStep(step + 1); }}>{step === steps.length - 1 ? "Open workspace" : "Next"}</button></div></Modal>;
+}
+
+function Modal({ title, children, onClose, closeDisabled = false, returnFocus: explicitReturnFocus = null }: { title: string; children: ReactNode; onClose: () => void; closeDisabled?: boolean; returnFocus?: HTMLElement | null }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    returnFocus.current = explicitReturnFocus ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    const background = document.querySelector<HTMLElement>(".workspace-shell");
+    const previousAriaHidden = background?.getAttribute("aria-hidden") ?? null;
+    if (background) {
+      background.inert = true;
+      background.setAttribute("aria-hidden", "true");
+    }
+    const dialog = dialogRef.current;
+    dialog?.querySelector<HTMLElement>("button:not([disabled]), input:not([disabled]), textarea:not([disabled])")?.focus();
+    const keyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !closeDisabled) { event.preventDefault(); onClose(); return; }
+      if (event.key !== "Tab" || !dialog) return;
+      const items = [...dialog.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), textarea:not([disabled]), a[href]")];
+      if (items.length === 0) return;
+      const first = items[0]!;
+      const last = items.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", keyDown);
+    return () => {
+      document.removeEventListener("keydown", keyDown);
+      if (background) {
+        background.inert = false;
+        if (previousAriaHidden === null) background.removeAttribute("aria-hidden");
+        else background.setAttribute("aria-hidden", previousAriaHidden);
+      }
+      const target = returnFocus.current;
+      window.setTimeout(() => target?.focus(), 25);
+    };
+  }, [closeDisabled, explicitReturnFocus, onClose]);
+  return createPortal(<div className="modal-backdrop" role="presentation"><div className="workspace-modal" role="dialog" aria-modal="true" aria-labelledby="workspace-dialog-title" ref={dialogRef}><header><p className="eyebrow">PRIVATE WORKSPACE</p><h2 id="workspace-dialog-title">{title}</h2>{!closeDisabled ? <button type="button" aria-label="Close dialog" onClick={onClose}>×</button> : null}</header>{children}</div></div>, document.body);
+}
+
+function WorkspaceGate({ title, build, children }: { title: string; build: BuildInfo; children: ReactNode }) {
+  return <main className="workspace-gate"><a className="workspace-brand" href="/"><img src="/openarc-logo.jpeg" alt="" /><span><strong>OPENARC</strong><small>ENCRYPTED WORKSPACE</small></span></a><section><p className="eyebrow">LOCAL FIRST · NO ACCOUNT · NO NETWORK</p><h1>{title}</h1>{children}</section><footer><a href="/">← Back to evidence engine</a><code data-testid="build-sha">BUILD {build.commitSha}</code></footer></main>;
+}
+
+function WorkspaceWait({ label }: { label: string }) {
+  return <main className="workspace-wait"><img src="/openarc-logo.jpeg" alt="" /><div className="workspace-spinner" aria-hidden="true" /><p role="status">{label}</p></main>;
+}
+
+function SectionHeading({ eyebrow, title, id, children, onLearn }: { eyebrow: string; title: string; id: string; children: ReactNode; onLearn: (target: HTMLElement) => void }) {
+  return <header className="workspace-section-heading"><div><p className="eyebrow">{eyebrow}</p><div className="workspace-title-row"><h1 id={id}>{title}</h1><details className="workspace-info"><summary role="button" aria-label={`About ${title}`} title={`About ${title}`}>i</summary><p>{children}</p></details></div></div><div className="workspace-heading-context"><p>{children}</p><div><span className="workspace-view-status">ENABLED · LOCAL ONLY</span><a href="#workspace-tour" onClick={(event) => { event.preventDefault(); onLearn(event.currentTarget); }}>Learn how this works</a></div></div></header>;
+}
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return <label className="field"><span>{label}</span>{children}{hint ? <small>{hint}</small> : null}</label>;
+}
+
+function ExactIdentifier({ label, value }: { label: string; value: string }) {
+  const [copyStatus, setCopyStatus] = useState("");
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyStatus("Copied locally.");
+    } catch {
+      setCopyStatus("Copy is unavailable in this browser. Nothing was sent.");
+    }
+  };
+  return <div className="exact-identifier"><span>{label}</span><code>{value}</code><button type="button" aria-label={`Copy ${label}`} onClick={() => void copy()}>Copy</button><small role="status">{copyStatus}</small></div>;
+}
+
+function Stat({ value, label }: { value: number; label: string }) {
+  return <article><strong>{value}</strong><span>{label}</span></article>;
+}
+
+function EmptyState({ title, body }: { title: string; body: string }) {
+  return <div className="workspace-empty"><h3>{title}</h3><p>{body}</p></div>;
+}
+
+function recordCounts(records: readonly WorkspaceRecord[]) {
+  return {
+    agents: records.filter((record) => record.kind === "agent_profile").length,
+    policies: records.filter((record) => record.kind === "monitoring_policy").length,
+    actions: records.filter((record) => record.kind === "action_envelope").length,
+    evidence: records.filter((record) => record.kind === "evidence_record").length,
+  };
+}
+
+function viewFromLocation(): WorkspaceView {
+  const value = new URLSearchParams(window.location.search).get("view");
+  return VIEWS.some((item) => item.id === value) ? (value as WorkspaceView) : "overview";
+}
+
+function isCoordinationMessage(value: unknown): value is CoordinationMessage {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.sender === "string" && typeof candidate.vaultId === "string" && (candidate.type === "changed" || candidate.type === "lock" || candidate.type === "deleting");
+}
+
+function downloadJson(value: unknown, filename: string) {
+  const blob = new Blob([JSON.stringify(value)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function formatBytes(value: number | null): string {
+  if (value === null) return "not reported";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MiB`;
+}

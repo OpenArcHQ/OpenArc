@@ -468,6 +468,14 @@ The crypto and lifecycle contract is owned by the frontend architecture
 document. Database version, encrypted record schema version, and evidence schema
 version are separate values.
 
+Milestone 02 freezes `openarc.wrap-kdf.v1` and `openarc.backup-kdf.v1` as
+PBKDF2-HMAC-SHA-256 with independent 128-bit salts and exactly 600,000
+iterations. This value followed a 2026-09-02 Chromium/WebKit benchmark recorded
+in the M02 release evidence; changing it requires a new KDF/format version. M02
+writes only agent profiles, monitoring policies, evidence records, action
+envelopes, workspace settings, and the manifest sentinel. Permission receipts
+and investigation notes remain reserved for their later milestones.
+
 ## 10. Feature flags
 
 Feature flags fail closed and exist on both sides when a server route and UI are
@@ -830,7 +838,6 @@ These decisions remain intentionally unresolved until their milestone:
 - Final product domain and permanent encrypted-Vault origin.
 - Whether authenticated Circle/Gateway transfer lookup is permitted and viable
   under the required account, terms, privacy, and cost boundary.
-- Exact encrypted-backup KDF parameters after browser performance measurement.
 - Whether raw provider artifacts may be attached locally, or only normalized
   fields plus digests.
 - Which visualization library passes accessibility, bundle, license, and styling

@@ -15,7 +15,9 @@ COPY packages/config packages/config
 COPY assets assets
 
 ARG COMMIT_SHA=local
+ARG VITE_ENCRYPTED_WORKSPACE_ENABLED=false
 ENV VITE_COMMIT_SHA=${COMMIT_SHA}
+ENV VITE_ENCRYPTED_WORKSPACE_ENABLED=${VITE_ENCRYPTED_WORKSPACE_ENABLED}
 RUN pnpm --filter @openarc/shared build && pnpm --filter @openarc/web build
 
 FROM nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de AS runtime

@@ -1,6 +1,6 @@
 # OpenArc marketing and technical product package
 
-Status: **Milestone 01 evidence engine complete; Arc Testnet fixture-only**
+Status: **Milestone 02 encrypted workspace active; Arc Testnet fixture-only**
 Prepared: **2026-08-15; network facts re-verified 2026-09-01**
 
 OpenArc is the proposed private intelligence, policy, and investigation layer for
@@ -35,7 +35,7 @@ parity, and a separately reviewed mainnet release exist.
 ## Current implementation
 
 The immutable Milestone 00 foundation and Milestone 01 evidence engine are
-complete. Milestone 01 adds a strict,
+complete. Milestone 02 is adding an encrypted local workspace around the strict,
 fixture-only evidence engine without introducing any live connector:
 
 - `packages/shared` owns the fail-closed Arc Testnet registry and primitive
@@ -45,7 +45,9 @@ fixture-only evidence engine without introducing any live connector:
   persistence.
 - `apps/web` exposes six synthetic complete, missing, conflicting, expired,
   failed, and refunded cases as an accessible chronological list plus an exact
-  graph summary. It makes no runtime API, RPC, wallet, analytics, or storage call.
+  graph summary. The separately flagged M02 workspace uses only browser-local
+  WebCrypto and IndexedDB; neither surface makes an API, RPC, wallet, or
+  analytics call.
 - `.github/workflows/release-gates.yml`, production Dockerfiles, Chromium and
   WebKit journeys, license/audit checks, image scans, and SBOM generation form
   the initial verification boundary.
@@ -61,7 +63,9 @@ pnpm release:gate
 The foundation evidence record is in
 [`docs/releases/00-foundation.md`](docs/releases/00-foundation.md). The Milestone
 01 boundary and completed exit evidence are in
-[`docs/releases/01-evidence-engine.md`](docs/releases/01-evidence-engine.md).
+[`docs/releases/01-evidence-engine.md`](docs/releases/01-evidence-engine.md). The
+active local-only M02 boundary is in
+[`docs/releases/02-encrypted-workspace.md`](docs/releases/02-encrypted-workspace.md).
 
 ## Logo
 

@@ -1,8 +1,11 @@
 import { ARC_TESTNET } from "@openarc/shared";
+import { useEffect, useState } from "react";
 
 import type { BuildInfo } from "@openarc/shared";
 
 import { FixtureExplorer } from "./evidence/FixtureExplorer.js";
+import { encryptedWorkspaceEnabled } from "./app/availability.js";
+import { VaultWorkspace } from "./vault/VaultWorkspace.js";
 
 interface AppProps {
   build: BuildInfo;
@@ -16,6 +19,24 @@ const evidenceSteps = [
 ] as const;
 
 export function App({ build }: AppProps) {
+  const [path, setPath] = useState(window.location.pathname);
+  const workspaceEnabled = encryptedWorkspaceEnabled();
+
+  useEffect(() => {
+    const onPopState = () => setPath(window.location.pathname);
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (path === "/workspace" && !workspaceEnabled) {
+      window.history.replaceState(null, "", "/");
+      setPath("/");
+    }
+  }, [path, workspaceEnabled]);
+
+  if (path === "/workspace" && workspaceEnabled) return <VaultWorkspace build={build} />;
+
   const skipToExplorer = () => {
     requestAnimationFrame(() => document.querySelector<HTMLElement>("#fixture-explorer")?.focus());
   };
@@ -31,9 +52,10 @@ export function App({ build }: AppProps) {
           <span>OPENARC</span>
         </a>
         <div className="topbar-links">
+          {workspaceEnabled ? <a href="/workspace">Workspace</a> : null}
           <a href="#fixture-explorer">Explorer</a>
           <a href="#network">Network</a>
-          <span className="phase">M01 · EVIDENCE ENGINE</span>
+          <span className="phase">M02 · ENCRYPTED WORKSPACE</span>
         </div>
       </nav>
 
@@ -51,6 +73,7 @@ export function App({ build }: AppProps) {
             <strong>Fixture engine running</strong>
             <span>Six deterministic local cases. Live connectors remain deliberately disabled.</span>
           </div>
+          {workspaceEnabled ? <a className="hero-action" href="/workspace">Open private workspace →</a> : null}
         </div>
 
         <div className="orbital" aria-hidden="true">

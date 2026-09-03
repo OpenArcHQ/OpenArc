@@ -13,7 +13,7 @@ test("explores every fixture with graph/list parity, keyboard tabs, and no priva
   });
 
   await page.goto("/");
-  await expect(page.getByText("M01 · EVIDENCE ENGINE")).toBeVisible();
+  await expect(page.getByText("M02 · ENCRYPTED WORKSPACE")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Read the evidence before the conclusion." })).toBeVisible();
 
   const selectedTab = page.getByRole("tab", { selected: true });

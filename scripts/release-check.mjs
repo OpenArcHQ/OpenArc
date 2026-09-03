@@ -52,6 +52,131 @@ for (const forbiddenToken of [
   }
 }
 
+const m02Files = [
+  "docs/releases/02-encrypted-workspace.md",
+  "packages/shared/src/vault.ts",
+  "packages/shared/test/vault.test.ts",
+  "apps/web/src/app/availability.ts",
+  "apps/web/src/vault/types.ts",
+  "apps/web/src/vault/crypto.ts",
+  "apps/web/src/vault/db.ts",
+  "apps/web/src/vault/errors.ts",
+  "apps/web/src/vault/service.ts",
+  "apps/web/src/vault/VaultWorkspace.tsx",
+  "apps/web/test/availability.test.ts",
+  "apps/web/test/vault.test.ts",
+  "e2e/workspace.spec.ts",
+  "e2e-flag-off/workspace-flag-off.spec.ts",
+  "e2e-production/workspace-production.spec.ts",
+  "playwright.production.config.ts",
+  "playwright.flag-off.config.ts",
+];
+const m02Sources = new Map();
+for (const required of m02Files) {
+  try {
+    m02Sources.set(required, await readFile(path.join(root, required), "utf8"));
+  } catch {
+    failures.push(`Missing required M02 file: ${required}`);
+  }
+}
+
+const m02Runtime = [
+  "packages/shared/src/vault.ts",
+  "apps/web/src/app/availability.ts",
+  "apps/web/src/vault/types.ts",
+  "apps/web/src/vault/crypto.ts",
+  "apps/web/src/vault/db.ts",
+  "apps/web/src/vault/errors.ts",
+  "apps/web/src/vault/service.ts",
+  "apps/web/src/vault/VaultWorkspace.tsx",
+]
+  .map((relativePath) => m02Sources.get(relativePath) ?? "")
+  .join("\n");
+
+for (const requiredToken of [
+  "openarc.encrypted-vault",
+  "OPENARC-ENCRYPTED-BACKUP",
+  "openarc.logical-backup",
+  "VAULT_WRAP_KDF_ITERATIONS = 600_000",
+  "VAULT_BACKUP_KDF_ITERATIONS = 600_000",
+  "recordRevision: VaultRevisionSchema",
+  "coordinationRevision: string",
+  "deletionPending: boolean",
+  "assertActive",
+]) {
+  if (!m02Runtime.includes(requiredToken)) {
+    failures.push(`M02 encrypted-workspace contract is missing ${requiredToken}`);
+  }
+}
+
+for (const forbiddenToken of [
+  "fetch(",
+  "XMLHttpRequest",
+  "WebSocket",
+  "EventSource",
+  "sendBeacon",
+  "localStorage",
+  "sessionStorage",
+  "dangerouslySetInnerHTML",
+  "src=\"http",
+  "src={'http",
+  'src={"http',
+  "window.ethereum",
+  "sendTransaction",
+  "broadcastTransaction",
+]) {
+  if (m02Runtime.includes(forbiddenToken)) {
+    failures.push(`M02 runtime contains forbidden network/plaintext-storage/execution API: ${forbiddenToken}`);
+  }
+}
+
+for (const futureKind of ["permission_receipt", "investigation_note"]) {
+  const sharedVaultSource = m02Sources.get("packages/shared/src/vault.ts") ?? "";
+  if (sharedVaultSource.includes(futureKind)) {
+    failures.push(`M02 record union implements later-milestone kind: ${futureKind}`);
+  }
+}
+
+const envExample = await readFile(path.join(root, ".env.example"), "utf8");
+const dockerignoreSource = await readFile(path.join(root, ".dockerignore"), "utf8");
+const webDockerfile = await readFile(path.join(root, "apps/web/Dockerfile"), "utf8");
+if (!envExample.includes("VITE_ENCRYPTED_WORKSPACE_ENABLED=false")) {
+  failures.push("M02 feature flag must default to false in .env.example");
+}
+if (!dockerignoreSource.includes("!.env.example")) {
+  failures.push("The clean-room release image must include .env.example for release:check");
+}
+if (!webDockerfile.includes("ARG VITE_ENCRYPTED_WORKSPACE_ENABLED=false")) {
+  failures.push("M02 feature flag must default to false in the web image");
+}
+
+const nginxSource = await readFile(path.join(root, "apps/web/nginx.conf"), "utf8");
+for (const directive of ["connect-src 'none'", "worker-src 'none'", "media-src 'none'"]) {
+  if (!nginxSource.includes(directive)) {
+    failures.push(`M02 web CSP is missing local-only directive: ${directive}`);
+  }
+}
+
+const packageSource = await readFile(path.join(root, "package.json"), "utf8");
+if (!packageSource.includes("playwright test -c playwright.flag-off.config.ts")) {
+  failures.push("M02 browser gate must exercise the feature-disabled build");
+}
+if (!packageSource.includes("playwright test -c playwright.production.config.ts")) {
+  failures.push("M02 browser gate must define an exact production-artifact check");
+}
+const m02WorkflowSource = await readFile(path.join(root, ".github/workflows/release-gates.yml"), "utf8");
+for (const requiredToken of [
+  "VITE_ENCRYPTED_WORKSPACE_ENABLED=true",
+  "openarc-web-m02:ci",
+  "pnpm e2e:production",
+  "image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m02:ci",
+  "openarc-web-m02:ci -o cyclonedx-json > sbom-web-m02.cdx.json",
+]) {
+  if (!m02WorkflowSource.includes(requiredToken)) {
+    failures.push(`Hosted M02 production-artifact gate is missing ${requiredToken}`);
+  }
+}
+
 const networkSource = await readFile(path.join(root, "packages/shared/src/network.ts"), "utf8");
 for (const requiredValue of ["5042002", "0x4cef52", "https://rpc.testnet.arc.io"]) {
   if (!networkSource.includes(requiredValue)) failures.push(`Network registry is missing ${requiredValue}`);
@@ -135,4 +260,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log("[release-check] M01 evidence engine boundary and M00 foundation verified");
+console.log("[release-check] M02 encrypted workspace, M01 evidence engine, and M00 foundation verified");

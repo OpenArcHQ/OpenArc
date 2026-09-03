@@ -18,6 +18,7 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     env: {
       VITE_COMMIT_SHA: "e2e-foundation",
+      VITE_ENCRYPTED_WORKSPACE_ENABLED: "true",
     },
   },
   projects: [

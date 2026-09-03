@@ -9,4 +9,5 @@ tmp
 output
 .env
 .env.*
+!.env.example
 *.log

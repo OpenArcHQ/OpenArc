@@ -497,11 +497,14 @@ The proposed browser Vault uses:
 
 - WebCrypto AES-256-GCM for record encryption.
 - A random data-encryption key wrapped by a passphrase-derived key.
-- PBKDF2-HMAC-SHA-256 with versioned parameters for the prototype, reviewed
-  against current browser performance before release.
+- Separate `openarc.wrap-kdf.v1` and `openarc.backup-kdf.v1`
+  PBKDF2-HMAC-SHA-256 derivations, each with an independent random 128-bit salt
+  and exactly 600,000 iterations. The value is frozen from the 2026-09-02
+  Chromium/WebKit benchmark in the M02 release record; a future change requires
+  a new version.
 - A fresh 96-bit IV for every encrypted write.
-- Authenticated additional data binding vault ID, record ID, schema version, and
-  key version.
+- Authenticated additional data binding vault ID, record ID, schema version, key
+  version, and opaque per-record revision.
 - A nonextractable session key after unlock.
 - IndexedDB for encrypted envelopes only.
 
@@ -514,9 +517,12 @@ invalidates session generation so a late result cannot be persisted. JavaScript
 heap erasure, a compromised device, malicious extensions, XSS, and hostile future
 same-origin code remain outside the protection claim.
 
-Encrypted export, import, recovery, and delete must cover every evidence schema.
-No import replaces an existing workspace until the complete archive is
-authenticated, decrypted, bounded, and validated in memory.
+Encrypted export decrypts and validates one atomic snapshot, excludes the local
+manifest/wrappers, and encrypts a bounded logical-record archive under a
+distinct backup passphrase with its clear header authenticated as AAD. Import
+creates a fresh Vault ID, data key, wrappers, recovery secret, revisions, IVs,
+and manifest. No import replaces an existing workspace until the complete
+archive is authenticated, decrypted, bounded, and validated in memory.
 
 ## 11. Privacy and security boundaries
 

@@ -161,7 +161,9 @@ The first successful workspace creation shows an accessible guided tour:
 6. How to lock, export, recover, and delete.
 
 Tour state is local and non-sensitive. `Show tour again` remains available in the
-rail and settings. The tour never blocks lock or delete.
+rail and settings. While the accessible modal is open, the background workspace
+is intentionally inert; Skip or Escape closes it immediately so lock and delete
+remain available without completing the tour.
 
 The dialog has initial focus, a focus trap, Escape close when safe, focus return,
 background inertness, text-based progress, reduced-motion behavior, and full
@@ -207,9 +209,12 @@ The renderable generation state and internal generation ref advance together on:
 - remote cross-tab lock/deleting/deleted event;
 - unexpected database close or version change.
 
-Every async operation captures `{vaultId, generation, revision}` and an
-`AbortSignal`. It asserts session identity before network, after network, inside
-the final IndexedDB write transaction, and before updating React state.
+Every session-bound async operation captures `{vaultId, generation, revision}`.
+Network work, beginning in M03, also owns an `AbortSignal`; WebCrypto and
+IndexedDB work that cannot be cancelled discards late results through the
+generation check. The session identity is asserted before and after any future
+network boundary, inside the final IndexedDB write transaction, and before
+updating React state.
 
 ## 6. Browser capability gate
 
@@ -256,19 +261,32 @@ interface PublicVaultMeta {
   schemaVersion: number;
   keyVersion: number;
   revision: string;
-  kdf: {
+  coordinationRevision: string;
+  deletionPending: boolean;
+  passphraseKdf: {
+    version: "openarc.wrap-kdf.v1";
     algorithm: "PBKDF2-HMAC-SHA-256";
     iterations: number;
     salt: string;
   };
   passphraseWrapper: WrappedKey;
+  recoveryKdf: {
+    version: "openarc.wrap-kdf.v1";
+    algorithm: "PBKDF2-HMAC-SHA-256";
+    iterations: number;
+    salt: string;
+  };
   recoveryWrapper: WrappedKey;
   sentinelRecordId: string;
 }
 ```
 
 It contains no agent name, address, policy, record kind, record count, created
-date, action date, provider name, or evidence timestamp.
+date, action date, provider name, or evidence timestamp. The opaque
+`coordinationRevision` changes on every local lock signal so a tab without
+BroadcastChannel can fail closed by polling. `deletionPending` is a public
+one-bit lifecycle marker set before the uncancellable database deletion begins;
+it reveals only that local deletion was requested.
 
 Encrypted envelope:
 
@@ -278,12 +296,15 @@ interface EncryptedEnvelope {
   iv: string;
   keyVersion: number;
   schemaVersion: number;
+  revision: string;
   ciphertext: string;
 }
 ```
 
 The encrypted plaintext contains a discriminated record union. Unknown kinds or
-versions fail closed and remain exportable/deletable.
+versions fail closed. A separately labeled opaque rescue export can copy the
+already-encrypted metadata and envelopes without accepting or decrypting them;
+it is not a normal logical backup and is not importable by the current build.
 
 ## 8. Cryptographic lifecycle
 
@@ -299,8 +320,9 @@ versions fail closed and remain exportable/deletable.
    secret displayed once.
 6. Discard extractable key material.
 7. Unwrap the session key as nonextractable AES-GCM.
-8. Encrypt and verify a sentinel.
-9. Commit metadata plus sentinel atomically.
+8. Encrypt and verify a manifest sentinel containing the opaque global revision
+   and a sorted digest/revision entry for every non-sentinel envelope.
+9. Commit metadata, settings, and sentinel atomically.
 
 ### Record encryption
 
@@ -310,11 +332,13 @@ versions fail closed and remain exportable/deletable.
 - Canonical AAD:
 
 ```text
-openarc|vault-v1|<vaultId>|<recordId>|<recordSchema>|<keyVersion>
+openarc|vault-v1|<vaultId>|<recordId>|<recordSchema>|<keyVersion>|<recordRevision>
 ```
 
 - Canonical UTF-8 JSON serialization with bounded keys and arrays.
-- No IV reuse under one data key.
+- IV collisions against every retained envelope are rejected. A fresh 96-bit
+  CSPRNG IV is used on every write; the residual probability of repeating an IV
+  from a previously deleted envelope is not described as impossible.
 
 ### Unlock
 
@@ -334,6 +358,9 @@ openarc|vault-v1|<vaultId>|<recordId>|<recordSchema>|<keyVersion>
 - revoke object URLs;
 - clear timers and listeners;
 - broadcast non-sensitive lock event;
+- atomically rotate the public opaque coordination revision for same-origin
+  polling fallback, accepting the latest revision for the same Vault so a
+  racing writer either loses its CAS or is followed by the lock marker;
 - return to locked UI.
 
 Do not claim guaranteed JavaScript heap erasure.
@@ -342,25 +369,34 @@ Do not claim guaranteed JavaScript heap erasure.
 
 Recovery unwraps the same data key, verifies every record, creates a new
 passphrase wrapper and recovery wrapper in memory, then conditionally commits
-metadata against the original vault ID/revision. Old passphrase and old recovery
-secret must fail after success. Any record error leaves original wrappers valid.
+metadata against the original vault ID, data revision, and coordination
+revision, while requiring `deletionPending=false`. Old passphrase and old
+recovery secret must fail after success. Any record error leaves original
+wrappers valid.
 
 ### Export and import
 
 - Decrypt and validate one atomic snapshot.
-- Build a bounded canonical archive in memory.
-- Encrypt the whole archive with a user-supplied backup passphrase and fresh
-  salt/IV.
-- Clear header contains only magic, version, KDF bounds, salt, and IV.
+- Build a bounded canonical logical-record archive in memory; original Vault
+  metadata, wrappers, envelope IVs, and the storage manifest are not archived.
+- Encrypt the whole archive with a distinct user-supplied backup passphrase and
+  fresh salt/IV.
+- Clear header contains only magic, version, exact versioned backup KDF, salt,
+  and IV, and that canonical header is authenticated as AES-GCM AAD.
 - Import validates file size and KDF bounds before work.
-- Decrypt and strictly validate every record before replacement.
+- Decrypt and strictly validate every record, then create a fresh Vault ID, DEK,
+  local passphrase/recovery wrappers, envelope revisions/IVs, and manifest before
+  replacement. A new recovery secret is shown once.
 - Replacement is one IndexedDB transaction with expected-empty or expected
-  `{vaultId, revision}` precondition.
+  `{vaultId, revision, coordinationRevision}` precondition and
+  `deletionPending=false`.
 - No merge in the first release.
 
 ### Delete
 
 - invalidate session and broadcast `deleting`;
+- atomically set public `deletionPending=true` and rotate the coordination
+  revision before requesting deletion;
 - clear UI and close this tab's handles;
 - enter dedicated non-interactive deleting phase;
 - call `indexedDB.deleteDatabase`;
@@ -369,6 +405,9 @@ secret must fail after success. Any record error leaves original wrappers valid.
 - show close-other-tabs guidance while blocked;
 - never expose create/unlock/import controls while an uncancellable delete is
   pending.
+- a tab that starts, receives a message, or polls while the marker is set enters
+  the same non-interactive phase and may safely resume the idempotent database
+  deletion; normal read, unlock, write, and import paths fail closed.
 
 ## 9. Record schemas
 
@@ -380,11 +419,14 @@ type VaultRecord =
   | MonitoringPolicyRecord
   | EvidenceRecordRecord
   | ActionEnvelopeRecord
-  | PermissionReceiptRecord
-  | InvestigationNoteRecord
   | WorkspaceSettingsRecord
   | SentinelRecord;
 ```
+
+This M02 union is intentionally closed. `PermissionReceiptRecord` begins with
+M03's permission-before-network work, and investigation notes begin only in
+their later milestone. Unknown kinds remain opaque, exportable, and deletable,
+but this build does not decrypt or silently drop them.
 
 Record IDs are opaque UUIDs and carry no domain meaning.
 
@@ -511,6 +553,14 @@ The function is pure, deterministic, exact, and fully covered by fixtures. It:
 - emits ordered gaps, conflicts, and limitations;
 - never mutates source evidence;
 - never makes a network call.
+
+M02 fixture actions are persisted with the deterministic result and policy
+evaluation cached for display. Unlock, import, save, and replacement do not
+trust that cache: they require same-action citations and agent-linked policies,
+recompute from the unresolved action plus stored evidence at the cached
+evaluation time, and require an exact result match. A terminal action with a
+missing, cross-action, cross-agent, or semantically inconsistent cache fails
+closed while its opaque encrypted bytes remain rescuable and deletable.
 
 Presentation preserves the normative distinction:
 
@@ -690,11 +740,13 @@ agents                         100
 policies                       500
 evidence records             5000
 action envelopes             1000
-permission receipts          5000
-notes                         1000
+workspace settings              1
+manifest sentinel               1
 encrypted backup               32 MiB maximum
-single imported attachment      4 MiB maximum if later enabled
 ```
+
+Later record kinds receive their own versioned limits when their milestone is
+active; their future capacity is not preallocated or implemented in M02.
 
 The exact serialized encrypted archive must remain below the import maximum.
 Capacity is checked before every save and again before download. Accepted local
