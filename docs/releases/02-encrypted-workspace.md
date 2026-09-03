@@ -1,6 +1,6 @@
 # Milestone 02 — encrypted local workspace
 
-Status: **candidate verified — final exact RC pending**
+Status: **complete — immutable `rc/02-encrypted-workspace/1`**
 Network review: **not applicable — local-only, zero live calls**
 Base: `main` after immutable `rc/01-evidence-engine/1` and the M01 closure record
 
@@ -257,6 +257,35 @@ unlock/rescue. An origin change requires a separately verified encrypted
 export/import first. No destructive live rollback drill was needed or claimed
 for this local-only milestone.
 
-This evidence-only successor still requires its own exact hosted CI and final
-Railway markers before an immutable RC tag can be created. Implementation
-lifecycle evidence above belongs to `968c804`, not to an untested later SHA.
+## Final exact candidate and closure — 2026-09-03
+
+The evidence-only successor
+`298c695ae615ea090b02b0410b7ae37125c625b1` passed exact GitHub Actions run
+`33778011261`. All verification, browser, and image jobs succeeded, including
+49 shared / 4 API / 40 web tests, 46 feature-on journeys, 2 flag-off journeys,
+and both feature-on production-image browser tests. There were no retries or
+flaky browser results. All three HIGH/CRITICAL scans reported zero findings;
+the three CycloneDX 1.7 SBOMs are in artifact `9902464732`, with digest
+`sha256:1416fe73b9c0fb1445abddae4116b198326f000fc4482abd46549f7fc1ec15cb`.
+GitHub reported zero billable runner milliseconds.
+
+Final exact Railway deployments both reached `SUCCESS`:
+
+- API `<deployment-id>`, image
+  `sha256:15525a3388ba2c018bd9a41dd157fb5d6457bf8b5fe95f276a5bc52ee710dee0`.
+- Web `<deployment-id>`, image
+  `sha256:8a416d7d55328d72a7eeefffe0452f23860aa8c28d6caf4300c5db90cf765c58`.
+
+API health/readiness and the web marker exposed the full final SHA. The bounded
+asset/security-header/disabled-route smoke passed, and both Chromium and WebKit
+production browser journeys passed again against that live origin. The full
+implementation lifecycle evidence above belongs to `968c804`; the only change
+in `298c695` is this release-evidence document.
+
+Independent final review verified clean/pushed identity, exact CI, scans/SBOMs,
+zero billable runner time, and live markers/headers/assets. It found no P0/P1
+and approved immutable annotated tag `rc/02-encrypted-workspace/1`, which was
+created and pushed at `298c695ae615ea090b02b0410b7ae37125c625b1`. The tag is
+merged into `main`; this subsequent closure records the completed operations
+without moving or reusing the tag. M03 may now begin only from the updated
+`main` containing this closure. This is not public-launch or mainnet approval.
