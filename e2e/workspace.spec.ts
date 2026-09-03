@@ -224,6 +224,11 @@ test("coordinates revision changes and lock across tabs", async ({ context, page
 });
 
 test("uses revision polling when BroadcastChannel is unavailable", async ({ context, page }) => {
+  // This path intentionally performs seven production-strength PBKDF2
+  // derivations (one create plus six unlocks).
+  // A single-core hosted WebKit worker needs a wider test budget even though
+  // every individual unlock remains bounded to 15 seconds.
+  test.setTimeout(120_000);
   await context.addInitScript(() => {
     Object.defineProperty(globalThis, "BroadcastChannel", { configurable: true, value: undefined });
   });
