@@ -383,6 +383,17 @@ for (const requiredDigest of [
 if (workflowSource.includes("--ignore-unfixed")) {
   failures.push("Release image scans must not ignore unfixed HIGH/CRITICAL findings");
 }
+for (const auditGuard of [
+  "pnpm audit:prod 2>&1 | tee",
+  "audit_status=${PIPESTATUS[0]}",
+  "[23] The operation was aborted due to timeout",
+  "TimeoutError: The operation was aborted due to timeout",
+  "mandatory pinned Trivy production-image scans",
+]) {
+  if (!workflowSource.includes(auditGuard)) {
+    failures.push(`Release workflow is missing the strict audit transport guard: ${auditGuard}`);
+  }
+}
 for (const readinessGuard of ["api_ready=0", "test \"${api_ready}\" = \"1\"", "web_ready=0", "test \"${web_ready}\" = \"1\""]) {
   if (!workflowSource.includes(readinessGuard)) {
     failures.push(`Release image smoke is missing bounded readiness guard: ${readinessGuard}`);
