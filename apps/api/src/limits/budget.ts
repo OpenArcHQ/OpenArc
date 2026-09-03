@@ -26,6 +26,12 @@ export interface BudgetOptions {
   observe?: BudgetObserver;
 }
 
+/** Reconnect the budget transport only; commands are never queued or retried. */
+export function redisReconnectDelay(retries: number): number {
+  const exponent = Number.isInteger(retries) ? Math.min(Math.max(retries, 0), 4) : 4;
+  return Math.min(100 * (2 ** exponent), 1_000);
+}
+
 /** Only pass request.raw.socket.remoteAddress; never any forwarded header. */
 export function canonicalPeer(value: string | undefined): string {
   if (!value || value.length > 64) return "unknown";
@@ -124,7 +130,7 @@ export class SourceLease {
 
 export async function connectBudgetRedis(url: string) {
   const client = createClient({ url, disableOfflineQueue: true, commandsQueueMaxLength: 256,
-    socket: { reconnectStrategy: false, connectTimeout: 750 },
+    socket: { reconnectStrategy: (retries) => redisReconnectDelay(retries), connectTimeout: 750 },
     commandOptions: { timeout: 750 }, disableClientInfo: true });
   // No raw connection URL, library error, command, or argument is ever logged.
   client.on("error", () => undefined);

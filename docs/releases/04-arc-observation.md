@@ -1,6 +1,6 @@
 # Milestone 04 — Arc account and transaction observation
 
-Status: **active — implementation and fixture verification in progress**
+Status: **active — Redis recovery hardening is locally green; successor CI and staging proof pending**
 Base: `main` closure `594527b` after immutable
 `rc/03-api-privacy-boundary/1` at
 `10172744b6316b21b7b228a9c89d4541b7dd8f3e`
@@ -64,8 +64,11 @@ substitution. This is an engineering record, not legal advice.
 
 ## Cost, privacy, and authority boundary
 
-- No new Railway project, service, database, volume, provider account, PAYG
-  path, or recurring resource may be created.
+- No new Railway project or external provider account was created. After
+  explicit operator approval, one Redis service and its template volume were
+  added only to the existing `openarc-staging` project behind a workspace-wide
+  `$20` compute hard limit equal to the Pro plan's included usage. The service
+  is private-only, serverless, single-replica, and capped at 1 vCPU / 500 MB.
 - Source routes remain false by default. Fixture implementation uses only the
   existing disposable test Redis path and injected provider transports.
 - A production-enabled source route fails startup/readiness without a real
@@ -91,8 +94,8 @@ substitution. This is an engineering record, not legal advice.
 - [x] Receipt-before-request and atomic encrypted observation persistence
 - [x] Outage leaves prior encrypted observation bytes unchanged and visibly stale
 - [x] Chromium/WebKit/mobile/accessibility and exact production-image journeys
-- [x] Full Node 22 gate, audit/licenses/scans/SBOM and hosted CI
-- [ ] Controlled live Testnet read on exact staged SHA with no write transaction
+- [ ] Full Node 22 gate, audit/licenses/scans/SBOM and hosted CI on the hardened SHA
+- [ ] Controlled live Testnet read and Redis recovery on the hardened staged SHA
 - [ ] Independent no-P0/P1 review, immutable RC, and `main` closure
 
 ## Release boundary
@@ -190,3 +193,68 @@ failure code, and build SHA. They contained no address, transaction hash, RPC
 URL, response data, or Redis data. The local API and disposable Redis container
 were stopped after the proof. This evidence validates the live adapter locally;
 it does not satisfy the separate exact-staged-SHA exit gate.
+
+## Exact branch-head CI and staged Public Testnet proof — 2026-09-03
+
+Documentation successor `02a49aae934730af1aff2ac4fa08180098b2f738` was
+clean, pushed, and equal to the remote branch head. GitHub Actions run
+`33804008873` completed successfully on that exact SHA: verify, images, and
+browser jobs all passed. CycloneDX artifact `9912316169` (`openarc-sboms`) has
+digest
+`sha256:022e0e95f9110ec812674d4b1dbce80adc57fdf29890190bb16f03b8d8077b08`
+and expires 2026-12-02.
+
+Before creating the staging Redis resource, the operator explicitly approved a
+workspace-wide `$20` Railway compute hard limit. Railway visibly confirmed the
+limit as active. Current usage was `$5.93`, the cycle estimate was `$10.60`,
+and `openarc-staging` usage was `$0.0031` at configuration time. Reaching the
+limit stops workspace compute rather than allowing compute overage.
+
+The official Railway Redis template was added to the existing staging project
+with no public endpoint. It uses private DNS, one replica, a persistent template
+volume, a 1 vCPU ceiling, a 500 MB memory ceiling, and serverless sleep. The
+initial Redis 8.10.1 deployment `<deployment-id>`
+completed successfully; it was then pinned to tested image digest
+`redis:8-alpine@sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576`
+in successful deployment `<deployment-id>`. The API
+receives `REDIS_URL` through a Railway service reference; the Redis password was
+not copied into source, shell output, logs, or this record.
+
+API deployment `<deployment-id>` and web deployment
+`<deployment-id>` both completed successfully from exact
+SHA `02a49aae934730af1aff2ac4fa08180098b2f738`. The public web artifact and API
+reported that exact build marker. API readiness reported configuration,
+source routes, and Redis up. Capabilities reported
+`openarc.capabilities.m04.v1`, `eip155:5042002`, `writes: false`, only
+`arc_primary_rpc` enabled, and all later source families disabled.
+
+An isolated browser created an encrypted workspace on the exact staged web
+deployment, reviewed both disclosure modals, and explicitly approved one public
+account and one finalized public transaction. The account route completed in
+423 ms and the transaction route in 388 ms with HTTP 200. The UI displayed the
+exact block anchors, native and ERC-20 USDC views, receipt status, calculated
+fee, one canonical EIP-7708 movement, and one ERC-20 corroboration rather than
+two movements. Reload returned to the locked workspace screen. No wallet was
+connected and no transaction was signed or broadcast.
+
+The API's seven application log lines for the controlled proof contained none
+of the tested address, transaction hash, RPC hostname, Redis URL, or password
+term. Railway HTTP metadata confirmed readiness, capabilities, account, and
+transaction requests succeeded without exposing bodies in OpenArc application
+logs. The isolated browser session was closed after verification.
+
+Restarting Redis to apply its immutable image pin subsequently exposed a
+release-blocking recovery defect: the API correctly failed closed while Redis
+was unavailable but remained unready after Redis became healthy. A manual API
+restart restored readiness, so staging remained usable, but SHA `02a49aa` was
+rejected as the release candidate. The cause was a disabled Redis transport
+reconnect strategy.
+
+The successor enables only bounded connection recovery (100–1,000 ms backoff).
+The offline queue remains disabled, commands issued during an outage fail
+immediately, and commands are never implicitly retried or replayed. A real
+Redis integration test now kills the active client connection, observes a new
+connection identity, and proves that the shared budget resumes. The hardened
+local Node 22 gate passes 64 shared, 66 API, and 67 web tests plus all 64
+Chromium/WebKit journeys. Hosted CI and a staged Redis-restart recovery proof
+remain mandatory on the successor's exact SHA before RC consideration.

@@ -802,22 +802,27 @@ refunded, even if cancellation or transport failure prevents completion; this
 is conservative spend control, not a claim that every reservation reached a
 provider. Metrics distinguish reservations from dispatched calls. Missing Redis,
 script errors, disconnection, or timeout fail closed without outbound calls.
-There is no offline queue or implicit retry that can perform a late operation.
+There is no offline queue or implicit command retry that can perform a late
+operation. A dropped Redis transport reconnects with bounded 100–1,000 ms
+backoff so readiness can recover after the same private store returns; commands
+issued while the socket is unavailable still fail immediately and are never
+replayed.
 
 An already transmitted Redis command cannot be recalled: a timeout may consume
 one reservation after the caller has failed closed. It must never cause a retry
 or a provider dispatch. Exceeding a per-request subcall lease fails with the
 fixed `SOURCE_UNAVAILABLE` error. Dispatch metrics count transport invocations,
 not proof that the provider received a packet. The Redis command deadline is
-750 ms (internally bounded 25–2,000 ms), with no reconnect strategy and at most
-256 pending commands. Lease closure and route cancellation prevent further
-calls.
+750 ms (internally bounded 25–2,000 ms), with a bounded connection-only
+reconnect strategy and at most 256 pending commands. The offline queue remains
+disabled. Lease closure and route cancellation prevent further calls.
 
 Defaults are 60 attempts/hour and 10,000 combined units/day, both bounded at
 configuration time. Capability metadata is not a source route and requires no
 Redis or provider budget. Its payload and request lifetime remain bounded.
 Disposable real Redis tests must cover concurrent independent clients, global
-exhaustion across peers, window reset/TTL, outage, and raw-canary absence.
+exhaustion across peers, window reset/TTL, dropped-connection recovery, outage,
+and raw-canary absence.
 
 ### Operational/privacy surface
 

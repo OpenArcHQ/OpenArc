@@ -165,7 +165,8 @@ const m03Runtime = [...m03Sources].filter(([file]) => !file.includes("test/") &&
   .map(([, source]) => source).join("\n");
 for (const requiredToken of [
   "openarc.api.v1", "openarc.permission-receipt.v1", "browser-v1", "credentials: \"omit\"",
-  "disableOfflineQueue: true", "reconnectStrategy: false", "timingSafeEqual", "proxy_ssl_verify on",
+  "disableOfflineQueue: true", "reconnectStrategy: (retries) => redisReconnectDelay(retries)",
+  "timingSafeEqual", "proxy_ssl_verify on",
   "connect-src 'self'", "error_log /dev/null emerg", "access_log off",
   "add_header Cache-Control \"no-store\" always", "add_header Pragma \"no-cache\" always",
   "add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always",

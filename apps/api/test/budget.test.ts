@@ -7,7 +7,8 @@ import { createApp, type CompletionLog } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
 import { ApiBoundaryError } from "../src/http/errors.js";
 import { registerSourceRoute } from "../src/http/source-route.js";
-import { canonicalPeer, connectBudgetRedis, SourceBudget, type BudgetEvent, type BudgetOptions } from "../src/limits/budget.js";
+import { canonicalPeer, connectBudgetRedis, redisReconnectDelay, SourceBudget,
+  type BudgetEvent, type BudgetOptions } from "../src/limits/budget.js";
 import { disposableRedis } from "./redis-fixture.js";
 
 const secret = "m03_synthetic_abuse_secret_not_a_real_credential";
@@ -134,6 +135,25 @@ afterAll(async () => {
 });
 
 describe("M03 real Redis atomic controls", () => {
+  it("recovers a dropped budget connection without queueing or retrying commands", async () => {
+    expect([0, 1, 2, 3, 4, 5, Number.NaN].map(redisReconnectDelay)).toEqual([100, 200, 400, 800, 1_000, 1_000, 1_000]);
+    const reconnecting = await connectBudgetRedis(fixture.url);
+    try {
+      const originalId = await reconnecting.sendCommand<number>(["CLIENT", "ID"]);
+      expect(await clients[0]!.sendCommand(["CLIENT", "KILL", "ID", String(originalId)])).toBe(1);
+      let replacementId: number | null = null;
+      for (let attempt = 0; attempt < 100 && replacementId === null; attempt += 1) {
+        try {
+          const candidate = await reconnecting.sendCommand<number>(["CLIENT", "ID"]);
+          if (candidate !== originalId) replacementId = candidate;
+        } catch { await delay(20); }
+      }
+      expect(replacementId).not.toBeNull();
+      const budget = new SourceBudget(reconnecting, options());
+      await expect(budget.begin("arc_rpc", "arc_account", "192.0.2.1", signal())).resolves.toBeDefined();
+    } finally { reconnecting.destroy(); }
+  });
+
   it("normalizes socket peers without accepting arbitrary strings or forwarded values", () => {
     expect(canonicalPeer("::ffff:192.0.2.1")).toBe("192.0.2.1");
     expect(canonicalPeer("::ffff:c000:201")).toBe("192.0.2.1");
