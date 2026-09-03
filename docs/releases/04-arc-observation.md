@@ -1,6 +1,6 @@
 # Milestone 04 — Arc account and transaction observation
 
-Status: **active — Redis recovery hardening is locally green; successor CI and staging proof pending**
+Status: **active — hardened exact staging proof complete; independent review and RC pending**
 Base: `main` closure `594527b` after immutable
 `rc/03-api-privacy-boundary/1` at
 `10172744b6316b21b7b228a9c89d4541b7dd8f3e`
@@ -94,8 +94,8 @@ substitution. This is an engineering record, not legal advice.
 - [x] Receipt-before-request and atomic encrypted observation persistence
 - [x] Outage leaves prior encrypted observation bytes unchanged and visibly stale
 - [x] Chromium/WebKit/mobile/accessibility and exact production-image journeys
-- [ ] Full Node 22 gate, audit/licenses/scans/SBOM and hosted CI on the hardened SHA
-- [ ] Controlled live Testnet read and Redis recovery on the hardened staged SHA
+- [x] Full Node 22 gate, audit/licenses/scans/SBOM and hosted CI on the hardened SHA
+- [x] Controlled live Testnet read and Redis recovery on the hardened staged SHA
 - [ ] Independent no-P0/P1 review, immutable RC, and `main` closure
 
 ## Release boundary
@@ -256,5 +256,52 @@ immediately, and commands are never implicitly retried or replayed. A real
 Redis integration test now kills the active client connection, observes a new
 connection identity, and proves that the shared budget resumes. The hardened
 local Node 22 gate passes 64 shared, 66 API, and 67 web tests plus all 64
-Chromium/WebKit journeys. Hosted CI and a staged Redis-restart recovery proof
-remain mandatory on the successor's exact SHA before RC consideration.
+Chromium/WebKit journeys.
+
+## Hardened exact candidate evidence — 2026-09-03
+
+Implementation SHA `9bdf419c6dd4581db507d9ecc91527eedbeaa9a4` was
+clean, pushed, and equal to the remote branch head. Exact GitHub Actions run
+`33810699149` completed successfully: verification, production images, security
+scans, SBOM generation, and the full browser matrix all passed. CycloneDX
+artifact `9914761182` (`openarc-sboms`) has digest
+`sha256:642b1f35eccac8efc920b5569c225c4c46237848b0eb376824d8c90bd49c0360`
+and expires 2026-12-02.
+
+The exact SHA was deployed API-first to the existing Railway staging project.
+Both deployments reached `SUCCESS`:
+
+- API `<deployment-id>`, image
+  `sha256:8e6ea5ba16705b40a62d0c08fd0e4776855a1ad5a06550eb038bd52c309b3236`.
+- Web `<deployment-id>`, image
+  `sha256:3614d93d76a8b257138bb21d5b3ea217ada78f28d95a4dc3a7997725eaf23157`.
+
+API readiness, the capability envelope, and the web shell all reported the
+full exact SHA. Readiness reported configuration, source routes, and Redis up.
+Capabilities reported `openarc.capabilities.m04.v1`, Testnet network
+`eip155:5042002`, `writes: false`, only `arc_primary_rpc` enabled, and every
+later source family false.
+
+While readiness was observed continuously, the pinned Redis deployment was
+restarted. The unchanged API deployment transitioned from HTTP 200 / Redis up,
+to HTTP 503 / Redis down, and back to HTTP 200 / Redis up in about eight
+seconds. It recovered without an API restart or redeployment, proving the
+release-blocking defect found in `02a49aa` is resolved while outage behavior
+still fails closed.
+
+A fresh disposable encrypted workspace on the exact staged web build completed
+all six automatic onboarding steps and reopened the tour from its persistent
+control. It then reviewed and explicitly approved the account and transaction
+disclosures. Both live Arc Testnet routes returned HTTP 200 (406 ms and 413 ms).
+The UI showed exact final anchors, native 18-decimal and ERC-20 6-decimal account
+views, a successful receipt, calculated fee, and one canonical EIP-7708
+movement with one ERC-20 corroboration rather than a duplicate. A full page
+reload returned to the locked screen. No wallet was connected and no
+transaction was signed or broadcast. The disposable workspace was deleted and
+the isolated browser tab closed after verification.
+
+A bounded scan of 20 application-log lines found none of the tested address,
+transaction hash, RPC hostname, Redis location, password, authorization, or
+cookie terms. Railway HTTP metadata contained routes, statuses, and timings but
+no request or response bodies. The same API deployment ID remained current
+after the Redis recovery and live-read proofs.
