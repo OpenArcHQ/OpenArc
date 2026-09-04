@@ -1,10 +1,10 @@
 # Milestone 04 — Arc account and transaction observation
 
-Status: **active — independent-review blocker under correction; RC pending**
+Status: **complete — `rc/04-arc-observation/1` merged into `main`**
 Base: `main` closure `594527b` after immutable
 `rc/03-api-privacy-boundary/1` at
 `10172744b6316b21b7b228a9c89d4541b7dd8f3e`
-Active branch: `codex/04-arc-observation`
+Closed candidate branch: `codex/04-arc-observation`
 
 ## Frozen scope and order
 
@@ -97,7 +97,7 @@ substitution. This is an engineering record, not legal advice.
 - [x] Chromium/WebKit/mobile/accessibility and exact production-image journeys
 - [x] Full Node 22 gate, audit/licenses/scans/SBOM and hosted CI on the hardened SHA
 - [x] Controlled live Testnet read and Redis recovery on the hardened staged SHA
-- [ ] Independent no-P0/P1 review, immutable RC, and `main` closure
+- [x] Independent no-P0/P1 review, immutable RC, and `main` closure
 
 ## Independent-review correction — 2026-09-03
 
@@ -118,8 +118,8 @@ requests, and preflights fail before reservation. Budget reservation now occurs
 in the route's `preHandler`, after strict request validation. A production-proxy
 gate must prove that exhausting one simulated edge client does not affect a
 second client, attacker proxy headers are overwritten, and direct API access is
-denied. The release remains active until that gate, exact staging proof, and a
-fresh independent no-P0/P1 review all pass.
+denied. Those gates, exact staging proof, and the fresh independent no-P0/P1
+review passed in the final evidence below.
 
 The corrected local `pnpm release:gate` passes the production dependency audit,
 license policy, release check, lint, type checks, builds, 64 shared / 68 API /
@@ -401,3 +401,77 @@ the tested address, transaction hash, RPC hostname, Redis location, passphrase,
 password, authorization, cookie, or recovery-secret pattern. Railway's bodyless
 HTTP metadata recorded only the two approved POST routes, HTTP 200 statuses,
 timings, and byte counts for this proof.
+
+## Corrected exact candidate and closure — 2026-09-04
+
+The first independent review of the preceding candidate found one P1 release
+blocker: Railway users shared a source-rate bucket at the API's web-proxy socket,
+and invalid requests reserved capacity too early. Corrected runtime candidate
+`6f87f76b65d5000f08d07b3aef5f44f075089392` authenticates an nginx-derived
+edge-client assertion with a distinct server-side secret, strictly normalizes
+one address, and reserves source capacity only after Origin, method, media,
+size, and body-schema validation. The M03 image remains compatible and contains
+none of the M04-only proxy-secret startup dependency.
+
+The corrected local Node 22 release gate passed the production dependency
+audit, license policy, release check, lint, type checks, builds, 64 shared / 68
+API / 67 web tests, and all 64 Chromium/WebKit journeys. Exact local production
+containers also passed the M04 flow through verified TLS, the bounded fixture
+source, and real Redis. A production-proxy test exhausted one authenticated
+client at HTTP 429 while a distinct client still received HTTP 200; attacker
+headers did not choose either bucket, and direct API access received HTTP 403.
+
+The candidate was clean, pushed, and equal to the remote branch head. GitHub
+Actions run `33889093522` completed successfully on the exact SHA: verification,
+production-image builds, mandatory HIGH/CRITICAL scans, SBOM generation, the
+baseline browser suite, exact M02 and M03 compatibility images, and the exact
+feature-on M04 API/web images through Chromium and WebKit all passed. CycloneDX
+artifact `9943218198` (`openarc-sboms`) has digest
+`sha256:fcafc440d9155cd30d23d4b809d21ba213f17b8666aa88a7932931dd3210102c`
+and expires 2026-12-03.
+
+The exact candidate was deployed API-first to the existing Railway staging
+project. Temporary security-validation API deployment
+`<deployment-id>` and web deployment
+`<deployment-id>` reached `SUCCESS`. The web shell, direct
+readiness, and direct/proxied capability envelopes exposed the full exact SHA,
+enabled only `arc_primary_rpc`, reported Redis up, and reported the temporary
+per-peer limit of three.
+
+Four valid staged source requests changed both caller-supplied `X-Real-IP` and
+internal proxy headers. Their statuses were HTTP 200, 200, 200, and 429. The
+stable real-edge bucket therefore could not be selected or evaded with caller
+headers. Direct source access to the API without the web-proxy assertion
+returned HTTP 403. The normal per-peer limit of 60 was then restored in
+successful API deployment `<deployment-id>`, and the
+proxied source route returned HTTP 200. No header value or server secret is
+recorded here.
+
+A fresh encrypted workspace on the exact staged build completed creation and
+all six onboarding steps. Explicit permission flows then returned and saved one
+live account snapshot, one current finalized transaction observation, and the
+capability envelope. The UI showed exact final anchors, the native and ERC-20
+account views, a successful receipt, fee, and canonical/corroborating movement
+counts. Reload returned to the locked screen, and the browser console contained
+no errors. No wallet was connected and nothing was signed or broadcast.
+
+With API deployment `<deployment-id>` unchanged, pinned
+Redis deployment `<deployment-id>` restarted successfully.
+Readiness moved from HTTP 200 to 503 and back to 200 without an API restart or
+redeployment. A bounded final scan found 24 API request-completion records, all
+with only the approved closed application fields and exact build SHA. Neither
+the forged test values, released public identifiers, nor internal proxy-header
+names appeared in API or web application logs.
+
+The fresh independent operational review found no remaining P0/P1. It accepted
+the staged spoof-resistance proof together with the exact production-proxy
+two-client isolation test, direct-API denial, restored-limit source success,
+full exact-image CI, encrypted live UI journeys, Redis recovery, and closed-log
+evidence. No further runtime change or deployment was required.
+
+Immutable annotated tag `rc/04-arc-observation/1` was created and pushed at
+`6f87f76b65d5000f08d07b3aef5f44f075089392`, then fast-forwarded into `main`.
+This subsequent documentation-only closure records the completed operations
+without moving or reusing the tag. Approval is limited to this read-only Arc
+Public Testnet milestone; it is not Mainnet, signing, custody, transaction
+execution, agent identity, or universal source-authority approval.
