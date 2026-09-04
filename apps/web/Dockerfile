@@ -38,19 +38,21 @@ RUN apk add --no-cache \
 
 ARG VITE_API_BOUNDARY_ENABLED=false
 ARG VITE_ARC_OBSERVATION_ENABLED=false
-COPY apps/web/nginx.conf apps/web/nginx-api.conf apps/web/proxy_params apps/web/validate-m04-runtime-env.sh /tmp/openarc-nginx/
+COPY apps/web/nginx.conf apps/web/nginx-api.conf apps/web/nginx-arc.conf apps/web/proxy_params apps/web/validate-m04-runtime-env.sh /tmp/openarc-nginx/
 RUN set -eu; \
     if [ "${VITE_API_BOUNDARY_ENABLED}" = "true" ]; then \
       mkdir -p /etc/nginx/templates; \
-      cp /tmp/openarc-nginx/nginx-api.conf /etc/nginx/templates/default.conf.template; \
+      if [ "${VITE_ARC_OBSERVATION_ENABLED}" = "true" ]; then \
+        cp /tmp/openarc-nginx/nginx-arc.conf /etc/nginx/templates/default.conf.template; \
+        cp /tmp/openarc-nginx/validate-m04-runtime-env.sh /docker-entrypoint.d/05-openarc-m04-env.sh; \
+        chmod 755 /docker-entrypoint.d/05-openarc-m04-env.sh; \
+      else \
+        cp /tmp/openarc-nginx/nginx-api.conf /etc/nginx/templates/default.conf.template; \
+      fi; \
       cp /tmp/openarc-nginx/proxy_params /etc/nginx/proxy_params; \
       rm -f /etc/nginx/conf.d/default.conf; \
     else \
       cp /tmp/openarc-nginx/nginx.conf /etc/nginx/conf.d/default.conf; \
-    fi; \
-    if [ "${VITE_ARC_OBSERVATION_ENABLED}" = "true" ]; then \
-      cp /tmp/openarc-nginx/validate-m04-runtime-env.sh /docker-entrypoint.d/05-openarc-m04-env.sh; \
-      chmod 755 /docker-entrypoint.d/05-openarc-m04-env.sh; \
     fi; \
     rm -rf /tmp/openarc-nginx
 ENV API_TRUST_BUNDLE=/etc/ssl/certs/ca-certificates.crt \

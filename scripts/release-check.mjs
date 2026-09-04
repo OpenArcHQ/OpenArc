@@ -196,6 +196,7 @@ const m04Files = [
   "apps/web/src/api/arc-permission-flow.ts",
   "apps/web/Dockerfile",
   "apps/web/nginx-api.conf",
+  "apps/web/nginx-arc.conf",
   "apps/web/test/arc-client.test.ts",
   "apps/web/test/arc-observation-flow.test.ts",
   "e2e-arc-observation/observation.spec.ts",
@@ -303,6 +304,7 @@ for (const requiredToken of [
 for (const requiredToken of [
   "openarc-web-m04:ci", "VITE_ARC_OBSERVATION_ENABLED=true",
   "ARC_OBSERVATION_ENABLED=true", "e2e:arc-observation:production",
+  "test -x /docker-entrypoint.d/05-openarc-m04-env.sh",
   "arc-rpc-fixture.mjs", "NODE_EXTRA_CA_CERTS=/tmp/rpc-ca.crt",
   "REDIS_URL=redis://openarc-redis-m04:6379", '"arcObservation":true',
   "SOURCE_PROXY_SECRET=synthetic_source_proxy_secret_for_ci_0004", "X-Real-IP: 192.0.2.20",
