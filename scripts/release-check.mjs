@@ -347,7 +347,9 @@ for (const requiredToken of [
   "shell.headers", "proxy.headers", "proxy-502.headers", "Strict-Transport-Security: max-age=31536000; includeSubDomains",
   "OPENARC_TEST_REDIS_URL: redis://127.0.0.1:6379", "OPENARC_TEST_REDIS_DISPOSABLE: \"true\"",
   "openarc-web-m02-reader:ci", "m02_reader_ready=0", "test-m02-receipt-compat.mjs seed",
-  "test-m02-receipt-compat.mjs verify", "fetch-depth: 0",
+  "test-m02-receipt-compat.mjs verify", "fetch-depth: 0", "git rev-parse rc/02-encrypted-workspace/1^{commit}",
+  "sed -i 's/^    curl=8\\.20\\.0-r0/    curl=8.22.0-r0/; s/^    libcurl=8\\.20\\.0-r0/    libcurl=8.22.0-r0/'",
+  "if grep -Fq '8.20.0-r0' tmp/m02-reader/apps/web/Dockerfile; then exit 1; fi",
   "openarc-web-m03:ci -o cyclonedx-json > sbom-web-m03.cdx.json",
 ]) {
   if (!m02WorkflowSource.includes(requiredToken)) failures.push(`Hosted M03 image/proxy gate is missing ${requiredToken}`);

@@ -69,3 +69,9 @@ Local clean-room evidence on 2026-09-04: `pnpm release:gate` passed under the
 pinned Node 22 and Redis 8 images with 222 shared/API/web checks and 68
 Chromium/WebKit journeys. Production-image and hosted exact-SHA evidence remain
 required before staging changes.
+
+The hosted compatibility gate rebuilds the immutable M02 browser source from
+`rc/02-encrypted-workspace/1` at its asserted commit. Its disposable Dockerfile
+refreshes only the unavailable Alpine `curl` and `libcurl` revisions to the same
+exact patched versions used by M05; the historical tag and application source
+are never changed.
