@@ -18,10 +18,13 @@ ARG COMMIT_SHA=local
 ARG VITE_ENCRYPTED_WORKSPACE_ENABLED=false
 ARG VITE_API_BOUNDARY_ENABLED=false
 ARG VITE_ARC_OBSERVATION_ENABLED=false
+ARG VITE_AGENT_REGISTRY_ENABLED=false
 ENV VITE_COMMIT_SHA=${COMMIT_SHA}
 ENV VITE_ENCRYPTED_WORKSPACE_ENABLED=${VITE_ENCRYPTED_WORKSPACE_ENABLED}
 ENV VITE_API_BOUNDARY_ENABLED=${VITE_API_BOUNDARY_ENABLED}
 ENV VITE_ARC_OBSERVATION_ENABLED=${VITE_ARC_OBSERVATION_ENABLED}
+ENV VITE_AGENT_REGISTRY_ENABLED=${VITE_AGENT_REGISTRY_ENABLED}
+RUN if [ "${VITE_AGENT_REGISTRY_ENABLED}" = "true" ] && [ "${VITE_ARC_OBSERVATION_ENABLED}" != "true" ]; then exit 1; fi
 RUN pnpm --filter @openarc/shared build && pnpm --filter @openarc/web build
 
 FROM nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de AS runtime
@@ -38,10 +41,12 @@ RUN apk add --no-cache \
 
 ARG VITE_API_BOUNDARY_ENABLED=false
 ARG VITE_ARC_OBSERVATION_ENABLED=false
+ARG VITE_AGENT_REGISTRY_ENABLED=false
 COPY apps/web/nginx.conf apps/web/nginx-api.conf apps/web/nginx-arc.conf apps/web/proxy_params apps/web/validate-m04-runtime-env.sh /tmp/openarc-nginx/
 RUN set -eu; \
     if [ "${VITE_API_BOUNDARY_ENABLED}" = "true" ]; then \
       mkdir -p /etc/nginx/templates; \
+      if [ "${VITE_AGENT_REGISTRY_ENABLED}" = "true" ] && [ "${VITE_ARC_OBSERVATION_ENABLED}" != "true" ]; then exit 1; fi; \
       if [ "${VITE_ARC_OBSERVATION_ENABLED}" = "true" ]; then \
         cp /tmp/openarc-nginx/nginx-arc.conf /etc/nginx/templates/default.conf.template; \
         cp /tmp/openarc-nginx/validate-m04-runtime-env.sh /docker-entrypoint.d/05-openarc-m04-env.sh; \

@@ -10,9 +10,37 @@ const to = "0x2222222222222222222222222222222222222222";
 const transactionHash = `0x${"b".repeat(64)}`;
 const blockHash = `0x${"a".repeat(64)}`;
 const usdc = "0x3600000000000000000000000000000000000000";
+const identityRegistry = "0x8004a818bfb912233c491871b3d84c89a494bd9e";
+const reputationRegistry = "0x8004b663056a597dffe9eccc1965a193b7388713";
+const validationRegistry = "0x8004cb1bf31daf7788923b405b754f57aceb4272";
+const registryOwner = "0x1111111111111111111111111111111111111111";
+const agentWallet = "0x2222222222222222222222222222222222222222";
+const feedbackObserver = "0x3333333333333333333333333333333333333333";
+const validationObserver = "0x4444444444444444444444444444444444444444";
+const validationRequestHash = `0x${"a".repeat(64)}`;
+const validationResponseHash = `0x${"b".repeat(64)}`;
 const systemEmitter = "0xfffffffffffffffffffffffffffffffffffffffe";
 const transferTopic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const word = (value) => `0x${value.toString(16).padStart(64, "0")}`;
+const abiWord = (value) => value.toString(16).padStart(64, "0");
+const abiAddress = (value) => value.slice(2).padStart(64, "0");
+const abiString = (value) => {
+  const encoded = Buffer.from(value, "utf8").toString("hex");
+  return `${abiWord(BigInt(encoded.length / 2))}${encoded.padEnd(Math.ceil(encoded.length / 64) * 64, "0")}`;
+};
+const singleAddress = (value) => `0x${abiAddress(value)}`;
+const singleString = (value) => `0x${abiWord(32n)}${abiString(value)}`;
+const feedbackResult = () => {
+  const first = abiString("delivery");
+  const second = abiString("testnet");
+  const headBytes = 5n * 32n;
+  const secondOffset = headBytes + BigInt(first.length / 2);
+  return `0x${abiWord(875n)}${abiWord(1n)}${abiWord(headBytes)}${abiWord(secondOffset)}${abiWord(0n)}${first}${second}`;
+};
+const validationResult = () => {
+  const headBytes = 6n * 32n;
+  return `0x${abiAddress(validationObserver)}${abiWord(1n)}${abiWord(91n)}${validationResponseHash.slice(2)}${abiWord(headBytes)}${abiWord(123n)}${abiString("benchmark")}`;
+};
 const topic = (value) => `0x${value.slice(2).padStart(64, "0")}`;
 const block = { number: "0x64", hash: blockHash, timestamp: "0x68b86d7f" };
 const transaction = { hash: transactionHash, blockHash, blockNumber: "0x64", transactionIndex: "0x2",
@@ -35,6 +63,20 @@ function result(method, params) {
   if (method === "eth_call" && params.length === 2 && params[1] === "0x64" &&
     params[0]?.to === usdc && params[0]?.data === `0x70a08231${address.slice(2).padStart(64, "0")}`) {
     return word(1_000_000n);
+  }
+  if (method === "eth_call" && params.length === 2 && params[1] === "0x64") {
+    const target = params[0]?.to;
+    const data = params[0]?.data;
+    if (target === identityRegistry && data === `0x6352211e${abiWord(1n)}`) return singleAddress(registryOwner);
+    if (target === identityRegistry && data === `0xc87b56dd${abiWord(1n)}`) return singleString("https://example.test/agent.json");
+    if (target === identityRegistry && data === `0x00339509${abiWord(1n)}`) return singleAddress(agentWallet);
+    if ((target === reputationRegistry || target === validationRegistry) && data === "0xbc4d861b") {
+      return singleAddress(identityRegistry);
+    }
+    if (target === reputationRegistry && data === `0x232b0810${abiWord(1n)}${abiAddress(feedbackObserver)}${abiWord(0n)}`) {
+      return feedbackResult();
+    }
+    if (target === validationRegistry && data === `0xff2febfc${validationRequestHash.slice(2)}`) return validationResult();
   }
   if (method === "eth_getTransactionByHash" && params[0] === transactionHash) return transaction;
   if (method === "eth_getTransactionReceipt" && params[0] === transactionHash) return receipt;

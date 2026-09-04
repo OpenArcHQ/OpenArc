@@ -15,3 +15,9 @@ export function arcObservationEnabled(
 ): boolean {
   return value === true || value === "true";
 }
+
+export function agentRegistryEnabled(
+  value: string | boolean | undefined = import.meta.env.VITE_AGENT_REGISTRY_ENABLED,
+): boolean {
+  return value === true || value === "true";
+}

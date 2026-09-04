@@ -178,4 +178,19 @@ describe("M04 strict JSON-RPC envelope", () => {
       });
     }
   });
+
+  it("maps only an explicitly expected eth_call revert to sanitized not-found", async () => {
+    const transport: ProviderTransport = async (body) => {
+      const request = JSON.parse(body.toString("utf8"));
+      return response(JSON.stringify({ jsonrpc: "2.0", id: request.id,
+        error: { code: -32_000, message: "PRIVATE_REVERT_CANARY", data: "PRIVATE_DATA_CANARY" } }));
+    };
+    const rpc = new ArcRpcClient(new BoundedProviderClient({ timeoutMs: 100, maxResponseBytes: 1_024, transport }));
+    await expect(rpc.call("eth_call", [{ to: "0x1111111111111111111111111111111111111111", data: "0x" }, "0x1"],
+      lease(), signal(), { revertAsNotFound: true })).rejects.toMatchObject({
+      code: "SOURCE_NOT_FOUND", message: "The requested source evidence was not found.",
+    });
+    await expect(rpc.call("eth_chainId", [], lease(), signal(), { revertAsNotFound: true }))
+      .rejects.toMatchObject({ code: "SOURCE_MALFORMED" });
+  });
 });

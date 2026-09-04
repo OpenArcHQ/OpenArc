@@ -7,3 +7,4 @@ export * from "./vault.js";
 export * from "./api.js";
 export * from "./permission.js";
 export * from "./arc-observation.js";
+export * from "./agent-registry-evidence.js";

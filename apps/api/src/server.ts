@@ -1,5 +1,6 @@
 import { createApp } from "./app.js";
 import { ArcAccountService } from "./arc/account-service.js";
+import { AgentRegistryService } from "./arc/agent-registry-service.js";
 import { ArcRpcClient } from "./arc/rpc-client.js";
 import { ArcTransactionService } from "./arc/transaction-service.js";
 import { loadConfig } from "./config.js";
@@ -24,7 +25,8 @@ async function start(): Promise<void> {
   })) : undefined;
   const app = createApp({ config, metrics,
     ...(sourceBudget ? { sourceBudget } : {}),
-    ...(rpc ? { arcAccountService: new ArcAccountService(rpc), arcTransactionService: new ArcTransactionService(rpc) } : {}) });
+    ...(rpc ? { arcAccountService: new ArcAccountService(rpc), arcTransactionService: new ArcTransactionService(rpc),
+      ...(config.AGENT_REGISTRY_ENABLED ? { agentRegistryService: new AgentRegistryService(rpc) } : {}) } : {}) });
   const shutdown = async (): Promise<void> => {
     await app.close();
     if (redis?.isOpen) redis.destroy();

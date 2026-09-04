@@ -7,6 +7,7 @@ import {
 } from "./evidence.js";
 import { ARC_TESTNET } from "./network.js";
 import { ArcAccountSnapshotSchema, ArcTransactionEvidenceSchema } from "./arc-observation.js";
+import { AgentRegistryEvidenceSchema } from "./agent-registry-evidence.js";
 import { PermissionReceiptRecordSchema } from "./permission.js";
 import { VaultRevisionSchema, WorkspaceRecordIdSchema } from "./workspace-primitives.js";
 export { VaultRevisionSchema, WorkspaceRecordIdSchema } from "./workspace-primitives.js";
@@ -88,6 +89,15 @@ export const ArcObservationRecordSchema = z.strictObject({
   observation: z.union([ArcAccountSnapshotSchema, ArcTransactionEvidenceSchema]),
 });
 
+export const AgentRegistryObservationRecordSchema = z.strictObject({
+  ...recordBase,
+  recordSchema: z.literal("openarc.agent-registry-observation-record.v1"),
+  kind: z.literal("agent_registry_observation"),
+  permissionReceiptId: WorkspaceRecordIdSchema,
+  linkedAgentProfileRecordId: WorkspaceRecordIdSchema.nullable(),
+  observation: AgentRegistryEvidenceSchema,
+});
+
 export const SentinelRecordSchema = z.strictObject({
   ...recordBase,
   kind: z.literal("sentinel"),
@@ -118,6 +128,7 @@ const WorkspaceRecordVariantSchema = z.union([
   SentinelRecordSchema,
   PermissionReceiptRecordSchema,
   ArcObservationRecordSchema,
+  AgentRegistryObservationRecordSchema,
 ]);
 
 export const WorkspaceRecordSchema = WorkspaceRecordVariantSchema.superRefine((record, context) => {
@@ -139,3 +150,4 @@ export type SentinelRecord = z.infer<typeof SentinelRecordSchema>;
 export type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
 export type WorkspaceSettingsRecord = z.infer<typeof WorkspaceSettingsRecordSchema>;
 export type ArcObservationRecord = z.infer<typeof ArcObservationRecordSchema>;
+export type AgentRegistryObservationRecord = z.infer<typeof AgentRegistryObservationRecordSchema>;

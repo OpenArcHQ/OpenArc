@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { ARC_TESTNET } from "./network.js";
+import { ARC_ERC8004, ARC_TESTNET } from "./network.js";
 import { BuildMarkerSchema } from "./primitives.js";
 
 export const API_SCHEMA_VERSION = "openarc.api.v1" as const;
@@ -81,7 +81,7 @@ export const ApiLimitsSchema = z.strictObject({
   globalSourceUnitsPerDay: z.number().int().min(1).max(1_000_000),
 });
 
-export const CapabilitiesSchema = z.strictObject({
+export const M04CapabilitiesSchema = z.strictObject({
   capabilityVersion: z.literal("openarc.capabilities.m04.v1"),
   environment: z.literal("testnet"),
   network: z.literal(ARC_TESTNET.caip2),
@@ -102,6 +102,25 @@ export const CapabilitiesSchema = z.strictObject({
     context.addIssue({ code: "custom", message: "Connector truth must match enabled source features" });
   }
 });
+
+export const M05CapabilitiesSchema = z.strictObject({
+  capabilityVersion: z.literal("openarc.capabilities.m05.v1"),
+  environment: z.literal("testnet"),
+  network: z.literal(ARC_TESTNET.caip2),
+  sourceRevision: z.literal(ARC_ERC8004.sourceRevision),
+  reviewedAt: z.literal(ARC_ERC8004.reviewedAt),
+  writes: z.literal(false),
+  enabledConnectors: z.tuple([z.literal("arc_primary_rpc"), z.literal("erc8004_registries")]),
+  features: z.strictObject({
+    arcObservation: z.literal(true),
+    agentRegistry: z.literal(true),
+    agentJobs: z.literal(false),
+    gatewayEvidence: z.literal(false),
+  }),
+  limits: ApiLimitsSchema,
+});
+
+export const CapabilitiesSchema = z.union([M04CapabilitiesSchema, M05CapabilitiesSchema]);
 
 export const CapabilitiesEnvelopeSchema = z.strictObject({
   ok: z.literal(true),

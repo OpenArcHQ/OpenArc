@@ -6,10 +6,16 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ARC_ACCOUNT_SNAPSHOT_PATH,
+  AGENT_REGISTRY_DISCLOSURE,
+  AGENT_REGISTRY_EVIDENCE_PATH,
+  ARC_ERC8004,
   ARC_OBSERVATION_DISCLOSURE,
   ARC_TESTNET,
   ArcAccountSnapshotSchema,
   ArcObservationRecordSchema,
+  AgentRegistryEvidenceSchema,
+  AgentRegistryObservationRecordSchema,
+  AgentRegistryPermissionReceiptRecordSchema,
   CAPABILITY_DISCLOSURE,
   M01_FIXTURES,
   PermissionReceiptRecordSchema,
@@ -91,6 +97,46 @@ function m04AccountRecords(recordRevision: string) {
     kind: "arc_observation", recordId: crypto.randomUUID(), recordRevision, createdAt: at, updatedAt: at,
     permissionReceiptId: receipt.recordId, observation });
   return { address, receipt, observation: record };
+}
+
+function m05RegistryRecords(recordRevision: string, linkedAgentProfileRecordId: string | null = null) {
+  const at = "2026-09-04T12:00:00Z";
+  const receipt = AgentRegistryPermissionReceiptRecordSchema.parse({
+    recordSchema: "openarc.permission-receipt.v3", kind: "permission_receipt", recordId: crypto.randomUUID(),
+    recordRevision, createdAt: at, updatedAt: at, connectorId: "arc_agent_registry_evidence",
+    destination: { origin: "https://app.example.test", path: AGENT_REGISTRY_EVIDENCE_PATH,
+      method: "POST", upstreams: [ARC_TESTNET.rpcHttp] }, releasedFields: ["network", "agentId"],
+    released: { network: ARC_TESTNET.caip2, agentId: "1" },
+    purpose: "Observe one ERC-8004 agent identity and optional exact observer or validator claims at one final Arc Testnet block.",
+    ...AGENT_REGISTRY_DISCLOSURE, approvedAt: at, outcome: "completed", resolvedAt: at, failureCode: null,
+  });
+  const observation = AgentRegistryEvidenceSchema.parse({ schemaVersion: "openarc.agent-registry-evidence.v1",
+    network: ARC_TESTNET.caip2, agentId: "1",
+    anchor: { blockNumber: "100", blockHash: `0x${"b".repeat(64)}`, blockTimestamp: at,
+      finality: "deterministic", confirmations: "1" },
+    identity: { owner: "0x1111111111111111111111111111111111111111",
+      agentWallet: "0x2222222222222222222222222222222222222222",
+      metadata: { uri: "", kind: "none", trust: "untrusted_external_metadata", fetched: false } },
+    feedback: null, validation: null,
+    source: { sourceId: "arc_primary_rpc", registrySourceId: "erc8004_registries", origin: ARC_TESTNET.rpcHttp,
+      explorerOrigin: ARC_TESTNET.explorerOrigin, network: ARC_TESTNET.caip2,
+      sourceRevision: ARC_ERC8004.sourceRevision, reviewedAt: ARC_ERC8004.reviewedAt,
+      specificationStatus: "draft", contractsRevision: ARC_ERC8004.contractsRevision,
+      registries: { identity: ARC_TESTNET.contracts.erc8004IdentityRegistry,
+        reputation: ARC_TESTNET.contracts.erc8004ReputationRegistry,
+        validation: ARC_TESTNET.contracts.erc8004ValidationRegistry }, observedAt: at,
+      adapterVersion: "openarc.agent-registry-evidence.m05.v1" },
+    limitations: ["ERC-8004 is a draft standard; registry facts may change before finalization.",
+      "Identity ownership and metadata are registry claims, not proof of safety, quality, or control.",
+      "Feedback is one observer's claim and validation is one validator's response; neither is a universal score.",
+      "Metadata is untrusted external text and was not fetched or rendered by OpenArc."],
+  });
+  const record = AgentRegistryObservationRecordSchema.parse({
+    recordSchema: "openarc.agent-registry-observation-record.v1", kind: "agent_registry_observation",
+    recordId: crypto.randomUUID(), recordRevision, createdAt: at, updatedAt: at,
+    permissionReceiptId: receipt.recordId, linkedAgentProfileRecordId, observation,
+  });
+  return { receipt, observation: record };
 }
 
 afterEach(async () => {
@@ -880,6 +926,35 @@ describe("encrypted local workspace", () => {
       [records.receipt, records.observation, { ...records.observation, recordId: crypto.randomUUID() }],
     ]) await expect(saveWorkspaceRecords(created, changes)).rejects.toMatchObject({ code: "INVALID_BACKUP" });
     expect((await readRawDatabase()).records).toHaveLength(2);
+  });
+
+  it("encrypts M05 registry evidence and enforces its receipt and optional local-profile links", async () => {
+    const created = await createLocalWorkspace(originalPassphrase);
+    const profile = createAgentProfileRecord({ displayName: "PRIVATE_REGISTRY_LABEL", walletAddress: "",
+      frameworkLabel: "PRIVATE_FRAMEWORK", purposeNote: "PRIVATE_NOTE" }, created.meta.revision);
+    const records = m05RegistryRecords(created.meta.revision, profile.recordId);
+    const saved = await saveWorkspaceRecords(created, [profile, records.receipt, records.observation]);
+    const raw = JSON.stringify(await readRawDatabase());
+    expect(raw).not.toContain("PRIVATE_REGISTRY_LABEL");
+    expect(raw).not.toContain(records.observation.observation.identity.owner);
+    expect(raw).not.toContain(ARC_TESTNET.rpcHttp);
+    await expect(deleteWorkspaceRecords(saved, [profile.recordId])).rejects.toMatchObject({ code: "INVALID_BACKUP" });
+    await expect(deleteWorkspaceRecords(saved, [records.receipt.recordId])).rejects.toMatchObject({ code: "INVALID_BACKUP" });
+    const deletedEvidence = await deleteWorkspaceRecords(saved, [records.receipt.recordId, records.observation.recordId]);
+    const deletedProfile = await deleteWorkspaceRecords(deletedEvidence, [profile.recordId]);
+    expect(deletedProfile.records.some((record) => record.kind === "agent_registry_observation")).toBe(false);
+  });
+
+  it("rejects orphaned or mismatched M05 registry evidence before encryption", async () => {
+    const created = await createLocalWorkspace(originalPassphrase);
+    const records = m05RegistryRecords(created.meta.revision);
+    const mismatched = { ...records.observation,
+      observation: { ...records.observation.observation, agentId: "2" } };
+    for (const changes of [
+      [records.observation],
+      [records.receipt, mismatched],
+      [records.receipt, records.observation, { ...records.observation, recordId: crypto.randomUUID() }],
+    ]) await expect(saveWorkspaceRecords(created, changes)).rejects.toMatchObject({ code: "INVALID_BACKUP" });
   });
 });
 

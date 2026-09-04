@@ -17,6 +17,31 @@ export const CanonicalIntegerSchema = z
     "Expected an unsigned base-10 integer string of at most 78 digits",
   );
 
+export const Uint256DecimalSchema = CanonicalIntegerSchema.refine(
+  (value) => BigInt(value) <= (1n << 256n) - 1n,
+  { message: "Expected an unsigned 256-bit integer" },
+);
+
+export const Uint64DecimalSchema = CanonicalIntegerSchema.refine(
+  (value) => BigInt(value) <= (1n << 64n) - 1n,
+  { message: "Expected an unsigned 64-bit integer" },
+);
+
+export const SignedCanonicalIntegerSchema = z.string().regex(
+  /^(0|-?[1-9][0-9]{0,38})$/u,
+  "Expected a canonical signed integer string",
+);
+
+export const SignedCanonicalDecimalSchema = z
+  .string()
+  .regex(
+    /^(0|-?[1-9][0-9]{0,38})(\.[0-9]{1,38})?$/u,
+    "Expected a canonical signed decimal",
+  )
+  .refine((value) => !value.includes(".") || !value.endsWith("0"), {
+    message: "Fractional trailing zeros are not canonical",
+  });
+
 export const CanonicalDecimalSchema = z
   .string()
   .regex(

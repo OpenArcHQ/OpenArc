@@ -42,8 +42,8 @@ const EnvironmentSchema = z.object({
   if (new Set(operatorSecrets).size !== operatorSecrets.length) {
     context.addIssue({ code: "custom", message: "Operator secrets must be distinct" });
   }
-  if (config.AGENT_REGISTRY_ENABLED || config.AGENT_JOBS_ENABLED || config.GATEWAY_EVIDENCE_ENABLED) {
-    context.addIssue({ code: "custom", message: "Later source adapters are unavailable in M04" });
+  if (config.AGENT_JOBS_ENABLED || config.GATEWAY_EVIDENCE_ENABLED) {
+    context.addIssue({ code: "custom", message: "Later source adapters are unavailable in M05" });
   }
   if (config.ARC_OBSERVATION_ENABLED) {
     if (!config.API_BOUNDARY_ENABLED) {
@@ -54,6 +54,14 @@ const EnvironmentSchema = z.object({
     }
     if (config.SOURCE_MAX_SUBCALLS < 5) {
       context.addIssue({ code: "custom", path: ["SOURCE_MAX_SUBCALLS"], message: "Arc observation requires five bounded source subcalls" });
+    }
+  }
+  if (config.AGENT_REGISTRY_ENABLED) {
+    if (!config.ARC_OBSERVATION_ENABLED) {
+      context.addIssue({ code: "custom", path: ["AGENT_REGISTRY_ENABLED"], message: "Agent registry evidence requires Arc observation" });
+    }
+    if (config.SOURCE_MAX_SUBCALLS < 10) {
+      context.addIssue({ code: "custom", path: ["SOURCE_MAX_SUBCALLS"], message: "Agent registry evidence requires ten bounded source subcalls" });
     }
   }
 });

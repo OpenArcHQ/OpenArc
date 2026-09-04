@@ -232,6 +232,56 @@ for (const forbiddenToken of [
   if (m04Runtime.includes(forbiddenToken)) failures.push(`M04 Arc observation runtime contains forbidden behavior: ${forbiddenToken}`);
 }
 
+const m05Files = [
+  "docs/releases/05-erc8004-agent-evidence.md",
+  "packages/shared/src/agent-registry-evidence.ts",
+  "packages/shared/src/permission.ts",
+  "packages/shared/src/vault.ts",
+  "packages/shared/test/agent-registry-evidence.test.ts",
+  "apps/api/src/arc/agent-registry-service.ts",
+  "apps/api/src/arc/rpc-client.ts",
+  "apps/api/src/config.ts",
+  "apps/api/src/app.ts",
+  "apps/api/test/agent-registry.test.ts",
+  "apps/api/test/agent-registry-routes.test.ts",
+  "apps/web/src/api/agent-registry.ts",
+  "apps/web/src/api/agent-registry-permission-flow.ts",
+  "apps/web/src/vault/VaultWorkspace.tsx",
+  "apps/web/src/vault/service.ts",
+  "apps/web/test/agent-registry-flow.test.ts",
+  "e2e-agent-registry/agent-registry.spec.ts",
+  "playwright.agent-registry.config.ts",
+  "playwright.agent-registry.production.config.ts",
+];
+const m05Sources = new Map();
+for (const required of m05Files) {
+  try {
+    m05Sources.set(required, await readFile(path.join(root, required), "utf8"));
+  } catch {
+    failures.push(`Missing required M05 file: ${required}`);
+  }
+}
+const m05Runtime = [...m05Sources]
+  .filter(([file]) => !file.includes("test/") && !file.startsWith("docs/") && !file.startsWith("e2e-"))
+  .map(([, source]) => source).join("\n");
+for (const requiredToken of [
+  "openarc.agent-registry-evidence.v1", "openarc.permission-receipt.v3",
+  "openarc.agent-registry-observation-record.v1", "openarc.capabilities.m05.v1",
+  "arc_agent_registry_evidence", "erc8004_registries", "observer_specific_claim",
+  "validator_specific_response", "untrusted_external_metadata", "fetched: z.literal(false)",
+  "revertAsNotFound", "SOURCE_NOT_FOUND", "SOURCE_CONFLICT", "SOURCE_MAX_SUBCALLS < 10",
+  "linkedAgentProfileRecordId", "Local profile and label", "Not released",
+]) {
+  if (!m05Runtime.includes(requiredToken)) failures.push(`M05 ERC-8004 evidence contract is missing ${requiredToken}`);
+}
+for (const forbiddenToken of [
+  "getClients(", "readAllFeedback(", "getAgentValidations(", "getSummary(",
+  "sendTransaction", "broadcastTransaction", "writeContract", "window.ethereum",
+  "dangerouslySetInnerHTML", "credentials: \"include\"", "redirect: \"follow\"",
+]) {
+  if (m05Runtime.includes(forbiddenToken)) failures.push(`M05 ERC-8004 runtime contains forbidden behavior: ${forbiddenToken}`);
+}
+
 const envExample = await readFile(path.join(root, ".env.example"), "utf8");
 const dockerignoreSource = await readFile(path.join(root, ".dockerignore"), "utf8");
 const webDockerfile = await readFile(path.join(root, "apps/web/Dockerfile"), "utf8");
@@ -244,6 +294,9 @@ for (const featureFlag of ["API_BOUNDARY_ENABLED=false", "VITE_API_BOUNDARY_ENAB
 for (const featureFlag of ["ARC_OBSERVATION_ENABLED=false", "VITE_ARC_OBSERVATION_ENABLED=false"]) {
   if (!envExample.includes(featureFlag)) failures.push(`M04 feature flag must default false: ${featureFlag}`);
 }
+for (const featureFlag of ["AGENT_REGISTRY_ENABLED=false", "VITE_AGENT_REGISTRY_ENABLED=false"]) {
+  if (!envExample.includes(featureFlag)) failures.push(`M05 feature flag must default false: ${featureFlag}`);
+}
 if (!dockerignoreSource.includes("!.env.example")) {
   failures.push("The clean-room release image must include .env.example for release:check");
 }
@@ -255,6 +308,9 @@ if (!webDockerfile.includes("ARG VITE_API_BOUNDARY_ENABLED=false")) {
 }
 if (!webDockerfile.includes("ARG VITE_ARC_OBSERVATION_ENABLED=false")) {
   failures.push("M04 Arc observation must default to false in the web image");
+}
+if (!webDockerfile.includes("ARG VITE_AGENT_REGISTRY_ENABLED=false")) {
+  failures.push("M05 agent registry evidence must default to false in the web image");
 }
 
 const nginxSource = await readFile(path.join(root, "apps/web/nginx.conf"), "utf8");
@@ -276,6 +332,12 @@ if (!packageSource.includes("playwright test -c playwright.arc-observation.confi
 }
 if (!packageSource.includes("playwright test -c playwright.arc-observation.production.config.ts")) {
   failures.push("M04 browser gate must define an exact production-source image journey");
+}
+if (!packageSource.includes("playwright test -c playwright.agent-registry.config.ts")) {
+  failures.push("M05 browser gate must exercise explicit agent-registry journeys");
+}
+if (!packageSource.includes("playwright test -c playwright.agent-registry.production.config.ts")) {
+  failures.push("M05 browser gate must define an exact production-source image journey");
 }
 const m02WorkflowSource = await readFile(path.join(root, ".github/workflows/release-gates.yml"), "utf8");
 for (const requiredToken of [
@@ -314,6 +376,14 @@ for (const requiredToken of [
   "openarc-web-m04:ci -o cyclonedx-json > sbom-web-m04.cdx.json",
 ]) {
   if (!m02WorkflowSource.includes(requiredToken)) failures.push(`Hosted M04 exact-source/image gate is missing ${requiredToken}`);
+}
+for (const requiredToken of [
+  "openarc-web-m05:ci", "VITE_AGENT_REGISTRY_ENABLED=true", "AGENT_REGISTRY_ENABLED=true",
+  "SOURCE_MAX_SUBCALLS=10", "e2e:agent-registry:production", '"agentRegistry":true',
+  "image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m05:ci",
+  "openarc-web-m05:ci -o cyclonedx-json > sbom-web-m05.cdx.json",
+]) {
+  if (!m02WorkflowSource.includes(requiredToken)) failures.push(`Hosted M05 exact-source/image gate is missing ${requiredToken}`);
 }
 
 const networkSource = await readFile(path.join(root, "packages/shared/src/network.ts"), "utf8");
@@ -416,4 +486,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log("[release-check] M04 Arc observation, M03 API/privacy boundary, M02 workspace, M01 engine, and M00 foundation verified");
+console.log("[release-check] M05 ERC-8004 agent evidence, M04 Arc observation, M03 API/privacy boundary, M02 workspace, M01 engine, and M00 foundation verified");

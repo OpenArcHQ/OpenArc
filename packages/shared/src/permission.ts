@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { ApiErrorCodeSchema, CAPABILITIES_PATH, WorkspaceOriginSchema } from "./api.js";
 import { ARC_ACCOUNT_SNAPSHOT_PATH, ARC_TRANSACTION_EVIDENCE_PATH } from "./arc-observation.js";
+import { AGENT_REGISTRY_EVIDENCE_PATH, AgentRegistryEvidenceRequestSchema } from "./agent-registry-evidence.js";
 import { ARC_TESTNET } from "./network.js";
 import { EvmAddressSchema, IsoTimestampSchema, TransactionHashSchema, compareIsoTimestamps } from "./primitives.js";
 import { VaultRevisionSchema, WorkspaceRecordIdSchema } from "./workspace-primitives.js";
@@ -71,6 +72,13 @@ export const ARC_OBSERVATION_DISCLOSURE = Object.freeze({
   hostingMetadata: "OpenArc, its hosting provider, and the Arc RPC receive ordinary network metadata, including IP and user-agent where applicable.",
 } as const);
 
+export const AGENT_REGISTRY_DISCLOSURE = Object.freeze({
+  credentials: "omit",
+  openArcRetention: "No request or response body is retained by the OpenArc API. The approved result is stored only in the encrypted local workspace.",
+  providerRetention: "Arc's public RPC receives the released public registry identifiers under Arc's current terms and privacy policy.",
+  hostingMetadata: "OpenArc, its hosting provider, and the Arc RPC receive ordinary network metadata, including IP and user-agent where applicable.",
+} as const);
+
 const observationBase = {
   recordSchema: z.literal("openarc.permission-receipt.v2"),
   kind: z.literal("permission_receipt"),
@@ -125,12 +133,59 @@ export const ArcObservationPermissionReceiptRecordSchema = z.discriminatedUnion(
   }
 });
 
+export const AgentRegistryPermissionReceiptRecordSchema = z.strictObject({
+  recordSchema: z.literal("openarc.permission-receipt.v3"),
+  kind: z.literal("permission_receipt"),
+  recordId: WorkspaceRecordIdSchema,
+  recordRevision: VaultRevisionSchema,
+  createdAt: IsoTimestampSchema,
+  updatedAt: IsoTimestampSchema,
+  connectorId: z.literal("arc_agent_registry_evidence"),
+  destination: z.strictObject({ origin: WorkspaceOriginSchema,
+    path: z.literal(AGENT_REGISTRY_EVIDENCE_PATH), method: z.literal("POST"),
+    upstreams: z.tuple([z.literal(ARC_TESTNET.rpcHttp)]) }),
+  releasedFields: z.array(z.enum([
+    "network", "agentId", "feedbackQuery.clientAddress", "feedbackQuery.feedbackIndex",
+    "validationRequestHash",
+  ])).min(2).max(5),
+  released: AgentRegistryEvidenceRequestSchema,
+  purpose: z.literal("Observe one ERC-8004 agent identity and optional exact observer or validator claims at one final Arc Testnet block."),
+  credentials: z.literal(AGENT_REGISTRY_DISCLOSURE.credentials),
+  openArcRetention: z.literal(AGENT_REGISTRY_DISCLOSURE.openArcRetention),
+  providerRetention: z.literal(AGENT_REGISTRY_DISCLOSURE.providerRetention),
+  hostingMetadata: z.literal(AGENT_REGISTRY_DISCLOSURE.hostingMetadata),
+  approvedAt: IsoTimestampSchema,
+  outcome: z.enum(["approved", "completed", "failed"]),
+  resolvedAt: IsoTimestampSchema.nullable(),
+  failureCode: PermissionFailureCodeSchema.nullable(),
+}).superRefine((receipt, context) => {
+  const expected = ["network", "agentId"];
+  if (receipt.released.feedbackQuery) expected.push("feedbackQuery.clientAddress", "feedbackQuery.feedbackIndex");
+  if (receipt.released.validationRequestHash) expected.push("validationRequestHash");
+  if (JSON.stringify(receipt.releasedFields) !== JSON.stringify(expected)) {
+    context.addIssue({ code: "custom", message: "Released-field disclosure must exactly match the request" });
+  }
+  const fail = (message: string) => context.addIssue({ code: "custom", message });
+  if (receipt.createdAt !== receipt.approvedAt) fail("Receipt creation must equal approval");
+  if (receipt.updatedAt !== (receipt.resolvedAt ?? receipt.approvedAt)) fail("Receipt update must match its last outcome time");
+  if (receipt.outcome === "approved") {
+    if (receipt.resolvedAt !== null || receipt.failureCode !== null) fail("Approval is unresolved");
+  } else {
+    if (receipt.resolvedAt === null || compareIsoTimestamps(receipt.resolvedAt, receipt.approvedAt) < 0) {
+      fail("Resolved receipt cannot predate approval");
+    }
+    if ((receipt.outcome === "failed") !== (receipt.failureCode !== null)) fail("Only a failed receipt has a failure code");
+  }
+});
+
 export const PermissionReceiptRecordSchema = z.union([
   CapabilityPermissionReceiptRecordSchema,
   ArcObservationPermissionReceiptRecordSchema,
+  AgentRegistryPermissionReceiptRecordSchema,
 ]);
 
 export type PermissionReceiptRecord = z.infer<typeof PermissionReceiptRecordSchema>;
 export type CapabilityPermissionReceiptRecord = z.infer<typeof CapabilityPermissionReceiptRecordSchema>;
 export type ArcObservationPermissionReceiptRecord = z.infer<typeof ArcObservationPermissionReceiptRecordSchema>;
+export type AgentRegistryPermissionReceiptRecord = z.infer<typeof AgentRegistryPermissionReceiptRecordSchema>;
 export type PermissionFailureCode = z.infer<typeof PermissionFailureCodeSchema>;

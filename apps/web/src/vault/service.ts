@@ -566,11 +566,13 @@ function assertWorkspaceRelationships(
   const evidence = parsedRecords.filter((record) => record.kind === "evidence_record");
   const permissions = parsedRecords.filter((record) => record.kind === "permission_receipt");
   const observations = parsedRecords.filter((record) => record.kind === "arc_observation");
+  const registryObservations = parsedRecords.filter((record) => record.kind === "agent_registry_observation");
   requireUnique(agents.map((record) => record.agentId));
   requireUnique(policies.map((record) => record.policy.policyId));
   requireUnique(actions.map((record) => record.action.actionId));
   requireUnique(evidence.map((record) => record.evidence.evidenceId));
   requireUnique(observations.map((record) => record.permissionReceiptId));
+  requireUnique(registryObservations.map((record) => record.permissionReceiptId));
 
   const permissionById = new Map(permissions.map((record) => [record.recordId, record]));
   for (const observation of observations) {
@@ -584,6 +586,21 @@ function assertWorkspaceRelationships(
     } else if (permission.connectorId !== "arc_transaction_evidence" ||
       permission.released.transactionHash !== observation.observation.transaction.hash ||
       permission.released.network !== observation.observation.network) invalidRelationships();
+  }
+
+  const agentRecordIds = new Set(agents.map((record) => record.recordId));
+  for (const observation of registryObservations) {
+    const permission = permissionById.get(observation.permissionReceiptId);
+    if (!permission || permission.recordSchema !== "openarc.permission-receipt.v3" ||
+      permission.connectorId !== "arc_agent_registry_evidence" || permission.outcome !== "completed" ||
+      permission.released.network !== observation.observation.network ||
+      permission.released.agentId !== observation.observation.agentId ||
+      (permission.released.feedbackQuery?.clientAddress ?? null) !== (observation.observation.feedback?.observer ?? null) ||
+      (permission.released.feedbackQuery?.feedbackIndex ?? null) !== (observation.observation.feedback?.feedbackIndex ?? null) ||
+      (permission.released.validationRequestHash ?? null) !== (observation.observation.validation?.requestHash ?? null) ||
+      (observation.linkedAgentProfileRecordId !== null && !agentRecordIds.has(observation.linkedAgentProfileRecordId))) {
+      invalidRelationships();
+    }
   }
 
   const policyRecordIds = new Set(policies.map((record) => record.recordId));

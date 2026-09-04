@@ -1,15 +1,20 @@
 import {
   M01_FIXTURES,
   ARC_ACCOUNT_SNAPSHOT_PATH,
+  AGENT_REGISTRY_DISCLOSURE,
+  AGENT_REGISTRY_EVIDENCE_PATH,
   ARC_OBSERVATION_DISCLOSURE,
   ARC_TESTNET,
   ARC_TRANSACTION_EVIDENCE_PATH,
   ArcAccountSnapshotRequestSchema,
   ArcTransactionEvidenceRequestSchema,
+  AgentRegistryEvidenceRequestSchema,
   CAPABILITIES_PATH,
   CAPABILITY_DISCLOSURE,
   type ArcObservationRecord,
   type ArcObservationPermissionReceiptRecord,
+  type AgentRegistryEvidenceRequest,
+  type AgentRegistryObservationRecord,
   type CapabilitiesEnvelope,
   type AgentProfileRecord,
   type MonitoringPolicyRecord,
@@ -28,7 +33,12 @@ import { createPortal } from "react-dom";
 
 import type { BuildInfo } from "@openarc/shared";
 
-import { apiBoundaryEnabled, arcObservationEnabled } from "../app/availability.js";
+import { agentRegistryEnabled, apiBoundaryEnabled, arcObservationEnabled } from "../app/availability.js";
+import { requestAgentRegistryEvidence } from "../api/agent-registry.js";
+import {
+  AgentRegistryFinalizationError,
+  runAgentRegistryPermissionFlow,
+} from "../api/agent-registry-permission-flow.js";
 import { requestArcAccountSnapshot, requestArcTransactionEvidence } from "../api/arc-observation.js";
 import {
   ArcObservationFinalizationError,
@@ -103,9 +113,10 @@ type SessionGuard = {
 const INACTIVITY_MS = 10 * 60 * 1_000;
 const API_BOUNDARY_ENABLED = apiBoundaryEnabled();
 const ARC_OBSERVATION_ENABLED = API_BOUNDARY_ENABLED && arcObservationEnabled();
+const AGENT_REGISTRY_ENABLED = ARC_OBSERVATION_ENABLED && agentRegistryEnabled();
 const VIEWS: readonly { id: WorkspaceView; label: string; note: string }[] = [
   { id: "overview", label: "Overview", note: "Local workspace status" },
-  { id: "agents", label: "Agents", note: "Owner-supplied profiles" },
+  { id: "agents", label: "Agents", note: AGENT_REGISTRY_ENABLED ? "Local profiles + registry evidence" : "Owner-supplied profiles" },
   ...(ARC_OBSERVATION_ENABLED ? [{ id: "activity" as const, label: "Activity", note: "Explicit Arc observations" }] : []),
   { id: "policies", label: "Policies", note: "Local monitoring rules" },
   { id: "evidence", label: "Evidence", note: "Encrypted fixture records" },
@@ -827,7 +838,9 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
         } });
       guard.assertActive();
       setBusy(false);
-      setNotice(result.capabilities.data.features.arcObservation
+      setNotice(result.capabilities.data.features.agentRegistry
+        ? "Capability check completed. Arc observation and bounded ERC-8004 registry evidence are enabled in this build."
+        : result.capabilities.data.features.arcObservation
         ? "Capability check completed. The Arc read-only observation connector is enabled in this build."
         : "Capability check completed. Live Arc observation remains disabled in this build.");
       return result.capabilities;
@@ -899,6 +912,57 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
           ? cause.phase === "pre-send"
             ? "The Arc request was not sent. Check the public identifier and try again."
             : `No new Arc evidence was accepted (${cause.code}). Prior encrypted evidence remains unchanged and should be treated as stale.`
+          : vaultErrorMessage(cause));
+      return null;
+    }
+  };
+
+  const observeAgentRegistry = async (request: AgentRegistryEvidenceRequest,
+    linkedAgentProfileRecordId: string | null): Promise<AgentRegistryObservationRecord | null> => {
+    const current = unlockedRef.current;
+    if (!current || !AGENT_REGISTRY_ENABLED) return null;
+    const guard = createSessionGuard();
+    let expected = current;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await runAgentRegistryPermissionFlow({ workspace: current, origin: window.location.origin,
+        request, linkedAgentProfileRecordId, signal: guard.signal,
+        assertActive: () => {
+          guard.assertActive();
+          if (unlockedRef.current !== expected) throw new Error("Vault session changed");
+        },
+        save: async (workspace, records, assertActive, signal) => {
+          const saved = await saveWorkspaceRecords(workspace, records, assertActive, signal);
+          assertActive();
+          expected = saved;
+          unlockedRef.current = saved;
+          deadlineRef.current = Date.now() + INACTIVITY_MS;
+          setScreen({ phase: "unlocked", workspace: saved });
+          broadcast("changed", saved.meta.vaultId);
+          return saved;
+        },
+        fetch: requestAgentRegistryEvidence,
+      });
+      guard.assertActive();
+      setBusy(false);
+      setNotice("ERC-8004 registry evidence validated and encrypted locally. Claims remain source- and observer-specific.");
+      return result.observation;
+    } catch (cause) {
+      if (!guard.isActive()) return null;
+      const storageBoundary = cause instanceof AgentRegistryFinalizationError ? cause.storageCause : cause;
+      if (await handleObservedVaultBoundary(storageBoundary, guard.isActive)) return null;
+      if (!guard.isActive()) return null;
+      setBusy(false);
+      setError(cause instanceof AgentRegistryFinalizationError
+        ? cause.phase === "completed-request"
+          ? "Registry evidence was accepted but could not be saved. The encrypted approval remains; prior evidence was not changed."
+          : "The registry request may have reached OpenArc, but its failed outcome could not be saved."
+        : cause instanceof OpenArcRequestError
+          ? cause.phase === "pre-send"
+            ? "The registry request was not sent. Check the exact public identifiers and try again."
+            : `No registry evidence was accepted (${cause.code}). Prior encrypted evidence remains unchanged.`
           : vaultErrorMessage(cause));
       return null;
     }
@@ -1119,6 +1183,7 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
           onDelete={deleteRecords}
           onCheckCapabilities={checkCapabilities}
           onObserveArc={observeArc}
+          onObserveAgentRegistry={observeAgentRegistry}
           onImport={importBackup}
           onAcceptCreated={acceptCreated}
           onDestroy={destroy}
@@ -1253,6 +1318,8 @@ function WorkspaceViewPanel(props: {
   onDelete: (ids: readonly string[], message: string) => Promise<boolean>;
   onCheckCapabilities: () => Promise<CapabilitiesEnvelope | null>;
   onObserveArc: (input: ArcObservationInput) => Promise<ArcObservationRecord | null>;
+  onObserveAgentRegistry: (request: AgentRegistryEvidenceRequest,
+    linkedAgentProfileRecordId: string | null) => Promise<AgentRegistryObservationRecord | null>;
   onImport: (file: File, backupPassphrase: string, nextPassphrase: string) => Promise<void>;
   onAcceptCreated: (created: CreatedWorkspace, message: string) => void;
   onDestroy: () => Promise<void>;
@@ -1292,6 +1359,7 @@ function Overview({ records, onNavigate, onOpenTour }: { records: readonly Works
         <Stat value={counts.actions} label="Action envelopes" />
         <Stat value={counts.evidence} label="Evidence records" />
         {ARC_OBSERVATION_ENABLED ? <Stat value={counts.observations} label="Arc observations" /> : null}
+        {AGENT_REGISTRY_ENABLED ? <Stat value={counts.registryObservations} label="Registry evidence" /> : null}
       </div>
       <div className="workspace-callouts">
         <article><span>01</span><h3>Describe an agent</h3><p>Add only what you know and label wallet associations as owner-supplied.</p><button type="button" onClick={() => onNavigate("agents")}>Open Agents →</button></article>
@@ -1299,12 +1367,13 @@ function Overview({ records, onNavigate, onOpenTour }: { records: readonly Works
         <article><span>03</span><h3>Inspect evidence</h3><p>Copy one of the six synthetic M01 cases into your encrypted workspace.</p><button type="button" onClick={() => onNavigate("evidence")}>Open Evidence →</button></article>
         {ARC_OBSERVATION_ENABLED ? <article><span>04</span><h3>Observe Arc explicitly</h3><p>Review exactly what is released, then read one public address or transaction at an exact final block.</p><button type="button" onClick={() => onNavigate("activity")}>Open Activity →</button></article> : null}
       </div>
-      <div className="privacy-strip"><strong>Nothing refreshes automatically.</strong><span>Only an approved Activity or Sources action may call the network. Reload starts locked.</span></div>
+      <div className="privacy-strip"><strong>Nothing refreshes automatically.</strong><span>Only an approved Agents, Activity, or Sources action may call the network. Reload starts locked.</span></div>
     </section>
   );
 }
 
-function AgentsPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "workspace" | "busy" | "onSave" | "onDelete" | "onOpenTour">) {
+function AgentsPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "workspace" | "busy" | "onSave" |
+  "onDelete" | "onOpenTour" | "onObserveAgentRegistry">) {
   const agents = props.workspace.records.filter((record): record is AgentProfileRecord => record.kind === "agent_profile");
   const [editing, setEditing] = useState<AgentProfileRecord | null | undefined>(undefined);
   return (
@@ -1325,8 +1394,155 @@ function AgentsPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "work
         if (saved) setEditing(undefined);
         return saved;
       }} /> : null}
+      {AGENT_REGISTRY_ENABLED ? <AgentRegistryPanel {...props} agents={agents} /> : null}
     </section>
   );
+}
+
+function AgentRegistryPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "workspace" | "busy" |
+  "onDelete" | "onObserveAgentRegistry"> & { agents: readonly AgentProfileRecord[] }) {
+  const [agentId, setAgentId] = useState("");
+  const [linkedProfile, setLinkedProfile] = useState("");
+  const [includeFeedback, setIncludeFeedback] = useState(false);
+  const [observer, setObserver] = useState("");
+  const [feedbackIndex, setFeedbackIndex] = useState("0");
+  const [includeValidation, setIncludeValidation] = useState(false);
+  const [validationHash, setValidationHash] = useState("");
+  const [pending, setPending] = useState<{ request: AgentRegistryEvidenceRequest; linked: string | null } | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const observations = props.workspace.records
+    .filter((record): record is AgentRegistryObservationRecord => record.kind === "agent_registry_observation")
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const profileByRecordId = new Map(props.agents.map((profile) => [profile.recordId, profile]));
+
+  const review = (event: FormEvent) => {
+    event.preventDefault();
+    const parsed = AgentRegistryEvidenceRequestSchema.safeParse({ network: ARC_TESTNET.caip2, agentId,
+      ...(includeFeedback ? { feedbackQuery: { clientAddress: observer, feedbackIndex } } : {}),
+      ...(includeValidation ? { validationRequestHash: validationHash } : {}) });
+    if (!parsed.success) {
+      setValidationError("Enter a canonical registry agent ID and complete every enabled exact-claim identifier.");
+      return;
+    }
+    setValidationError(null);
+    setPending({ request: parsed.data, linked: linkedProfile || null });
+  };
+  const approve = async () => {
+    if (!pending) return;
+    const approved = pending;
+    setPending(null);
+    const saved = await props.onObserveAgentRegistry(approved.request, approved.linked);
+    if (saved) {
+      setAgentId("");
+      setLinkedProfile("");
+      setIncludeFeedback(false);
+      setObserver("");
+      setFeedbackIndex("0");
+      setIncludeValidation(false);
+      setValidationHash("");
+    }
+  };
+
+  return <div className="registry-evidence" aria-labelledby="registry-evidence-title">
+    <div className="section-heading compact">
+      <p className="eyebrow">ARC TESTNET · ERC-8004 DRAFT</p>
+      <h2 id="registry-evidence-title">Registry evidence</h2>
+      <p>Read one identity and, optionally, one exact observer or validator claim. This is source-linked evidence—not a verification badge or universal reputation score.</p>
+    </div>
+    <form className="workspace-form settings-wide" onSubmit={review}>
+      <Field label="ERC-8004 agent ID" hint="A canonical decimal token ID from the fixed Arc Testnet IdentityRegistry.">
+        <input value={agentId} onChange={(event) => setAgentId(event.target.value)} inputMode="numeric" required />
+      </Field>
+      <Field label="Link to a local profile (optional)" hint="This link stays encrypted in your browser and is never released to the API.">
+        <select value={linkedProfile} onChange={(event) => setLinkedProfile(event.target.value)}>
+          <option value="">No local profile link</option>
+          {props.agents.map((profile) => <option key={profile.recordId} value={profile.recordId}>{profile.displayName}</option>)}
+        </select>
+      </Field>
+      <label className="confirm-row"><input type="checkbox" checked={includeFeedback}
+        onChange={(event) => setIncludeFeedback(event.target.checked)} /> Include one exact observer feedback record</label>
+      {includeFeedback ? <div className="form-grid">
+        <Field label="Observer address"><input value={observer} onChange={(event) => setObserver(event.target.value)} required /></Field>
+        <Field label="Feedback index"><input value={feedbackIndex} onChange={(event) => setFeedbackIndex(event.target.value)} inputMode="numeric" required /></Field>
+      </div> : null}
+      <label className="confirm-row"><input type="checkbox" checked={includeValidation}
+        onChange={(event) => setIncludeValidation(event.target.checked)} /> Include one exact validation request</label>
+      {includeValidation ? <Field label="Validation request hash"><input value={validationHash}
+        onChange={(event) => setValidationHash(event.target.value)} required /></Field> : null}
+      {validationError ? <p className="field-error">{validationError}</p> : null}
+      <button className="button" type="submit" disabled={props.busy}>Review permission</button>
+    </form>
+    <div className="workspace-list">
+      {observations.length === 0 ? <EmptyState title="No registry evidence yet"
+        body="Nothing is queried automatically. Review one bounded request to save source-linked facts here." /> : observations.map((record) => {
+        const evidence = record.observation;
+        const localProfile = record.linkedAgentProfileRecordId ? profileByRecordId.get(record.linkedAgentProfileRecordId) : undefined;
+        return <article key={record.recordId}>
+          <div><p className="eyebrow">REGISTRY IDENTITY · NOT VERIFIED</p>
+            <h3>{localProfile ? localProfile.displayName : `Agent ${evidence.agentId}`}</h3>
+            {localProfile ? <p>Local label above is owner-supplied. Registry facts below remain separate.</p> : null}
+            <ExactIdentifier label="Registry agent ID" value={evidence.agentId} />
+          </div>
+          <dl className="source-facts">
+            <div><dt>Registry owner</dt><dd><code>{evidence.identity.owner}</code></dd></div>
+            <div><dt>Registry agent wallet</dt><dd><code>{evidence.identity.agentWallet}</code></dd></div>
+            <div><dt>Metadata</dt><dd><code>{evidence.identity.metadata.uri || "None"}</code>
+              {evidence.identity.metadata.kind === "https" ? <> · <a href={evidence.identity.metadata.uri}
+                target="_blank" rel="noopener noreferrer">Open untrusted metadata</a></> : null}<br />Not fetched or rendered by OpenArc.</dd></div>
+            <div><dt>Exact block</dt><dd>{evidence.anchor.blockNumber} · <code>{evidence.anchor.blockHash}</code></dd></div>
+          </dl>
+          {evidence.feedback ? <div className="evidence-claim">
+            <p className="eyebrow">OBSERVER-SPECIFIC FEEDBACK</p>
+            <p><strong>{evidence.feedback.decimal}</strong> · {evidence.feedback.revoked ? "Revoked" : "Active"}</p>
+            <ExactIdentifier label="Observer" value={evidence.feedback.observer} />
+            <p>Tags: {evidence.feedback.tag1 || "none"} / {evidence.feedback.tag2 || "none"}. This is one observer’s claim.</p>
+          </div> : null}
+          {evidence.validation ? <div className="evidence-claim">
+            <p className="eyebrow">VALIDATOR-SPECIFIC RESPONSE</p>
+            <p><strong>{evidence.validation.response}/100</strong> · {evidence.validation.tag || "No tag"}</p>
+            <ExactIdentifier label="Validator" value={evidence.validation.validator} />
+            <ExactIdentifier label="Request hash" value={evidence.validation.requestHash} />
+            <p>This response belongs to the named validator; it is not a general safety certification.</p>
+          </div> : null}
+          <details><summary>Source and limitations</summary>
+            <p>Arc public RPC · ERC-8004 {evidence.source.specificationStatus} · source {evidence.source.sourceRevision}</p>
+            <ul>{evidence.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul>
+          </details>
+          <div className="row-actions">
+            <button type="button" disabled={props.busy} onClick={() => {
+              setAgentId(evidence.agentId);
+              setLinkedProfile(record.linkedAgentProfileRecordId ?? "");
+              setIncludeFeedback(Boolean(evidence.feedback));
+              setObserver(evidence.feedback?.observer ?? "");
+              setFeedbackIndex(evidence.feedback?.feedbackIndex ?? "0");
+              setIncludeValidation(Boolean(evidence.validation));
+              setValidationHash(evidence.validation?.requestHash ?? "");
+            }}>Load identifiers to refresh</button>
+            <button type="button" className="danger-link" disabled={props.busy}
+              onClick={() => void props.onDelete([record.recordId, record.permissionReceiptId], "Registry evidence and its permission receipt deleted.")}>Delete evidence</button>
+          </div>
+        </article>;
+      })}
+    </div>
+    {pending ? <Modal title="Allow this registry observation?" onClose={() => setPending(null)}>
+      <p>OpenArc will read one public ERC-8004 identity at one exact final Arc Testnet block. Optional claims are limited to the exact identifiers below.</p>
+      <dl className="permission-disclosure">
+        <div><dt>OpenArc request</dt><dd><code>POST {AGENT_REGISTRY_EVIDENCE_PATH}</code></dd></div>
+        <div><dt>Upstream source</dt><dd><code>{ARC_TESTNET.rpcHttp}</code></dd></div>
+        <div><dt>Released registry agent ID</dt><dd><code>{pending.request.agentId}</code></dd></div>
+        {pending.request.feedbackQuery ? <div><dt>Released feedback lookup</dt><dd><code>{pending.request.feedbackQuery.clientAddress}</code> · index {pending.request.feedbackQuery.feedbackIndex}</dd></div> : null}
+        {pending.request.validationRequestHash ? <div><dt>Released validation lookup</dt><dd><code>{pending.request.validationRequestHash}</code></dd></div> : null}
+        <div><dt>Local profile and label</dt><dd>Not released</dd></div>
+        <div><dt>Credentials</dt><dd>Omitted; no cookie, wallet connection, private key, or account token</dd></div>
+        <div><dt>OpenArc retention</dt><dd>{AGENT_REGISTRY_DISCLOSURE.openArcRetention}</dd></div>
+        <div><dt>Provider handling</dt><dd>{AGENT_REGISTRY_DISCLOSURE.providerRetention}</dd></div>
+        <div><dt>Network metadata</dt><dd>{AGENT_REGISTRY_DISCLOSURE.hostingMetadata}</dd></div>
+      </dl>
+      <p>The approval is encrypted first. Remote metadata is not fetched. OpenArc does not sign or broadcast anything.</p>
+      <div className="modal-actions"><button type="button" onClick={() => setPending(null)}>Cancel</button>
+        <button className="button" type="button" disabled={props.busy} onClick={() => void approve()}>Approve and observe</button></div>
+    </Modal> : null}
+  </div>;
 }
 
 function PoliciesPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "workspace" | "busy" | "onSave" | "onDelete" | "onOpenTour">) {
@@ -1840,6 +2056,7 @@ function recordCounts(records: readonly WorkspaceRecord[]) {
     actions: records.filter((record) => record.kind === "action_envelope").length,
     evidence: records.filter((record) => record.kind === "evidence_record").length,
     observations: records.filter((record) => record.kind === "arc_observation").length,
+    registryObservations: records.filter((record) => record.kind === "agent_registry_observation").length,
   };
 }
 

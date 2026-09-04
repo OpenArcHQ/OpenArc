@@ -17,6 +17,7 @@
     "@openarc/shared": "workspace:*",
     "@redis/client": "6.2.1",
     "fastify": "5.12.1",
+    "viem": "2.56.3",
     "zod": "4.5.4"
   },
   "devDependencies": {

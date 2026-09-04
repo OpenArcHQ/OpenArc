@@ -32,7 +32,7 @@ describe("M03 configuration guards", () => {
     ]) expect(() => loadConfig({ ...valid, ...mutation })).toThrow();
   });
 
-  it("enables only M04 Arc observation with its exact boundary and infrastructure", () => {
+  it("enables cumulative M04/M05 sources only with their exact boundary and infrastructure", () => {
     expect(loadConfig({ NODE_ENV: "test", API_BOUNDARY_ENABLED: "true", ARC_OBSERVATION_ENABLED: "true",
       REDIS_URL: "redis://127.0.0.1:6379", ABUSE_LIMIT_SECRET: "a".repeat(32),
       SOURCE_PROXY_SECRET: "b".repeat(32), METRICS_TOKEN: metricsToken }).ARC_OBSERVATION_ENABLED).toBe(true);
@@ -43,7 +43,16 @@ describe("M03 configuration guards", () => {
       ARC_OBSERVATION_ENABLED: "true", REDIS_URL: "redis://127.0.0.1:6379",
       ABUSE_LIMIT_SECRET: "a".repeat(32), SOURCE_PROXY_SECRET: "b".repeat(32),
       METRICS_TOKEN: metricsToken, ...mutation })).toThrow();
-    for (const flag of ["AGENT_REGISTRY_ENABLED", "AGENT_JOBS_ENABLED", "GATEWAY_EVIDENCE_ENABLED"]) {
+    expect(loadConfig({ NODE_ENV: "test", API_BOUNDARY_ENABLED: "true", ARC_OBSERVATION_ENABLED: "true",
+      AGENT_REGISTRY_ENABLED: "true", REDIS_URL: "redis://127.0.0.1:6379", ABUSE_LIMIT_SECRET: "a".repeat(32),
+      SOURCE_PROXY_SECRET: "b".repeat(32), METRICS_TOKEN: metricsToken, SOURCE_MAX_SUBCALLS: "10" })
+      .AGENT_REGISTRY_ENABLED).toBe(true);
+    for (const mutation of [
+      { ARC_OBSERVATION_ENABLED: "false" }, { SOURCE_MAX_SUBCALLS: "9" }, { API_BOUNDARY_ENABLED: "false" },
+    ]) expect(() => loadConfig({ NODE_ENV: "test", API_BOUNDARY_ENABLED: "true", ARC_OBSERVATION_ENABLED: "true",
+      AGENT_REGISTRY_ENABLED: "true", REDIS_URL: "redis://127.0.0.1:6379", ABUSE_LIMIT_SECRET: "a".repeat(32),
+      SOURCE_PROXY_SECRET: "b".repeat(32), METRICS_TOKEN: metricsToken, SOURCE_MAX_SUBCALLS: "10", ...mutation })).toThrow();
+    for (const flag of ["AGENT_JOBS_ENABLED", "GATEWAY_EVIDENCE_ENABLED"]) {
       expect(() => loadConfig({ NODE_ENV: "test", [flag]: "true",
         REDIS_URL: "redis://127.0.0.1:6379", ABUSE_LIMIT_SECRET: "a".repeat(32), METRICS_TOKEN: metricsToken })).toThrow();
     }

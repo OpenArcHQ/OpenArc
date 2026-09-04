@@ -71,6 +71,13 @@ export const ARC_TESTNET = Object.freeze({
   contracts: Object.freeze({ ...parsedArcTestnet.contracts }),
 });
 
+export const ARC_ERC8004 = Object.freeze({
+  reviewedAt: "2026-09-04",
+  sourceRevision: "arc-erc8004-docs-2026-09-04",
+  specificationStatus: "draft",
+  contractsRevision: "b9e466c250744a7e06b13dff9d3c2844ed64f825",
+} as const);
+
 /**
  * M00 intentionally exports one network only. Public-mainnet parameters and
  * contract addresses were not published in the official Arc references at the
