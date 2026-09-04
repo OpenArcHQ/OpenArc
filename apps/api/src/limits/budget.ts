@@ -32,7 +32,7 @@ export function redisReconnectDelay(retries: number): number {
   return Math.min(100 * (2 ** exponent), 1_000);
 }
 
-/** Only pass request.raw.socket.remoteAddress; never any forwarded header. */
+/** Normalize only an address authenticated at the web-to-API proxy boundary. */
 export function canonicalPeer(value: string | undefined): string {
   if (!value || value.length > 64) return "unknown";
   const family = isIP(value);
@@ -61,9 +61,9 @@ export class SourceBudget {
     }
   }
 
-  async begin(source: SourceClass, route: SourceRoute, socketPeer: string | undefined, signal: AbortSignal): Promise<SourceLease> {
+  async begin(source: SourceClass, route: SourceRoute, peer: string | undefined, signal: AbortSignal): Promise<SourceLease> {
     if (!SOURCE_CLASSES.includes(source) || !SOURCE_ROUTES.includes(route)) throw new ApiBoundaryError("INTERNAL_ERROR");
-    const digest = createHmac("sha256", this.options.secret).update(`${route}\0${canonicalPeer(socketPeer)}`).digest("hex");
+    const digest = createHmac("sha256", this.options.secret).update(`${route}\0${canonicalPeer(peer)}`).digest("hex");
     const keys = [`oa:v1:abuse:${digest}`, `oa:v1:budget:${source}`];
     await this.reserve(source, keys, "attempt", signal);
     return new SourceLease(source, this.options.maxSubcalls,

@@ -13,7 +13,11 @@ const address = "0x1111111111111111111111111111111111111111";
 const transactionHash = `0x${"b".repeat(64)}`;
 const blockHash = `0x${"a".repeat(64)}`;
 const metricsToken = "synthetic_metrics_token_for_m04_tests";
-const headers = { origin, "x-openarc-client": "browser-v1", "content-type": "application/json" };
+const proxySecret = "synthetic_source_proxy_secret_for_m04_tests";
+const headers = { origin, "x-openarc-client": "browser-v1", "content-type": "application/json",
+  "x-openarc-proxy-secret": proxySecret, "x-openarc-proxy-client-ip": "192.0.2.10" };
+const changedHeaders = (mutation: Record<string, string | undefined>) => Object.fromEntries(
+  Object.entries({ ...headers, ...mutation }).filter((entry): entry is [string, string] => entry[1] !== undefined));
 const apps: ReturnType<typeof createApp>[] = [];
 afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
 
@@ -54,7 +58,8 @@ function setup(ready = true) {
   const transactionObserve = vi.fn(async () => transaction);
   const config = loadConfig({ NODE_ENV: "test", APP_ORIGIN: origin, COMMIT_SHA: "test-sha",
     API_BOUNDARY_ENABLED: "true", ARC_OBSERVATION_ENABLED: "true", REDIS_URL: "redis://127.0.0.1:6379",
-    ABUSE_LIMIT_SECRET: "synthetic_abuse_secret_for_m04_tests", METRICS_TOKEN: metricsToken });
+    ABUSE_LIMIT_SECRET: "synthetic_abuse_secret_for_m04_tests", SOURCE_PROXY_SECRET: proxySecret,
+    METRICS_TOKEN: metricsToken });
   const app = createApp({ config, sourceBudget: budget, logSink: (entry) => logs.push(entry),
     arcAccountService: { observe: accountObserve } as unknown as ArcAccountService,
     arcTransactionService: { observe: transactionObserve } as unknown as ArcTransactionService });
@@ -64,7 +69,7 @@ function setup(ready = true) {
 
 describe("M04 source routes", () => {
   it("reports exact capability/readiness truth and serves both strict no-store envelopes", async () => {
-    const { app, accountObserve, transactionObserve, logs } = setup();
+    const { app, begin, accountObserve, transactionObserve, logs } = setup();
     const capabilities = await app.inject({ method: "GET", url: "/v1/private/capabilities",
       headers: { origin, "x-openarc-client": "browser-v1" } });
     expect(capabilities.json().data).toMatchObject({ capabilityVersion: "openarc.capabilities.m04.v1",
@@ -85,6 +90,8 @@ describe("M04 source routes", () => {
     expect(transactionResponse.statusCode).toBe(200);
     expect(transactionResponse.json().data).toEqual(transaction);
     expect(transactionObserve).toHaveBeenCalledOnce();
+    expect(begin).toHaveBeenNthCalledWith(1, "arc_rpc", "arc_account", "192.0.2.10", expect.any(AbortSignal));
+    expect(begin).toHaveBeenNthCalledWith(2, "arc_rpc", "arc_transaction", "192.0.2.10", expect.any(AbortSignal));
 
     const metrics = await app.inject({ method: "GET", url: "/metrics",
       headers: { authorization: `Bearer ${metricsToken}` } });
@@ -95,7 +102,7 @@ describe("M04 source routes", () => {
     expect(JSON.stringify(logs)).not.toContain(ARC_TESTNET.rpcHttp);
   });
 
-  it("rejects malformed identifiers before adapter execution after reserving the attempt", async () => {
+  it("rejects malformed identifiers before adapter execution or capacity reservation", async () => {
     const { app, begin, accountObserve, transactionObserve } = setup();
     for (const request of [
       { url: "/v1/private/arc/account-snapshot", payload: { network: ARC_TESTNET.caip2, address: "PRIVATE_CANARY" } },
@@ -106,9 +113,23 @@ describe("M04 source routes", () => {
       expect(response.json().error.code).toBe("INVALID_REQUEST");
       expect(response.body).not.toContain("PRIVATE_CANARY");
     }
-    expect(begin).toHaveBeenCalledTimes(2);
+    expect(begin).not.toHaveBeenCalled();
     expect(accountObserve).not.toHaveBeenCalled();
     expect(transactionObserve).not.toHaveBeenCalled();
+  });
+
+  it("requires the authenticated web-proxy identity before capacity reservation", async () => {
+    const { app, begin, accountObserve } = setup();
+    for (const mutation of [
+      { "x-openarc-proxy-secret": undefined }, { "x-openarc-proxy-secret": "x".repeat(proxySecret.length) },
+      { "x-openarc-proxy-client-ip": "not-an-address" },
+    ]) {
+      const response = await app.inject({ method: "POST", url: "/v1/private/arc/account-snapshot",
+        headers: changedHeaders(mutation), payload: { network: ARC_TESTNET.caip2, address } });
+      expect(response.statusCode).toBe(403);
+    }
+    expect(begin).not.toHaveBeenCalled();
+    expect(accountObserve).not.toHaveBeenCalled();
   });
 
   it("fails readiness closed when the required budget store is down", async () => {

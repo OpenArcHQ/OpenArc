@@ -144,7 +144,8 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
     }
     registerSourceRoute<ArcAccountSnapshotRequest, ArcAccountSnapshotEnvelope>(app, {
       path: ARC_ACCOUNT_SNAPSHOT_PATH, source: "arc_rpc", route: "arc_account", enabled: true,
-      appOrigin: config.APP_ORIGIN, budget: sourceBudget, timeoutMs: config.SOURCE_TIMEOUT_MS,
+      appOrigin: config.APP_ORIGIN, proxySecret: config.SOURCE_PROXY_SECRET!,
+      budget: sourceBudget, timeoutMs: config.SOURCE_TIMEOUT_MS,
       requestSchema: ArcAccountSnapshotRequestSchema, responseSchema: ArcAccountSnapshotEnvelopeSchema,
       execute: async (input, context) => ({ ok: true as const,
         data: await arcAccountService.observe(input, context.lease, context.signal),
@@ -152,7 +153,8 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
     });
     registerSourceRoute<ArcTransactionEvidenceRequest, ArcTransactionEvidenceEnvelope>(app, {
       path: ARC_TRANSACTION_EVIDENCE_PATH, source: "arc_rpc", route: "arc_transaction", enabled: true,
-      appOrigin: config.APP_ORIGIN, budget: sourceBudget, timeoutMs: config.SOURCE_TIMEOUT_MS,
+      appOrigin: config.APP_ORIGIN, proxySecret: config.SOURCE_PROXY_SECRET!,
+      budget: sourceBudget, timeoutMs: config.SOURCE_TIMEOUT_MS,
       requestSchema: ArcTransactionEvidenceRequestSchema, responseSchema: ArcTransactionEvidenceEnvelopeSchema,
       execute: async (input, context) => ({ ok: true as const,
         data: await arcTransactionService.observe(input, context.lease, context.signal),

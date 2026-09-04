@@ -121,7 +121,7 @@ Startup fails in production when:
 
 ## 4. Environment contract
 
-The concrete Zod schema lives in `apps/api/src/config/env.ts`.
+The concrete Zod schema lives in `apps/api/src/config.ts`.
 
 ```text
 NODE_ENV                         development | test | production
@@ -141,6 +141,7 @@ ARC_TESTNET_EXPLORER_URL         exact https://testnet.arcscan.app
 
 REDIS_URL                        required for any enabled source route
 ABUSE_LIMIT_SECRET               32+ chars, unique
+SOURCE_PROXY_SECRET              32+ chars, unique; shared only by web proxy and API
 REQUESTS_PER_IP_HOUR             bounded positive integer
 GLOBAL_SOURCE_UNITS_PER_DAY      bounded positive integer
 
@@ -779,12 +780,23 @@ validation are introduced only in M04.
 
 ### Abuse identity and budget accounting
 
-`trustProxy` is false. Only the socket peer, normalized for IPv4-mapped IPv6,
-selects the HMAC abuse bucket; all forwarded-address headers are ignored.
-Unknown peers share one conservative bucket. Requests arriving through one
-reverse proxy may share a bucket. This cannot be advertised as precise end-user
-quota allocation; a later trusted-proxy design needs a separately tested trust
-boundary before live source enablement.
+`trustProxy` remains false and the API ignores ordinary `Forwarded`,
+`X-Forwarded-For`, and `X-Real-IP` request headers. Railway documents the
+`X-Real-IP` value delivered to the web service as the client's remote IP. The web nginx proxy removes
+ordinary forwarding headers and overwrites any caller-supplied internal proxy
+assertions with that edge value plus `SOURCE_PROXY_SECRET`. The API accepts the
+client address only when the internal secret matches in constant time and the
+address parses as exactly one IPv4 or IPv6 address. Missing, duplicate, forged,
+or malformed assertions fail before Redis or an upstream call. Direct calls to
+the public API cannot create a budget identity because they do not possess the
+web-to-API secret. The API never logs the address and Redis receives only its
+route-scoped HMAC digest.
+
+This trust boundary depends on Railway overwriting its edge-owned header, as
+documented in Railway's public-networking specification:
+<https://docs.railway.com/networking/public-networking/specs-and-limits>.
+Moving the web service to another edge requires re-verification or a new
+authenticated identity design before source routes may remain enabled.
 
 Standalone Redis Lua uses Redis server time and atomic fixed UTC hour/day
 windows. Keys contain only a versioned namespace, a fixed source/route class,
@@ -792,16 +804,18 @@ or an HMAC digest; values contain only window numbers and bounded counters.
 Expiry is the window end plus a 60-second cleanup grace, and counters reset
 inside the same script when the window changes.
 
-Every enabled source-route attempt first consumes one per-peer/hour attempt
-and one daily route unit before Origin, credentials, type, size, or body checks.
-This includes rejected methods and preflights for an enabled source route.
-An already exhausted hourly bucket is charged/clamped without consuming more
-daily units. Each prospective upstream subcall then reserves one further daily
-unit atomically, and a per-request lease caps subcalls. A reservation is never
-refunded, even if cancellation or transport failure prevents completion; this
-is conservative spend control, not a claim that every reservation reached a
-provider. Metrics distinguish reservations from dispatched calls. Missing Redis,
-script errors, disconnection, or timeout fail closed without outbound calls.
+Only a source POST that passes the exact Origin, credential, method, query,
+media, declared-size, authenticated proxy-identity, parser, and strict-schema
+checks consumes one per-peer/hour attempt and one daily route unit. Preflights,
+malformed requests, and boundary failures consume no shared capacity and never
+execute an adapter. An already exhausted hourly bucket is charged/clamped
+without consuming more daily units. Each prospective upstream subcall then
+reserves one further daily unit atomically, and a per-request lease caps
+subcalls. A reservation is never refunded, even if cancellation or transport
+failure prevents completion; this is conservative spend control, not a claim
+that every reservation reached a provider. Metrics distinguish reservations
+from dispatched calls. Missing Redis, script errors, disconnection, or timeout
+fail closed without outbound calls.
 There is no offline queue or implicit command retry that can perform a late
 operation. A dropped Redis transport reconnects with bounded 100–1,000 ms
 backoff so readiness can recover after the same private store returns; commands

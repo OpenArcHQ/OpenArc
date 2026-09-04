@@ -37,7 +37,8 @@ RUN apk add --no-cache \
     nghttp2-libs=1.69.0-r0
 
 ARG VITE_API_BOUNDARY_ENABLED=false
-COPY apps/web/nginx.conf apps/web/nginx-api.conf apps/web/proxy_params /tmp/openarc-nginx/
+ARG VITE_ARC_OBSERVATION_ENABLED=false
+COPY apps/web/nginx.conf apps/web/nginx-api.conf apps/web/proxy_params apps/web/validate-m04-runtime-env.sh /tmp/openarc-nginx/
 RUN set -eu; \
     if [ "${VITE_API_BOUNDARY_ENABLED}" = "true" ]; then \
       mkdir -p /etc/nginx/templates; \
@@ -47,9 +48,13 @@ RUN set -eu; \
     else \
       cp /tmp/openarc-nginx/nginx.conf /etc/nginx/conf.d/default.conf; \
     fi; \
+    if [ "${VITE_ARC_OBSERVATION_ENABLED}" = "true" ]; then \
+      cp /tmp/openarc-nginx/validate-m04-runtime-env.sh /docker-entrypoint.d/05-openarc-m04-env.sh; \
+      chmod 755 /docker-entrypoint.d/05-openarc-m04-env.sh; \
+    fi; \
     rm -rf /tmp/openarc-nginx
 ENV API_TRUST_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
-    NGINX_ENVSUBST_FILTER=^API_(UPSTREAM_(HOST|SNI)|TRUST_BUNDLE)$
+    NGINX_ENVSUBST_FILTER=^(API_(UPSTREAM_(HOST|SNI)|TRUST_BUNDLE)|SOURCE_PROXY_SECRET)$
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 
 EXPOSE 8080

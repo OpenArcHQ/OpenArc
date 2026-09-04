@@ -19,6 +19,7 @@ const EnvironmentSchema = z.object({
   ARC_TESTNET_EXPLORER_URL: z.literal(ARC_TESTNET.explorerOrigin).default(ARC_TESTNET.explorerOrigin),
   REDIS_URL: z.url({ protocol: /^rediss?$/u }).max(1024).optional(),
   ABUSE_LIMIT_SECRET: secret().optional(),
+  SOURCE_PROXY_SECRET: secret().optional(),
   METRICS_TOKEN: secret().optional(),
   REQUESTS_PER_IP_HOUR: z.coerce.number().int().min(1).max(10_000).default(60),
   GLOBAL_SOURCE_UNITS_PER_DAY: z.coerce.number().int().min(1).max(1_000_000).default(10_000),
@@ -37,8 +38,9 @@ const EnvironmentSchema = z.object({
       context.addIssue({ code: "custom", path: ["METRICS_TOKEN"], message: "A metrics secret is required" });
     }
   }
-  if (config.ABUSE_LIMIT_SECRET && config.ABUSE_LIMIT_SECRET === config.METRICS_TOKEN) {
-    context.addIssue({ code: "custom", path: ["ABUSE_LIMIT_SECRET"], message: "Operator secrets must be distinct" });
+  const operatorSecrets = [config.ABUSE_LIMIT_SECRET, config.SOURCE_PROXY_SECRET, config.METRICS_TOKEN].filter(Boolean);
+  if (new Set(operatorSecrets).size !== operatorSecrets.length) {
+    context.addIssue({ code: "custom", message: "Operator secrets must be distinct" });
   }
   if (config.AGENT_REGISTRY_ENABLED || config.AGENT_JOBS_ENABLED || config.GATEWAY_EVIDENCE_ENABLED) {
     context.addIssue({ code: "custom", message: "Later source adapters are unavailable in M04" });
@@ -47,8 +49,8 @@ const EnvironmentSchema = z.object({
     if (!config.API_BOUNDARY_ENABLED) {
       context.addIssue({ code: "custom", path: ["API_BOUNDARY_ENABLED"], message: "Arc observation requires the API boundary" });
     }
-    if (!config.REDIS_URL || !config.ABUSE_LIMIT_SECRET) {
-      context.addIssue({ code: "custom", message: "Arc observation requires Redis and an abuse-limit secret" });
+    if (!config.REDIS_URL || !config.ABUSE_LIMIT_SECRET || !config.SOURCE_PROXY_SECRET) {
+      context.addIssue({ code: "custom", message: "Arc observation requires Redis and distinct abuse/proxy secrets" });
     }
     if (config.SOURCE_MAX_SUBCALLS < 5) {
       context.addIssue({ code: "custom", path: ["SOURCE_MAX_SUBCALLS"], message: "Arc observation requires five bounded source subcalls" });

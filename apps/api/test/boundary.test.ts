@@ -35,13 +35,14 @@ describe("M03 configuration guards", () => {
   it("enables only M04 Arc observation with its exact boundary and infrastructure", () => {
     expect(loadConfig({ NODE_ENV: "test", API_BOUNDARY_ENABLED: "true", ARC_OBSERVATION_ENABLED: "true",
       REDIS_URL: "redis://127.0.0.1:6379", ABUSE_LIMIT_SECRET: "a".repeat(32),
-      METRICS_TOKEN: metricsToken }).ARC_OBSERVATION_ENABLED).toBe(true);
+      SOURCE_PROXY_SECRET: "b".repeat(32), METRICS_TOKEN: metricsToken }).ARC_OBSERVATION_ENABLED).toBe(true);
     for (const mutation of [
       { API_BOUNDARY_ENABLED: "false" }, { REDIS_URL: undefined }, { ABUSE_LIMIT_SECRET: undefined },
-      { SOURCE_MAX_SUBCALLS: "4" },
+      { SOURCE_PROXY_SECRET: undefined }, { SOURCE_PROXY_SECRET: "a".repeat(32) }, { SOURCE_MAX_SUBCALLS: "4" },
     ]) expect(() => loadConfig({ NODE_ENV: "test", API_BOUNDARY_ENABLED: "true",
       ARC_OBSERVATION_ENABLED: "true", REDIS_URL: "redis://127.0.0.1:6379",
-      ABUSE_LIMIT_SECRET: "a".repeat(32), METRICS_TOKEN: metricsToken, ...mutation })).toThrow();
+      ABUSE_LIMIT_SECRET: "a".repeat(32), SOURCE_PROXY_SECRET: "b".repeat(32),
+      METRICS_TOKEN: metricsToken, ...mutation })).toThrow();
     for (const flag of ["AGENT_REGISTRY_ENABLED", "AGENT_JOBS_ENABLED", "GATEWAY_EVIDENCE_ENABLED"]) {
       expect(() => loadConfig({ NODE_ENV: "test", [flag]: "true",
         REDIS_URL: "redis://127.0.0.1:6379", ABUSE_LIMIT_SECRET: "a".repeat(32), METRICS_TOKEN: metricsToken })).toThrow();

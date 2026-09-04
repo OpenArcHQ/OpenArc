@@ -186,11 +186,16 @@ const m04Files = [
   "apps/api/src/arc/validation.ts",
   "apps/api/src/arc/account-service.ts",
   "apps/api/src/arc/transaction-service.ts",
+  "apps/api/src/config.ts",
+  "apps/api/src/http/source-route.ts",
+  "apps/api/src/limits/budget.ts",
   "apps/api/test/arc-observation.test.ts",
   "apps/api/test/arc-routes.test.ts",
   "apps/web/src/api/client.ts",
   "apps/web/src/api/arc-observation.ts",
   "apps/web/src/api/arc-permission-flow.ts",
+  "apps/web/Dockerfile",
+  "apps/web/nginx-api.conf",
   "apps/web/test/arc-client.test.ts",
   "apps/web/test/arc-observation-flow.test.ts",
   "e2e-arc-observation/observation.spec.ts",
@@ -215,6 +220,7 @@ for (const requiredToken of [
   "arc_primary_rpc", "canonical_eip7708_usdc", "same_underlying_balance",
   "SOURCE_WRONG_NETWORK", "SOURCE_CONFLICT", "credentials: \"omit\"",
   "redirect: \"error\"", "cache: \"no-store\"", "referrerPolicy: \"no-referrer\"",
+  "SOURCE_PROXY_SECRET", "X-OpenArc-Proxy-Client-IP", "timingSafeEqual", "preHandler",
 ]) {
   if (!m04Runtime.includes(requiredToken)) failures.push(`M04 Arc observation contract is missing ${requiredToken}`);
 }
@@ -299,6 +305,9 @@ for (const requiredToken of [
   "ARC_OBSERVATION_ENABLED=true", "e2e:arc-observation:production",
   "arc-rpc-fixture.mjs", "NODE_EXTRA_CA_CERTS=/tmp/rpc-ca.crt",
   "REDIS_URL=redis://openarc-redis-m04:6379", '"arcObservation":true',
+  "SOURCE_PROXY_SECRET=synthetic_source_proxy_secret_for_ci_0004", "X-Real-IP: 192.0.2.20",
+  'test "${exhausted_status}" = "429"', 'test "${independent_status}" = "200"',
+  'test "${direct_status}" = "403"',
   "image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m04:ci",
   "openarc-web-m04:ci -o cyclonedx-json > sbom-web-m04.cdx.json",
 ]) {

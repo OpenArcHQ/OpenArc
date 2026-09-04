@@ -12,6 +12,7 @@ import { canonicalPeer, connectBudgetRedis, redisReconnectDelay, SourceBudget,
 import { disposableRedis } from "./redis-fixture.js";
 
 const secret = "m03_synthetic_abuse_secret_not_a_real_credential";
+const proxySecret = "synthetic_source_proxy_secret_for_boundary_tests";
 const signal = () => new AbortController().signal;
 let fixture: Awaited<ReturnType<typeof disposableRedis>>;
 let clients: Awaited<ReturnType<typeof connectBudgetRedis>>[];
@@ -28,7 +29,10 @@ beforeAll(async () => {
 
 describe("M03 reusable source boundary with real Redis (test-only route)", () => {
   const origin = "https://app.example.test";
-  const headers = { origin, "x-openarc-client": "browser-v1", "content-type": "application/json" };
+  const headers = { origin, "x-openarc-client": "browser-v1", "content-type": "application/json",
+    "x-openarc-proxy-secret": proxySecret, "x-openarc-proxy-client-ip": "192.0.2.10" };
+  const changedHeaders = (mutation: Record<string, string | string[] | undefined>) => Object.fromEntries(
+    Object.entries({ ...headers, ...mutation }).filter((entry): entry is [string, string | string[]] => entry[1] !== undefined));
   const metricsToken = "synthetic_metrics_token_for_m03_tests";
 
   function appFor(budget: SourceBudget | undefined, execute = vi.fn(async () => ({ result: "synthetic" })), enabled = true) {
@@ -36,12 +40,12 @@ describe("M03 reusable source boundary with real Redis (test-only route)", () =>
     const app = createApp({ config: loadConfig({ NODE_ENV: "test", APP_ORIGIN: origin, METRICS_TOKEN: metricsToken }),
       logger: false, logSink: (entry) => logs.push(entry) });
     registerSourceRoute(app, { path: "/test/source", source: "arc_rpc", route: "arc_account", enabled,
-      appOrigin: origin, budget, timeoutMs: 100, requestSchema: z.strictObject({ fixture: z.literal(true) }),
+      appOrigin: origin, proxySecret, budget, timeoutMs: 100, requestSchema: z.strictObject({ fixture: z.literal(true) }),
       responseSchema: z.strictObject({ result: z.literal("synthetic") }), execute });
     return { app, logs, execute };
   }
 
-  it("charges every enabled attempt before origin, credentials, content, size, schema, and method checks", async () => {
+  it("validates the full request boundary before reserving source capacity", async () => {
     const { app, execute, logs } = appFor(new SourceBudget(clients[0]!, options()));
     try {
       const requests = [
@@ -61,24 +65,47 @@ describe("M03 reusable source boundary with real Redis (test-only route)", () =>
         expect(response.body).not.toContain("PRIVATE_CANARY");
       }
       expect(execute).not.toHaveBeenCalled();
-      expect(await clients[0]!.hGetAll(dailyKey)).toMatchObject({ attempts: String(requests.length), subcalls: "0" });
+      expect(await clients[0]!.exists(dailyKey)).toBe(0);
       expect(JSON.stringify(logs)).not.toContain("PRIVATE_CANARY");
       const good = await app.inject({ method: "POST", url: "/test/source", headers, payload: { fixture: true } });
       expect(good.statusCode).toBe(200);
       expect(execute).toHaveBeenCalledOnce();
+      expect(await clients[0]!.hGetAll(dailyKey)).toMatchObject({ attempts: "1", subcalls: "0" });
     } finally { await app.close(); }
   });
 
-  it("cannot evade the peer ceiling using forwarded headers or invalid Origin", async () => {
+  it("isolates authenticated peers and ignores attacker-supplied forwarding headers", async () => {
     const { app, execute } = appFor(new SourceBudget(clients[0]!, options({ requestsPerPeerHour: 2 })));
     try {
-      for (let attempt = 0; attempt < 6; attempt += 1) {
-        const result = await app.inject({ method: "POST", url: "/test/source", payload: "{invalid",
-          headers: { ...headers, origin: "null", "x-forwarded-for": `192.0.2.${attempt + 1}`, forwarded: `for=192.0.2.${attempt + 1}` } });
-        expect(result.statusCode).toBe(attempt < 2 ? 403 : 429);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const result = await app.inject({ method: "POST", url: "/test/source", payload: { fixture: true },
+          headers: { ...headers, "x-forwarded-for": `198.51.100.${attempt + 1}`,
+            forwarded: `for=198.51.100.${attempt + 1}` } });
+        expect(result.statusCode).toBe(attempt < 2 ? 200 : 429);
+      }
+      const independent = await app.inject({ method: "POST", url: "/test/source", payload: { fixture: true },
+        headers: { ...headers, "x-openarc-proxy-client-ip": "192.0.2.11" } });
+      expect(independent.statusCode).toBe(200);
+      expect(execute).toHaveBeenCalledTimes(3);
+      expect(await clients[0]!.hGetAll(dailyKey)).toMatchObject({ attempts: "3", subcalls: "0" });
+    } finally { await app.close(); }
+  });
+
+  it("rejects missing, forged, duplicate, or malformed proxy identity before reserving", async () => {
+    const { app, execute } = appFor(new SourceBudget(clients[0]!, options()));
+    try {
+      for (const mutation of [
+        { "x-openarc-proxy-secret": undefined }, { "x-openarc-proxy-secret": "x".repeat(proxySecret.length) },
+        { "x-openarc-proxy-secret": "é".repeat(proxySecret.length) },
+        { "x-openarc-proxy-secret": [proxySecret, proxySecret] }, { "x-openarc-proxy-client-ip": undefined },
+        { "x-openarc-proxy-client-ip": "192.0.2.1, 192.0.2.2" },
+      ]) {
+        const rejected = await app.inject({ method: "POST", url: "/test/source", payload: { fixture: true },
+          headers: changedHeaders(mutation) });
+        expect(rejected.statusCode).toBe(403);
       }
       expect(execute).not.toHaveBeenCalled();
-      expect(await clients[0]!.hGetAll(dailyKey)).toMatchObject({ attempts: "2", subcalls: "0" });
+      expect(await clients[0]!.exists(dailyKey)).toBe(0);
     } finally { await app.close(); }
   });
 
@@ -110,7 +137,7 @@ describe("M03 reusable source boundary with real Redis (test-only route)", () =>
     }
   });
 
-  it("charges preflight without upstream work and never allows credentials or caches", async () => {
+  it("serves strict preflight without spending source capacity", async () => {
     const { app, execute } = appFor(new SourceBudget(clients[0]!, options()));
     try {
       const result = await app.inject({ method: "OPTIONS", url: "/test/source",
@@ -120,7 +147,7 @@ describe("M03 reusable source boundary with real Redis (test-only route)", () =>
       expect(result.headers["access-control-allow-credentials"]).toBeUndefined();
       expect(result.headers["access-control-max-age"]).toBeUndefined();
       expect(execute).not.toHaveBeenCalled();
-      expect(await clients[0]!.hGetAll(dailyKey)).toMatchObject({ attempts: "1", subcalls: "0" });
+      expect(await clients[0]!.exists(dailyKey)).toBe(0);
     } finally { await app.close(); }
   });
 });
@@ -154,7 +181,7 @@ describe("M03 real Redis atomic controls", () => {
     } finally { reconnecting.destroy(); }
   });
 
-  it("normalizes socket peers without accepting arbitrary strings or forwarded values", () => {
+  it("normalizes authenticated peers without accepting arbitrary or multi-address values", () => {
     expect(canonicalPeer("::ffff:192.0.2.1")).toBe("192.0.2.1");
     expect(canonicalPeer("::ffff:c000:201")).toBe("192.0.2.1");
     expect(canonicalPeer("2001:0DB8:0:0:0:0:0:1")).toBe("2001:db8::1");

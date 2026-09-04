@@ -1,6 +1,6 @@
 # Milestone 04 — Arc account and transaction observation
 
-Status: **active — final exact staging proof complete; independent review and RC pending**
+Status: **active — independent-review blocker under correction; RC pending**
 Base: `main` closure `594527b` after immutable
 `rc/03-api-privacy-boundary/1` at
 `10172744b6316b21b7b228a9c89d4541b7dd8f3e`
@@ -72,8 +72,9 @@ substitution. This is an engineering record, not legal advice.
 - Source routes remain false by default. Fixture implementation uses only the
   existing disposable test Redis path and injected provider transports.
 - A production-enabled source route fails startup/readiness without a real
-  Redis budget store and a distinct abuse secret; there is no in-memory
-  fallback.
+  Redis budget store and distinct abuse/proxy secrets; there is no in-memory
+  fallback. The authenticated web proxy derives a per-client identity from
+  Railway's edge-owned `X-Real-IP`; the API stores only a route-scoped HMAC.
 - The API receives one public address or transaction hash only after an
   encrypted local receipt commits. Raw identifiers never enter logs, metrics,
   Redis keys, URLs, or error messages.
@@ -97,6 +98,39 @@ substitution. This is an engineering record, not legal advice.
 - [x] Full Node 22 gate, audit/licenses/scans/SBOM and hosted CI on the hardened SHA
 - [x] Controlled live Testnet read and Redis recovery on the hardened staged SHA
 - [ ] Independent no-P0/P1 review, immutable RC, and `main` closure
+
+## Independent-review correction — 2026-09-03
+
+The first independent release review rejected the staged candidate before an
+RC tag was created. It found that all browser traffic arrived at the API over
+the same web-proxy socket, so one anonymous client could exhaust the shared
+hourly source bucket for every user. It also found that the boundary reserved
+capacity before validating Origin, method, media, and body schema, allowing
+malformed traffic to consume that shared bucket.
+
+The corrective candidate introduces an authenticated web-to-API proxy identity.
+Railway documents `X-Real-IP` as the client's remote IP at public ingress. That
+value is converted by nginx into a private assertion
+protected by a distinct server-side secret; nginx overwrites attacker-supplied
+internal headers, and the API uses a constant-time secret check plus strict
+single-IP normalization. Direct API requests, forged assertions, malformed
+requests, and preflights fail before reservation. Budget reservation now occurs
+in the route's `preHandler`, after strict request validation. A production-proxy
+gate must prove that exhausting one simulated edge client does not affect a
+second client, attacker proxy headers are overwritten, and direct API access is
+denied. The release remains active until that gate, exact staging proof, and a
+fresh independent no-P0/P1 review all pass.
+
+The corrected local `pnpm release:gate` passes the production dependency audit,
+license policy, release check, lint, type checks, builds, 64 shared / 68 API /
+67 web tests, and all 64 Chromium/WebKit journeys. The exact feature-on
+production containers also pass both browser engines against the TLS-pinned
+fixture and real Redis. A production-proxy isolation probe exhausted client A
+at HTTP 429 while client B still received HTTP 200; attacker-supplied internal
+proxy headers did not select the bucket, and a direct API request without the
+web proxy credential received HTTP 403. This is local candidate evidence only;
+hosted CI, Railway edge-header validation, final staging, and re-review remain
+required.
 
 ## Release boundary
 

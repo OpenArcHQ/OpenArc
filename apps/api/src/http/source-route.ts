@@ -1,14 +1,16 @@
 import { API_MAX_REQUEST_BYTES, API_MAX_RESPONSE_BYTES } from "@openarc/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { timingSafeEqual } from "node:crypto";
 import type { z } from "zod";
 
-import type { SourceBudget, SourceClass, SourceLease, SourceRoute } from "../limits/budget.js";
+import { canonicalPeer, type SourceBudget, type SourceClass, type SourceLease, type SourceRoute } from "../limits/budget.js";
 import { ApiBoundaryError } from "./errors.js";
 import { verifyBrowserOrigin, verifyPreflight } from "./origin.js";
 
 interface SourceContext {
   controller: AbortController;
   timer: ReturnType<typeof setTimeout>;
+  peer: string | undefined;
   lease: SourceLease | undefined;
   cleanup: () => void;
 }
@@ -19,6 +21,7 @@ export interface SourceRouteOptions<Input, Output> {
   route: SourceRoute;
   enabled: boolean;
   appOrigin: string;
+  proxySecret: string;
   budget: SourceBudget | undefined;
   timeoutMs: number;
   requestSchema: z.ZodObject;
@@ -31,6 +34,7 @@ export function registerSourceRoute<Input, Output>(app: FastifyInstance, options
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 100 || options.timeoutMs > 10_000) {
     throw new Error("Invalid source timeout configuration");
   }
+  if (!/^[A-Za-z0-9_-]{32,128}$/u.test(options.proxySecret)) throw new Error("Invalid source proxy configuration");
   const contexts = new WeakMap<FastifyRequest, SourceContext>();
   const finish = (request: FastifyRequest) => {
     const context = contexts.get(request);
@@ -53,14 +57,12 @@ export function registerSourceRoute<Input, Output>(app: FastifyInstance, options
       timer.unref();
       request.raw.once("aborted", abort);
       reply.raw.once("close", close);
-      const context: SourceContext = { controller, timer, lease: undefined, cleanup: () => {
+      const context: SourceContext = { controller, timer, peer: undefined, lease: undefined, cleanup: () => {
         clearTimeout(timer);
         request.raw.off("aborted", abort);
         reply.raw.off("close", close);
       } };
       contexts.set(request, context);
-      // Every enabled attempt, including malformed requests/preflights, is charged first.
-      context.lease = await options.budget.begin(options.source, options.route, request.raw.socket.remoteAddress, controller.signal);
       if (request.method === "OPTIONS") {
         verifyPreflight(request.headers, options.appOrigin, "POST");
         rejectQuery(request);
@@ -84,11 +86,19 @@ export function registerSourceRoute<Input, Output>(app: FastifyInstance, options
       const length = request.headers["content-length"];
       if (length !== undefined && !/^(?:0|[1-9]\d{0,9})$/u.test(length)) throw new ApiBoundaryError("INVALID_REQUEST");
       if (length !== undefined && Number(length) > API_MAX_REQUEST_BYTES) throw new ApiBoundaryError("REQUEST_TOO_LARGE");
+      context.peer = trustedProxyPeer(request.headers["x-openarc-proxy-secret"],
+        request.headers["x-openarc-proxy-client-ip"], options.proxySecret);
     },
     preValidation: async (request) => {
       const result = schema.safeParse(request.body);
       if (!result.success) throw new ApiBoundaryError("INVALID_REQUEST");
       request.body = result.data;
+    },
+    preHandler: async (request) => {
+      const context = contexts.get(request);
+      if (!context || !context.peer || context.controller.signal.aborted) throw new ApiBoundaryError("SOURCE_UNAVAILABLE");
+      // Only a strict, authenticated, executable source request consumes a peer/global reservation.
+      context.lease = await options.budget!.begin(options.source, options.route, context.peer, context.controller.signal);
     },
     onResponse: async (request) => finish(request),
     onTimeout: async (request) => finish(request),
@@ -110,6 +120,20 @@ export function registerSourceRoute<Input, Output>(app: FastifyInstance, options
     }
     return reply.type("application/json; charset=utf-8").send(serialized);
   });
+}
+
+/** Accept only the identity asserted by the authenticated same-service web proxy. */
+export function trustedProxyPeer(suppliedSecret: string | string[] | undefined,
+  suppliedPeer: string | string[] | undefined, expectedSecret: string): string {
+  if (typeof suppliedSecret !== "string" || typeof suppliedPeer !== "string") {
+    throw new ApiBoundaryError("INVALID_ORIGIN");
+  }
+  const supplied = Buffer.from(suppliedSecret);
+  const expected = Buffer.from(expectedSecret);
+  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw new ApiBoundaryError("INVALID_ORIGIN");
+  const peer = canonicalPeer(suppliedPeer);
+  if (peer === "unknown") throw new ApiBoundaryError("INVALID_ORIGIN");
+  return peer;
 }
 
 function rejectQuery(request: FastifyRequest): void {
