@@ -1,7 +1,8 @@
 # M06 — ERC-8183 reference job evidence
 
-Status: implementation, hosted gates, and staging verification passed.
-Not an RC or a public-release readiness claim. Independent review is still required.
+Status: implementation and independent engineering review passed; reviewed
+candidate awaiting final hosted gates and exact-SHA staging verification.
+Earlier candidate staging proof is recorded below. Not yet an RC or a public-release readiness claim.
 Branch: `codex/06-erc8183-job-evidence`, based on M05-complete main `e21ddae68e445bccadc5490593100dbd223bd9a1`.
 
 ## Source review — 2026-09-04
@@ -64,8 +65,8 @@ No signing, transaction broadcasts, payable integrations, new providers, or spen
 - [x] Route, browser client, permission, encrypted-storage, and UI failure tests.
 - [x] Jobs workspace with explicit local-only action association.
 - [x] Full local release gate, production-image tests, scans/SBOM, hosted CI.
-- [x] Exact candidate staging runtime verification.
-- [ ] Independent review without unresolved P0/P1 findings.
+- [ ] Final reviewed candidate staging runtime verification (earlier candidate passed).
+- [x] Independent review without unresolved P0/P1 findings.
 - [ ] Exact RC tag and milestone closeout.
 
 The pinned Node 22 / Redis 8 clean-room release gate passed with 282 shared/API/web
@@ -158,5 +159,24 @@ new service, paid provider, plan, or billing configuration was changed. Independ
 review remains pending, so no M06 RC tag, main merge, or M07 implementation has
 been made.
 
-Staging proof and independent review must be recorded before milestone closeout;
-M07 must not begin before this milestone is closed.
+## Independent engineering review — 2026-09-05
+
+A separate review agent inspected the M06 changes against M05, the deployed
+reference source, privacy/session boundaries, strict schemas, encrypted record
+integrity, and feature gates. It ran 105 focused tests and found no P0/P1 issues.
+Two smaller findings were fixed before the final candidate:
+
+- A malformed source could combine an unassigned provider on a Rejected job with
+  a submission event. The shared schema now requires an assigned provider whenever
+  a submission event is present. Both schema and adapter regression checks reject
+  this combination while preserving legitimate unassigned-provider rejection.
+- Network availability labels now honor every cumulative feature gate; all 16
+  flag combinations are covered instead of claiming lookups in a disabled build.
+
+The independent reviewer rechecked both fixes and passed 66 focused tests, with
+no additional P0/P1 findings. This is engineering peer review, not the external
+application-security audit required for public hardening. Updated Arc/Circle
+primary-source documentation was also reviewed; M07 runtime and mainnet remain off.
+
+Final hosted gates and exact-SHA staging proof must pass before the immutable RC
+is tagged. M07 must not begin before this milestone is closed.

@@ -391,7 +391,9 @@ token
 sending network
 recipient network
 from and to address
-amount
+amount in atomic USDC units
+EIP-3009 nonce
+nullable batch settlement transaction hash (not individual payment proof)
 created and updated times
 source and limitations
 ```
@@ -566,6 +568,14 @@ retrievable. Local action linking occurs in the browser, not server.
 
 The adapter remains compile-time and runtime disabled until approved.
 
+Source refresh (2026-09-05): use the exact
+`GET https://gateway-api-testnet.circle.com/v1/x402/transfers/{id}` REST contract,
+not generic Gateway transfer endpoints or outdated SDK response examples. The
+July 10 API update added nonce and nullable batch transaction hash; the August 26
+search restriction does not require broad search because OpenArc accepts one UUID.
+See the technical specification's dated primary-source links. This clarification
+does not enable M07 or satisfy its account, privacy, cost, and live-proof gates.
+
 When enabled it:
 
 - uses the exact official Testnet API origin;
@@ -577,6 +587,7 @@ When enabled it:
 - validates exact addresses, amount string, and timestamps;
 - returns no authorization payload or reusable signature;
 - never asserts that Gateway completion proves provider fulfillment.
+- never treats a batch transaction hash as a unique individual-payment match.
 
 ## 15. Rate and budget controls
 

@@ -803,7 +803,7 @@ This milestone remains blocked until official mainnet parameters and the externa
 gates in `docs/openarc-technical-spec.md` exist.
 
 Arc has announced a September 16, 2026 public-mainnet launch and was operating a
-private mainnet at the September 1 review date. That announcement does not supply
+private mainnet at the September 5 review date. That announcement does not supply
 the public RPC, CAIP identifier, explorer, contract registry, or capability
 parity needed by this milestone. Milestones 00-10 therefore remain Testnet-only.
 

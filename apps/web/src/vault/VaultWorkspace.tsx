@@ -36,7 +36,7 @@ import { createPortal } from "react-dom";
 
 import type { BuildInfo } from "@openarc/shared";
 
-import { agentRegistryEnabled, agentJobsEnabled, apiBoundaryEnabled, arcObservationEnabled } from "../app/availability.js";
+import { agentRegistryEnabled, agentJobsEnabled, apiBoundaryEnabled, arcObservationEnabled, workspaceSectionUsesNetwork } from "../app/availability.js";
 import { requestJobEvidence } from "../api/job-evidence.js";
 import { JobFinalizationError, runJobPermissionFlow } from "../api/job-permission-flow.js";
 import { requestAgentRegistryEvidence } from "../api/agent-registry.js";
@@ -2199,7 +2199,9 @@ function WorkspaceWait({ label }: { label: string }) {
 }
 
 function SectionHeading({ eyebrow, title, id, children, onLearn }: { eyebrow: string; title: string; id: string; children: ReactNode; onLearn: (target: HTMLElement) => void }) {
-  return <header className="workspace-section-heading"><div><p className="eyebrow">{eyebrow}</p><div className="workspace-title-row"><h1 id={id}>{title}</h1><details className="workspace-info"><summary role="button" aria-label={`About ${title}`} title={`About ${title}`}>i</summary><p>{children}</p></details></div></div><div className="workspace-heading-context"><p>{children}</p><div><span className="workspace-view-status">{["jobs-title", "activity-title", "sources-title"].includes(id) || (id === "agents-title" && AGENT_REGISTRY_ENABLED) ? "EXPLICIT READ-ONLY LOOKUPS" : "ENABLED · LOCAL ONLY"}</span><a href="#workspace-tour" onClick={(event) => { event.preventDefault(); onLearn(event.currentTarget); }}>Learn how this works</a></div></div></header>;
+  const usesNetwork = workspaceSectionUsesNetwork(id, { apiBoundary: API_BOUNDARY_ENABLED,
+    arcObservation: ARC_OBSERVATION_ENABLED, agentRegistry: AGENT_REGISTRY_ENABLED, agentJobs: AGENT_JOBS_ENABLED });
+  return <header className="workspace-section-heading"><div><p className="eyebrow">{eyebrow}</p><div className="workspace-title-row"><h1 id={id}>{title}</h1><details className="workspace-info"><summary role="button" aria-label={`About ${title}`} title={`About ${title}`}>i</summary><p>{children}</p></details></div></div><div className="workspace-heading-context"><p>{children}</p><div><span className="workspace-view-status">{usesNetwork ? "EXPLICIT READ-ONLY LOOKUPS" : "ENABLED · LOCAL ONLY"}</span><a href="#workspace-tour" onClick={(event) => { event.preventDefault(); onLearn(event.currentTarget); }}>Learn how this works</a></div></div></header>;
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {

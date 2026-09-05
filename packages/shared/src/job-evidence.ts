@@ -90,6 +90,7 @@ export const JobEvidenceSchema = z.strictObject({
   if (job.provider === zero && job.budget.explicitlySet) issue(["budget"], "An unassigned provider cannot have set a budget");
   if (job.status === "Expired" && !job.expiry.deadlineReachedAtAnchor) issue(["status"], "Expired state precedes deadline");
   if (job.deliverable.availability === "submission_event") {
+    if (job.provider === zero) issue(["deliverable"], "Submission requires an assigned provider");
     if (job.status === "Open" || job.status === "Funded") issue(["deliverable"], "Submission conflicts with current state");
     if (BigInt(job.deliverable.blockNumber) > BigInt(job.anchor.blockNumber)) issue(["deliverable"], "Submission is after observation");
     if (job.deliverable.blockNumber === job.anchor.blockNumber && job.deliverable.blockHash !== job.anchor.blockHash) {

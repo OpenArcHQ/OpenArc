@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { agentJobsEnabled, agentRegistryEnabled, apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled } from "../src/app/availability.js";
+import { agentJobsEnabled, agentRegistryEnabled, apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled, workspaceSectionUsesNetwork } from "../src/app/availability.js";
 
 describe("encrypted workspace availability", () => {
   it("fails closed unless the build flag is exactly true", () => {
@@ -42,5 +42,19 @@ describe("job evidence availability", () => {
     for (const value of [undefined, "false", "TRUE", "1", false]) expect(agentJobsEnabled(value)).toBe(false);
     expect(agentJobsEnabled("true")).toBe(true);
     expect(agentJobsEnabled(true)).toBe(true);
+  });
+});
+
+describe("workspace section network claims", () => {
+  it("only describes lookups when every cumulative feature gate is enabled", () => {
+    for (const apiBoundary of [false, true]) for (const arcObservation of [false, true])
+      for (const agentRegistry of [false, true]) for (const agentJobs of [false, true]) {
+        const flags = { apiBoundary, arcObservation, agentRegistry, agentJobs };
+        expect(workspaceSectionUsesNetwork("sources-title", flags)).toBe(apiBoundary);
+        expect(workspaceSectionUsesNetwork("activity-title", flags)).toBe(apiBoundary && arcObservation);
+        expect(workspaceSectionUsesNetwork("agents-title", flags)).toBe(apiBoundary && arcObservation && agentRegistry);
+        expect(workspaceSectionUsesNetwork("jobs-title", flags)).toBe(apiBoundary && arcObservation && agentRegistry && agentJobs);
+        expect(workspaceSectionUsesNetwork("policies-title", flags)).toBe(false);
+      }
   });
 });

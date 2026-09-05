@@ -104,12 +104,18 @@ post-quantum wallet signatures, and other privacy modules as roadmap or mainnet
 features. They are not available OpenArc MVP dependencies. The first architecture
 must remain safe on a public transparent testnet.
 
-The official deployment model reviewed on 2026-09-03 identifies Public Testnet
-as the current active network and both Private Mainnet and Public Mainnet as
-upcoming. Official mainnet RPC parameters and contract addresses were not
-published in the network reference. Testnet values must not be copied forward.
+Re-verified 2026-09-05: Arc's dated August 5 announcement says private mainnet is
+already operating and public mainnet is scheduled for September 16, 2026. This
+supersedes the older deployment-model page's "upcoming" private-mainnet label.
+The official RPC reference remains Testnet-only, and the contract reference says
+mainnet addresses are not yet available. An announced launch date is not a
+usable, verified public-mainnet configuration. Testnet values must not be copied forward.
 A separate signed configuration release is required after those values exist
 and the mainnet capability set has been re-verified.
+
+Sources: [launch announcement](https://www.arc.io/blog/arc-mainnet-goes-live-on-september-16-2026),
+[RPC reference](https://docs.arc.io/arc/references/rpc-endpoints),
+[contract reference](https://docs.arc.io/arc/references/contract-addresses).
 
 ## 3. Confirmed agentic and payment surfaces
 
@@ -170,6 +176,19 @@ EIP-3009 authorization under the `GatewayWalletBatched` EIP-712 domain.
 OpenArc stores normalized requirement and response fields plus a digest. It does
 not persist a reusable payment signature, API secret, private key, full paid
 resource body, or sensitive resource URL by default.
+
+September 5 source refresh for the upcoming M07 gate: the exact read endpoint is
+`GET https://gateway-api-testnet.circle.com/v1/x402/transfers/{id}`. Its REST
+response includes a required nonce and a nullable batch-level `txHash`; a shared
+batch hash is not individual-payment or fulfillment proof. Amount is atomic USDC
+units. The July 10 additions supersede older SDK response examples. August 26
+restricted status-only searches; OpenArc's single-UUID boundary avoids them.
+Gateway still lists Arc as Testnet only. No Gateway route or mainnet capability
+is enabled by this documentation update.
+
+Sources: [Gateway release notes](https://developers.circle.com/release-notes/gateway-2026),
+[exact x402 transfer schema](https://developers.circle.com/api-reference/gateway/all/get-x402transfer-by-id),
+[supported blockchains](https://developers.circle.com/gateway/references/supported-blockchains).
 
 ### Circle Wallets and Agent Stack
 

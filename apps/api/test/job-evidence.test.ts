@@ -147,6 +147,22 @@ describe("M06 reviewed reference job evidence", () => {
       .rejects.toMatchObject({ code: "SOURCE_MALFORMED" });
   });
 
+  it("rejects an impossible submission by an unassigned provider on a rejected job", async () => {
+    const rejected = { provider: zero, budget: 0n, status: 4 };
+    const withoutSubmission = await new JobService(sequence({ job: rejected, explicitlySet: false }))
+      .observe(request, lease, signal);
+    expect(withoutSubmission.status).toBe("Rejected");
+    expect(JobEvidenceSchema.safeParse({ ...withoutSubmission, deliverable: {
+      availability: "submission_event", digest, transactionHash: tx,
+      blockNumber: "100", blockHash: anchor.hash, logIndex: "2",
+    } }).success).toBe(false);
+    const impossibleReceipt = { ...receipt, logs: [{ ...submission,
+      topics: [...submission.topics.slice(0, 2), `0x${"0".repeat(64)}`] }] };
+    await expect(new JobService(sequence({ job: rejected, explicitlySet: false, receipt: impossibleReceipt }))
+      .observe({ ...request, submissionTransactionHash: tx }, lease, signal))
+      .rejects.toMatchObject({ code: "SOURCE_MALFORMED" });
+  });
+
   it("rejects response amounts, dates, and source identities that do not match their fields", async () => {
     const result = await new JobService(sequence()).observe(request, lease, signal);
     expect(JobEvidenceSchema.safeParse({ ...result, budget: { ...result.budget, decimal: "1" } }).success).toBe(false);
