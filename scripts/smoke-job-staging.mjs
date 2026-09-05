@@ -41,14 +41,18 @@ try {
     await page.getByLabel("Submission transaction hash (optional)").fill(request.submissionTransactionHash ?? "");
     await page.getByRole("button", { name: "Review job permission" }).click();
     assert.equal(bodies.length, observations.length);
-    const pending = page.waitForResponse((response) => new URL(response.url()).pathname === path && response.request().method() === "POST");
-    await page.getByRole("button", { name: "Approve and observe job" }).click();
-    const response = await pending;
+    // Consume the body as soon as it arrives, before click auto-waiting can let
+    // the application update navigation and Chromium discard the response body.
+    const pending = page.waitForResponse((response) => new URL(response.url()).pathname === path && response.request().method() === "POST")
+      .then(async (response) => ({ response, body: await response.json() }));
+    const [{ response, body }] = await Promise.all([
+      pending, page.getByRole("button", { name: "Approve and observe job" }).click(),
+    ]);
     assert.equal(response.status(), 200, "Staging job lookup must succeed");
     // Nginx and the API each add no-store; repeated identical directives are safe.
     const cacheDirectives = (response.headers()["cache-control"] ?? "").split(",").map((value) => value.trim());
     assert.ok(cacheDirectives.length > 0 && cacheDirectives.every((value) => value === "no-store"));
-    const envelope = JobEvidenceEnvelopeSchema.parse(await response.json());
+    const envelope = JobEvidenceEnvelopeSchema.parse(body);
     assert.equal(envelope.meta.buildSha, expectedSha);
     assert.equal(envelope.data.jobId, request.jobId);
     assert.equal(envelope.data.status, "Completed");
