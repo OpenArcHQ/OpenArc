@@ -32,6 +32,9 @@ async function rawRecords(page: Page) {
 }
 
 test("explicit consent saves encrypted job evidence and preserves exact meanings across unlock", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByText("M06 · JOB EVIDENCE", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Current build status")).toContainText("agent-registry, and reference-job observations");
   const bodies: string[] = [];
   let release: () => void = () => undefined;
   let contact: () => void = () => undefined;

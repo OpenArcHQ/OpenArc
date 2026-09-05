@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { BuildInfo } from "@openarc/shared";
 
 import { FixtureExplorer } from "./evidence/FixtureExplorer.js";
-import { apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled } from "./app/availability.js";
+import { agentJobsEnabled, agentRegistryEnabled, apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled } from "./app/availability.js";
 import { VaultWorkspace } from "./vault/VaultWorkspace.js";
 
 interface AppProps {
@@ -22,6 +22,8 @@ export function App({ build }: AppProps) {
   const [path, setPath] = useState(window.location.pathname);
   const workspaceEnabled = encryptedWorkspaceEnabled();
   const observationEnabled = workspaceEnabled && apiBoundaryEnabled() && arcObservationEnabled();
+  const registryEnabled = observationEnabled && agentRegistryEnabled();
+  const jobsEnabled = registryEnabled && agentJobsEnabled();
 
   useEffect(() => {
     const onPopState = () => setPath(window.location.pathname);
@@ -56,7 +58,7 @@ export function App({ build }: AppProps) {
           {workspaceEnabled ? <a href="/workspace">Workspace</a> : null}
           <a href="#fixture-explorer">Explorer</a>
           <a href="#network">Network</a>
-          <span className="phase">{observationEnabled
+          <span className="phase">{jobsEnabled ? "M06 · JOB EVIDENCE" : registryEnabled ? "M05 · AGENT EVIDENCE" : observationEnabled
             ? "M04 · ARC OBSERVATION"
             : apiBoundaryEnabled() ? "M03 · API PRIVACY BOUNDARY" : "M02 · ENCRYPTED WORKSPACE"}</span>
         </div>
@@ -74,7 +76,9 @@ export function App({ build }: AppProps) {
           <div className="status-row" aria-label="Current build status">
             <span className="status-dot" aria-hidden="true" />
             <strong>{observationEnabled ? "Arc observation available" : "Fixture engine running"}</strong>
-            <span>{observationEnabled
+            <span>{jobsEnabled
+              ? "Explicit, read-only account, transaction, agent-registry, and reference-job observations on Arc Testnet."
+              : registryEnabled ? "Explicit, read-only account, transaction, and agent-registry observations on Arc Testnet." : observationEnabled
               ? "Explicit, read-only account and transaction observations through the privacy boundary."
               : "Six deterministic local cases. Live connectors remain deliberately disabled."}</span>
           </div>

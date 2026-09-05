@@ -173,6 +173,10 @@ Two smaller findings were fixed before the final candidate:
 - Network availability labels now honor every cumulative feature gate; all 16
   flag combinations are covered instead of claiming lookups in a disabled build.
 
+An additional shipped-copy audit found no material overclaim; its stale M04
+landing badge was updated to describe the cumulative M05/M06 build only when the
+matching flags are enabled. The Jobs browser journey checks that feature-on copy.
+
 The independent reviewer rechecked both fixes and passed 66 focused tests, with
 no additional P0/P1 findings. This is engineering peer review, not the external
 application-security audit required for public hardening. Updated Arc/Circle
