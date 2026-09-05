@@ -689,6 +689,16 @@ anchor, USDC interface/precision, fee, finality, coverage, and limitations.
 Displays one fixed-contract ERC-8183 job with roles, budget, expiry, state,
 deliverable digest, source, and Testnet reference limitation.
 
+The digest is shown only when an explicitly supplied submission transaction has
+a matching anchored event; otherwise it is marked not observed because `getJob`
+does not return it. Recorded status, deadline timing, and service quality are
+separate concepts. Default zero and explicitly assigned zero budgets remain
+distinct. A local action link requires an explicit checkbox and never leaves the
+browser, overwrites the action, or asserts matching intent/fulfillment. Permission
+receipt v4 must be encrypted before network contact; observation and completed
+receipt are saved atomically. Lock, import, replacement, and recovery invalidate
+in-flight callbacks. Failed refreshes retain earlier evidence, labeled stale.
+
 ### Payments
 
 Displays requirement, authorization metadata, provider response metadata,

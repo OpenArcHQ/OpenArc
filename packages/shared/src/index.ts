@@ -8,3 +8,4 @@ export * from "./api.js";
 export * from "./permission.js";
 export * from "./arc-observation.js";
 export * from "./agent-registry-evidence.js";
+export * from "./job-evidence.js";

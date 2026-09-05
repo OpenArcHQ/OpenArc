@@ -13,6 +13,9 @@ const usdc = "0x3600000000000000000000000000000000000000";
 const identityRegistry = "0x8004a818bfb912233c491871b3d84c89a494bd9e";
 const reputationRegistry = "0x8004b663056a597dffe9eccc1965a193b7388713";
 const validationRegistry = "0x8004cb1bf31daf7788923b405b754f57aceb4272";
+const jobContract = "0x0747eef0706327138c69792bf28cd525089e4583";
+const jobImplementation = "0xa316fd02827242d537f84730f8a37d0ba5fd351a";
+const implementationSlot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
 const registryOwner = "0x1111111111111111111111111111111111111111";
 const agentWallet = "0x2222222222222222222222222222222222222222";
 const feedbackObserver = "0x3333333333333333333333333333333333333333";
@@ -42,7 +45,7 @@ const validationResult = () => {
   return `0x${abiAddress(validationObserver)}${abiWord(1n)}${abiWord(91n)}${validationResponseHash.slice(2)}${abiWord(headBytes)}${abiWord(123n)}${abiString("benchmark")}`;
 };
 const topic = (value) => `0x${value.slice(2).padStart(64, "0")}`;
-const block = { number: "0x64", hash: blockHash, timestamp: "0x68b86d7f" };
+const block = { number: "0x64", hash: blockHash, timestamp: `0x${1_788_523_200n.toString(16)}` };
 const transaction = { hash: transactionHash, blockHash, blockNumber: "0x64", transactionIndex: "0x2",
   from: address, to, value: "0x0" };
 const log = (emitter, index, value) => ({ address: emitter,
@@ -53,6 +56,8 @@ const receipt = { transactionHash, blockHash, blockNumber: "0x64", transactionIn
   logs: [log(systemEmitter, "0x0", 1_000_000_000_000_000_000n), log(usdc, "0x1", 1_000_000n)] };
 
 function result(method, params) {
+  if (method === "eth_getStorageAt" && params.length === 3 && params[0] === jobContract &&
+    params[1] === implementationSlot && params[2] === "0x64") return singleAddress(jobImplementation);
   if (method === "eth_chainId" && params.length === 0) return "0x4cef52";
   if (method === "eth_getBlockByNumber" && params.length === 2 && params[1] === false &&
     (params[0] === "latest" || params[0] === "0x64")) return block;
@@ -67,6 +72,11 @@ function result(method, params) {
   if (method === "eth_call" && params.length === 2 && params[1] === "0x64") {
     const target = params[0]?.to;
     const data = params[0]?.data;
+    if (target === jobContract && data === "0x3013ce29") return singleAddress(usdc);
+    if (target === jobContract && data === `0xfabc3329${abiWord(1n)}`) return word(1n);
+    if (target === jobContract && data === `0xbf22c457${abiWord(1n)}`) {
+      return `0x${abiWord(32n)}${abiWord(1n)}${abiAddress(registryOwner)}${abiAddress(agentWallet)}${abiAddress(feedbackObserver)}${abiWord(9n * 32n)}${abiWord(1234567890123456789012345n)}${abiWord(1788523200n)}${abiWord(2n)}${abiWord(0n)}${abiString("<script>PUBLIC_UNTRUSTED_JOB_DESCRIPTION</script>")}`;
+    }
     if (target === identityRegistry && data === `0x6352211e${abiWord(1n)}`) return singleAddress(registryOwner);
     if (target === identityRegistry && data === `0xc87b56dd${abiWord(1n)}`) return singleString("https://example.test/agent.json");
     if (target === identityRegistry && data === `0x00339509${abiWord(1n)}`) return singleAddress(agentWallet);

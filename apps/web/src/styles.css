@@ -1658,6 +1658,46 @@ footer code {
   color: #9dccff;
 }
 
+.job-evidence .workspace-list > article {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.job-evidence .workspace-list .source-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+
+.job-evidence .workspace-list dd {
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.65;
+}
+
+.job-evidence .workspace-list code {
+  font-size: 0.8rem;
+}
+
+.job-evidence .workspace-list dt {
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.job-evidence .workspace-list summary {
+  min-height: 44px;
+  cursor: pointer;
+  color: #9dccff;
+}
+
+.job-evidence .workspace-list details[open] .source-facts {
+  margin: 18px 0;
+}
+
+@media (max-width: 900px) {
+  .job-evidence .workspace-list .source-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .field textarea {
   min-height: 110px;
   resize: vertical;

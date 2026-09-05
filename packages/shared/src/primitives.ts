@@ -18,12 +18,12 @@ export const CanonicalIntegerSchema = z
   );
 
 export const Uint256DecimalSchema = CanonicalIntegerSchema.refine(
-  (value) => BigInt(value) <= (1n << 256n) - 1n,
+  (value) => /^(0|[1-9][0-9]{0,77})$/u.test(value) && BigInt(value) <= (1n << 256n) - 1n,
   { message: "Expected an unsigned 256-bit integer" },
 );
 
 export const Uint64DecimalSchema = CanonicalIntegerSchema.refine(
-  (value) => BigInt(value) <= (1n << 64n) - 1n,
+  (value) => /^(0|[1-9][0-9]{0,77})$/u.test(value) && BigInt(value) <= (1n << 64n) - 1n,
   { message: "Expected an unsigned 64-bit integer" },
 );
 

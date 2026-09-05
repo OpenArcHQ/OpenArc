@@ -120,7 +120,16 @@ export const M05CapabilitiesSchema = z.strictObject({
   limits: ApiLimitsSchema,
 });
 
-export const CapabilitiesSchema = z.union([M04CapabilitiesSchema, M05CapabilitiesSchema]);
+// M06 uses the reviewed job source while retaining the cumulative M05 connectors.
+export const M06CapabilitiesSchema = M05CapabilitiesSchema.extend({
+  capabilityVersion: z.literal("openarc.capabilities.m06.v1"),
+  sourceRevision: z.literal("arc-erc8183-reference-2026-09-04"),
+  enabledConnectors: z.tuple([z.literal("arc_primary_rpc"), z.literal("erc8004_registries"), z.literal("erc8183_reference")]),
+  features: z.strictObject({ arcObservation: z.literal(true), agentRegistry: z.literal(true),
+    agentJobs: z.literal(true), gatewayEvidence: z.literal(false) }),
+});
+
+export const CapabilitiesSchema = z.union([M04CapabilitiesSchema, M05CapabilitiesSchema, M06CapabilitiesSchema]);
 
 export const CapabilitiesEnvelopeSchema = z.strictObject({
   ok: z.literal(true),

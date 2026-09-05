@@ -9,6 +9,9 @@ import {
   ArcAccountSnapshotRequestSchema,
   ArcTransactionEvidenceRequestSchema,
   AgentRegistryEvidenceRequestSchema,
+  JobEvidenceRequestSchema, JOB_DISCLOSURE, JOB_EVIDENCE_PATH,
+  compareIsoTimestamps,
+  type JobEvidenceRequest, type JobObservationRecord,
   CAPABILITIES_PATH,
   CAPABILITY_DISCLOSURE,
   type ArcObservationRecord,
@@ -33,7 +36,9 @@ import { createPortal } from "react-dom";
 
 import type { BuildInfo } from "@openarc/shared";
 
-import { agentRegistryEnabled, apiBoundaryEnabled, arcObservationEnabled } from "../app/availability.js";
+import { agentRegistryEnabled, agentJobsEnabled, apiBoundaryEnabled, arcObservationEnabled } from "../app/availability.js";
+import { requestJobEvidence } from "../api/job-evidence.js";
+import { JobFinalizationError, runJobPermissionFlow } from "../api/job-permission-flow.js";
 import { requestAgentRegistryEvidence } from "../api/agent-registry.js";
 import {
   AgentRegistryFinalizationError,
@@ -86,7 +91,7 @@ import type {
   VaultStorageStatus,
 } from "./types.js";
 
-type WorkspaceView = "overview" | "agents" | "activity" | "policies" | "evidence" | "settings" | "sources";
+type WorkspaceView = "overview" | "agents" | "activity" | "policies" | "evidence" | "settings" | "sources" | "jobs";
 type Screen =
   | { phase: "probing" }
   | { phase: "unsupported" }
@@ -114,6 +119,7 @@ const INACTIVITY_MS = 10 * 60 * 1_000;
 const API_BOUNDARY_ENABLED = apiBoundaryEnabled();
 const ARC_OBSERVATION_ENABLED = API_BOUNDARY_ENABLED && arcObservationEnabled();
 const AGENT_REGISTRY_ENABLED = ARC_OBSERVATION_ENABLED && agentRegistryEnabled();
+const AGENT_JOBS_ENABLED = AGENT_REGISTRY_ENABLED && agentJobsEnabled();
 const VIEWS: readonly { id: WorkspaceView; label: string; note: string }[] = [
   { id: "overview", label: "Overview", note: "Local workspace status" },
   { id: "agents", label: "Agents", note: AGENT_REGISTRY_ENABLED ? "Local profiles + registry evidence" : "Owner-supplied profiles" },
@@ -122,6 +128,7 @@ const VIEWS: readonly { id: WorkspaceView; label: string; note: string }[] = [
   { id: "evidence", label: "Evidence", note: "Encrypted fixture records" },
   { id: "settings", label: "Settings", note: "Backup, recovery, delete" },
   ...(API_BOUNDARY_ENABLED ? [{ id: "sources" as const, label: "Sources", note: "Explicit connection checks" }] : []),
+  ...(AGENT_JOBS_ENABLED ? [{ id: "jobs" as const, label: "Jobs", note: "Reference contract evidence" }] : []),
 ];
 
 export function VaultWorkspace({ build }: { build: BuildInfo }) {
@@ -968,6 +975,57 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
     }
   };
 
+  const observeJob = async (request: JobEvidenceRequest,
+    linkedActionRecordId: string | null): Promise<JobObservationRecord | null> => {
+    const current = unlockedRef.current;
+    if (!current || !AGENT_JOBS_ENABLED) return null;
+    const guard = createSessionGuard();
+    let expected = current;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await runJobPermissionFlow({ workspace: current, origin: window.location.origin,
+        request, linkedActionRecordId, signal: guard.signal,
+        assertActive: () => {
+          guard.assertActive();
+          if (unlockedRef.current !== expected) throw new Error("Vault session changed");
+        },
+        save: async (workspace, records, assertActive, signal) => {
+          const saved = await saveWorkspaceRecords(workspace, records, assertActive, signal);
+          assertActive();
+          expected = saved;
+          unlockedRef.current = saved;
+          deadlineRef.current = Date.now() + INACTIVITY_MS;
+          setScreen({ phase: "unlocked", workspace: saved });
+          broadcast("changed", saved.meta.vaultId);
+          return saved;
+        },
+        fetch: requestJobEvidence,
+      });
+      guard.assertActive();
+      setBusy(false);
+      setNotice("Job evidence validated and encrypted locally. Contract status and local action claims remain separate.");
+      return result.observation;
+    } catch (cause) {
+      if (!guard.isActive()) return null;
+      const storageBoundary = cause instanceof JobFinalizationError ? cause.storageCause : cause;
+      if (await handleObservedVaultBoundary(storageBoundary, guard.isActive)) return null;
+      if (!guard.isActive()) return null;
+      setBusy(false);
+      setError(cause instanceof JobFinalizationError
+        ? cause.phase === "completed-request"
+          ? "Job evidence was accepted but could not be saved. The encrypted approval remains; prior evidence was not changed."
+          : "The job request may have reached OpenArc, but its failed outcome could not be saved."
+        : cause instanceof OpenArcRequestError
+          ? cause.phase === "pre-send"
+            ? "The job request was not sent. Check the exact public identifiers and try again."
+            : `No job evidence was accepted (${cause.code}). Prior encrypted evidence remains unchanged.`
+          : vaultErrorMessage(cause));
+      return null;
+    }
+  };
+
   const deleteRecords = async (ids: readonly string[], message: string) => {
     const current = unlockedRef.current;
     if (!current) return false;
@@ -1184,6 +1242,7 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
           onCheckCapabilities={checkCapabilities}
           onObserveArc={observeArc}
           onObserveAgentRegistry={observeAgentRegistry}
+          onObserveJob={observeJob}
           onImport={importBackup}
           onAcceptCreated={acceptCreated}
           onDestroy={destroy}
@@ -1320,6 +1379,7 @@ function WorkspaceViewPanel(props: {
   onObserveArc: (input: ArcObservationInput) => Promise<ArcObservationRecord | null>;
   onObserveAgentRegistry: (request: AgentRegistryEvidenceRequest,
     linkedAgentProfileRecordId: string | null) => Promise<AgentRegistryObservationRecord | null>;
+  onObserveJob: (request: JobEvidenceRequest, linkedActionRecordId: string | null) => Promise<JobObservationRecord | null>;
   onImport: (file: File, backupPassphrase: string, nextPassphrase: string) => Promise<void>;
   onAcceptCreated: (created: CreatedWorkspace, message: string) => void;
   onDestroy: () => Promise<void>;
@@ -1338,6 +1398,7 @@ function WorkspaceViewPanel(props: {
   if (props.view === "policies") return <PoliciesPanel {...props} />;
   if (props.view === "evidence") return <EvidencePanel {...props} />;
   if (props.view === "sources") return <SourcesPanel {...props} />;
+  if (props.view === "jobs") return <JobsPanel {...props} />;
   return <SettingsPanel {...props} />;
 
   function navigateFromPanel(view: WorkspaceView) {
@@ -1360,6 +1421,7 @@ function Overview({ records, onNavigate, onOpenTour }: { records: readonly Works
         <Stat value={counts.evidence} label="Evidence records" />
         {ARC_OBSERVATION_ENABLED ? <Stat value={counts.observations} label="Arc observations" /> : null}
         {AGENT_REGISTRY_ENABLED ? <Stat value={counts.registryObservations} label="Registry evidence" /> : null}
+        {AGENT_JOBS_ENABLED ? <Stat value={counts.jobObservations} label="Job observations" /> : null}
       </div>
       <div className="workspace-callouts">
         <article><span>01</span><h3>Describe an agent</h3><p>Add only what you know and label wallet associations as owner-supplied.</p><button type="button" onClick={() => onNavigate("agents")}>Open Agents →</button></article>
@@ -1543,6 +1605,122 @@ function AgentRegistryPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0]
         <button className="button" type="button" disabled={props.busy} onClick={() => void approve()}>Approve and observe</button></div>
     </Modal> : null}
   </div>;
+}
+
+function JobsPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "workspace" | "busy" | "onObserveJob" | "onDelete" | "onOpenTour">) {
+  const [jobId, setJobId] = useState("");
+  const [submissionHash, setSubmissionHash] = useState("");
+  const [linkedAction, setLinkedAction] = useState("");
+  const [confirmedLink, setConfirmedLink] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [pending, setPending] = useState<{ request: JobEvidenceRequest; linked: string | null } | null>(null);
+  const actions = props.workspace.records.filter((record) => record.kind === "action_envelope");
+  const observations = props.workspace.records.filter((record): record is JobObservationRecord => record.kind === "job_observation")
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const review = (event: FormEvent) => {
+    event.preventDefault();
+    const parsed = JobEvidenceRequestSchema.safeParse({ network: ARC_TESTNET.caip2, jobId,
+      ...(submissionHash ? { submissionTransactionHash: submissionHash } : {}) });
+    if (!parsed.success || (linkedAction && !confirmedLink)) {
+      setValidationError("Use a positive decimal job ID, a complete optional transaction hash, and confirm any local action link.");
+      return;
+    }
+    setValidationError(null);
+    setPending({ request: parsed.data, linked: linkedAction || null });
+  };
+  const approve = async () => {
+    if (!pending) return;
+    const approved = pending;
+    setPending(null);
+    if (await props.onObserveJob(approved.request, approved.linked)) {
+      setJobId(""); setSubmissionHash(""); setLinkedAction(""); setConfirmedLink(false);
+    }
+  };
+  return <section className="workspace-section job-evidence" aria-labelledby="jobs-title">
+    <SectionHeading eyebrow="ARC TESTNET · REVIEWED REFERENCE CONTRACT" title="Jobs" id="jobs-title" onLearn={props.onOpenTour}>
+      See who commissioned, provides, and evaluates a job, its USDC budget, and its recorded status. This covers one ERC-8183 reference deployment—not every Arc job.
+    </SectionHeading>
+    <form className="workspace-form settings-wide" onSubmit={review}>
+      <Field label="ERC-8183 job ID" hint="Use the positive decimal ID from the Arc reference contract. No wallet connection is needed.">
+        <input value={jobId} onChange={(event) => setJobId(event.target.value)} inputMode="numeric" required maxLength={78} />
+      </Field>
+      <Field label="Submission transaction hash (optional)" hint="The job record does not store its deliverable hash. Supply the exact submission transaction to observe that event; nothing is searched automatically.">
+        <input value={submissionHash} onChange={(event) => setSubmissionHash(event.target.value)} maxLength={66} />
+      </Field>
+      {actions.length ? <>
+        <Field label="Link to a local action (optional)" hint="This is your private association, not an onchain conclusion.">
+          <select value={linkedAction} onChange={(event) => { setLinkedAction(event.target.value); setConfirmedLink(false); }}>
+            <option value="">No local action link</option>
+            {actions.map((record) => <option value={record.recordId} key={record.recordId}>{record.action.kind} · {record.action.actionId}</option>)}
+          </select>
+        </Field>
+        {linkedAction ? <label className="confirm-row"><input type="checkbox" checked={confirmedLink}
+          onChange={(event) => setConfirmedLink(event.target.checked)} required /> I explicitly associate this job with this local action. This does not verify matching intent or fulfillment.</label> : null}
+      </> : <p>Local action links become available when this workspace contains action records. You can observe a job without a link.</p>}
+      {validationError ? <p role="alert" className="field-error">{validationError}</p> : null}
+      <button className="button" type="submit" disabled={props.busy}>Review job permission</button>
+    </form>
+    <div className="workspace-list">
+      {observations.length === 0 ? <EmptyState title="No job evidence yet" body="Enter a public job ID and review the request. No jobs are fetched in the background." /> : observations.map((record) => {
+        const job = record.observation;
+        const action = actions.find((candidate) => candidate.recordId === record.linkedActionRecordId);
+        const failedAfter = props.workspace.records.some((candidate) => candidate.kind === "permission_receipt" &&
+          candidate.recordSchema === "openarc.permission-receipt.v4" && candidate.outcome === "failed" &&
+          candidate.released.jobId === job.jobId && compareIsoTimestamps(candidate.resolvedAt ?? candidate.approvedAt, record.createdAt) > 0);
+        return <article key={record.recordId}>
+          <div><p className="eyebrow">{failedAfter ? "STALE · LAST REFRESH FAILED" : "SAVED BLOCK OBSERVATION · NOT LIVE"}</p>
+            <h3>Job {job.jobId}</h3><p>Recorded status: <strong>{job.status}</strong>. This is not a service-quality verdict.</p>
+          </div>
+          <dl className="source-facts">
+            <div><dt>Client · commissions the job</dt><dd><code>{job.client}</code></dd></div>
+            <div><dt>Provider · performs the work</dt><dd><code>{job.provider === `0x${"0".repeat(40)}` ? "Not assigned" : job.provider}</code></dd></div>
+            <div><dt>Evaluator · decides acceptance</dt><dd><code>{job.evaluator}</code></dd></div>
+            <div><dt>Recorded budget</dt><dd>{job.budget.decimal} USDC · {job.budget.explicitlySet ? "Explicitly assigned" : "Default zero; not explicitly assigned"}<br />Not a current escrow balance or net payment amount.</dd></div>
+            <div><dt>Deadline</dt><dd>{job.expiry.timestamp}<br />{job.expiry.deadlineReachedAtAnchor ? "Reached at observation block" : "Not reached at observation block"}. Deadline timing does not change the recorded status.</dd></div>
+            <div><dt>Contract description · untrusted text</dt><dd>{job.description || "No description"}</dd></div>
+            <div><dt>Deliverable digest</dt><dd>{job.deliverable.availability === "submission_event" ? <><code>{job.deliverable.digest}</code><br />Observed submission event; content and quality not verified.</> : "Not observed. getJob does not return a digest."}</dd></div>
+          </dl>
+          {action ? <div className="evidence-claim"><p className="eyebrow">EXPLICIT LOCAL ASSOCIATION · NOT VERIFIED</p>
+            <ExactIdentifier label="Local action" value={action.action.actionId} /><p>Local kind: {action.action.kind}. The contract description above does not overwrite this action or prove that they match.</p></div> : null}
+          <details><summary>Exact source, block, and limitations</summary>
+            <dl className="source-facts">
+              <div><dt>Reference contract</dt><dd><code>{job.source.contract}</code></dd></div>
+              <div><dt>Reviewed implementation</dt><dd><code>{job.source.implementation}</code></dd></div>
+              <div><dt>Hook · not executed</dt><dd><code>{job.hook}</code></dd></div>
+              <div><dt>Observation block</dt><dd>{job.anchor.blockNumber} · <code>{job.anchor.blockHash}</code><br />{job.anchor.blockTimestamp}</dd></div>
+              <div><dt>Observed at</dt><dd>{job.source.observedAt}</dd></div>
+              <div><dt>Source revision</dt><dd>{job.source.sourceRevision}</dd></div>
+              {job.deliverable.availability === "submission_event" ? <div><dt>Submission transaction / log</dt><dd><code>{job.deliverable.transactionHash}</code> · log {job.deliverable.logIndex}</dd></div> : null}
+            </dl>
+            <ul>{job.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul>
+          </details>
+          <div className="row-actions"><button type="button" disabled={props.busy} onClick={() => {
+            setJobId(job.jobId); setSubmissionHash(job.deliverable.availability === "submission_event" ? job.deliverable.transactionHash : "");
+            setLinkedAction(record.linkedActionRecordId ?? ""); setConfirmedLink(false);
+          }}>Load identifiers to refresh</button>
+            <button type="button" className="danger-link" disabled={props.busy} onClick={() => void props.onDelete(
+              [record.recordId, record.permissionReceiptId], "Job evidence and its permission receipt deleted.")}>Delete job evidence</button></div>
+        </article>;
+      })}
+    </div>
+    {pending ? <Modal title="Allow this job observation?" onClose={() => setPending(null)}>
+      <p>Read one job from the fixed Arc Testnet reference contract. Nothing is signed, funded, submitted, or broadcast.</p>
+      <dl className="permission-disclosure">
+        <div><dt>OpenArc request</dt><dd><code>POST {JOB_EVIDENCE_PATH}</code></dd></div>
+        <div><dt>Upstream source</dt><dd><code>{ARC_TESTNET.rpcHttp}</code></dd></div>
+        <div><dt>Released network and job ID</dt><dd>{pending.request.network} · {pending.request.jobId}</dd></div>
+        {pending.request.submissionTransactionHash ? <div><dt>Released submission transaction</dt><dd><code>{pending.request.submissionTransactionHash}</code></dd></div> : null}
+        <div><dt>Local action link, labels, and notes</dt><dd>Not released</dd></div>
+        <div><dt>Credentials</dt><dd>Omitted; no cookies, wallet connection, private key, or account token</dd></div>
+        <div><dt>OpenArc retention</dt><dd>{JOB_DISCLOSURE.openArcRetention}</dd></div>
+        <div><dt>Provider handling</dt><dd>{JOB_DISCLOSURE.providerRetention}</dd></div>
+        <div><dt>Network metadata</dt><dd>{JOB_DISCLOSURE.hostingMetadata}</dd></div>
+      </dl>
+      <p>The approval is encrypted first. If saving it fails, no lookup is sent. A failed lookup never replaces earlier evidence.</p>
+      <div className="modal-actions"><button type="button" onClick={() => setPending(null)}>Cancel</button>
+        <button className="button" type="button" disabled={props.busy} onClick={() => void approve()}>Approve and observe job</button></div>
+    </Modal> : null}
+  </section>;
 }
 
 function PoliciesPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0], "workspace" | "busy" | "onSave" | "onDelete" | "onOpenTour">) {
@@ -2021,7 +2199,7 @@ function WorkspaceWait({ label }: { label: string }) {
 }
 
 function SectionHeading({ eyebrow, title, id, children, onLearn }: { eyebrow: string; title: string; id: string; children: ReactNode; onLearn: (target: HTMLElement) => void }) {
-  return <header className="workspace-section-heading"><div><p className="eyebrow">{eyebrow}</p><div className="workspace-title-row"><h1 id={id}>{title}</h1><details className="workspace-info"><summary role="button" aria-label={`About ${title}`} title={`About ${title}`}>i</summary><p>{children}</p></details></div></div><div className="workspace-heading-context"><p>{children}</p><div><span className="workspace-view-status">ENABLED · LOCAL ONLY</span><a href="#workspace-tour" onClick={(event) => { event.preventDefault(); onLearn(event.currentTarget); }}>Learn how this works</a></div></div></header>;
+  return <header className="workspace-section-heading"><div><p className="eyebrow">{eyebrow}</p><div className="workspace-title-row"><h1 id={id}>{title}</h1><details className="workspace-info"><summary role="button" aria-label={`About ${title}`} title={`About ${title}`}>i</summary><p>{children}</p></details></div></div><div className="workspace-heading-context"><p>{children}</p><div><span className="workspace-view-status">{["jobs-title", "activity-title", "sources-title"].includes(id) || (id === "agents-title" && AGENT_REGISTRY_ENABLED) ? "EXPLICIT READ-ONLY LOOKUPS" : "ENABLED · LOCAL ONLY"}</span><a href="#workspace-tour" onClick={(event) => { event.preventDefault(); onLearn(event.currentTarget); }}>Learn how this works</a></div></div></header>;
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
@@ -2057,6 +2235,7 @@ function recordCounts(records: readonly WorkspaceRecord[]) {
     evidence: records.filter((record) => record.kind === "evidence_record").length,
     observations: records.filter((record) => record.kind === "arc_observation").length,
     registryObservations: records.filter((record) => record.kind === "agent_registry_observation").length,
+    jobObservations: records.filter((record) => record.kind === "job_observation").length,
   };
 }
 

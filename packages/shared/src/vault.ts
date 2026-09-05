@@ -8,6 +8,7 @@ import {
 import { ARC_TESTNET } from "./network.js";
 import { ArcAccountSnapshotSchema, ArcTransactionEvidenceSchema } from "./arc-observation.js";
 import { AgentRegistryEvidenceSchema } from "./agent-registry-evidence.js";
+import { JobEvidenceSchema } from "./job-evidence.js";
 import { PermissionReceiptRecordSchema } from "./permission.js";
 import { VaultRevisionSchema, WorkspaceRecordIdSchema } from "./workspace-primitives.js";
 export { VaultRevisionSchema, WorkspaceRecordIdSchema } from "./workspace-primitives.js";
@@ -98,6 +99,21 @@ export const AgentRegistryObservationRecordSchema = z.strictObject({
   observation: AgentRegistryEvidenceSchema,
 });
 
+export const JobObservationRecordSchema = z.strictObject({
+  ...recordBase,
+  recordSchema: z.literal("openarc.job-observation-record.v1"),
+  kind: z.literal("job_observation"),
+  permissionReceiptId: WorkspaceRecordIdSchema,
+  // This relationship is an explicit local user claim, never an onchain inference.
+  linkedActionRecordId: WorkspaceRecordIdSchema.nullable(),
+  linkBasis: z.literal("explicit_local_confirmation").nullable(),
+  observation: JobEvidenceSchema,
+}).superRefine((record, context) => {
+  if ((record.linkedActionRecordId === null) !== (record.linkBasis === null)) {
+    context.addIssue({ code: "custom", message: "A local action link requires explicit confirmation" });
+  }
+});
+
 export const SentinelRecordSchema = z.strictObject({
   ...recordBase,
   kind: z.literal("sentinel"),
@@ -129,6 +145,7 @@ const WorkspaceRecordVariantSchema = z.union([
   PermissionReceiptRecordSchema,
   ArcObservationRecordSchema,
   AgentRegistryObservationRecordSchema,
+  JobObservationRecordSchema,
 ]);
 
 export const WorkspaceRecordSchema = WorkspaceRecordVariantSchema.superRefine((record, context) => {
@@ -151,3 +168,4 @@ export type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
 export type WorkspaceSettingsRecord = z.infer<typeof WorkspaceSettingsRecordSchema>;
 export type ArcObservationRecord = z.infer<typeof ArcObservationRecordSchema>;
 export type AgentRegistryObservationRecord = z.infer<typeof AgentRegistryObservationRecordSchema>;
+export type JobObservationRecord = z.infer<typeof JobObservationRecordSchema>;

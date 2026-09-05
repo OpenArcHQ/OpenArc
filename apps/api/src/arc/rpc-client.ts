@@ -9,6 +9,7 @@ export const ARC_RPC_METHODS = [
   "eth_chainId",
   "eth_getBalance",
   "eth_call",
+  "eth_getStorageAt",
   "eth_getBlockByNumber",
   "eth_getBlockByHash",
   "eth_getTransactionByHash",

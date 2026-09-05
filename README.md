@@ -1,7 +1,7 @@
 # OpenArc marketing and technical product package
 
-Status: **Milestone 03 API/privacy boundary active; live Arc sources disabled**
-Prepared: **2026-08-15; network facts re-verified 2026-09-01**
+Status: **M05 complete on staging; M06 reference job evidence in release verification**
+Prepared: **2026-08-15; ERC-8183 reference reviewed 2026-09-04**
 
 OpenArc is the proposed private intelligence, policy, and investigation layer for
 autonomous finance on Arc. It is designed to bring an agent's permissions,
@@ -34,20 +34,25 @@ parity, and a separately reviewed mainnet release exist.
 
 ## Current implementation
 
-The immutable Milestone 00 foundation, Milestone 01 evidence engine, and Milestone
-02 encrypted local workspace are complete. Milestone 03 is building the
-consent-first API/privacy boundary without introducing a live connector:
+Milestones 00–05 are complete: foundation, evidence engine, encrypted local
+workspace, consent-first API boundary, Arc account/transaction observations,
+and ERC-8004 registry evidence. M06 adds fixed-reference ERC-8183 job evidence
+behind the default-off `AGENT_JOBS_ENABLED` / `VITE_AGENT_JOBS_ENABLED` flags.
+Its source review and remaining release gates are recorded in
+[`docs/releases/06-erc8183-job-evidence.md`](docs/releases/06-erc8183-job-evidence.md).
+This is not a public-release or mainnet readiness claim.
 
 - `packages/shared` owns the fail-closed Arc Testnet registry and primitive
   schemas, versioned evidence records, append-only action states, deterministic
   reconciliation, and exact local policy evaluation.
-- `apps/api` is a Fastify health/readiness shell with no provider calls or user
-  persistence.
+- `apps/api` uses bounded, fixed public Testnet reads only when the corresponding
+  connector is enabled and a browser request crosses the consent/proxy/rate-limit
+  boundary. It does not persist workspace or evidence bodies.
 - `apps/web` exposes six synthetic complete, missing, conflicting, expired,
   failed, and refunded cases as an accessible chronological list plus an exact
-  graph summary. The separately flagged M02 workspace uses only browser-local
-  WebCrypto and IndexedDB; neither surface makes an API, RPC, wallet, or
-  analytics call.
+  graph summary. The encrypted workspace uses browser-local WebCrypto and
+  IndexedDB. Source-enabled builds require explicit consent per API lookup;
+  approval is encrypted before contact. There are no wallet-signing or analytics calls.
 - `.github/workflows/release-gates.yml`, production Dockerfiles, Chromium and
   WebKit journeys, license/audit checks, image scans, and SBOM generation form
   the initial verification boundary.

@@ -78,6 +78,15 @@ export const ARC_ERC8004 = Object.freeze({
   contractsRevision: "b9e466c250744a7e06b13dff9d3c2844ed64f825",
 } as const);
 
+/** Reviewed deployed reference, not an assertion about every ERC-8183 deployment. */
+export const ARC_ERC8183 = Object.freeze({
+  reviewedAt: "2026-09-04",
+  sourceRevision: "arc-erc8183-reference-2026-09-04",
+  implementation: "0xa316fd02827242d537f84730f8a37d0ba5fd351a",
+  implementationSlot: "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+  sourceSha256: "a16ae3290855910a4c06a59fa691d1d2b56b534e744f15b6f73a6a06ccb1bec4",
+} as const);
+
 /**
  * M00 intentionally exports one network only. Public-mainnet parameters and
  * contract addresses were not published in the official Arc references at the

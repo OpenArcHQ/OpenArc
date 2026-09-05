@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { agentRegistryEnabled, apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled } from "../src/app/availability.js";
+import { agentJobsEnabled, agentRegistryEnabled, apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled } from "../src/app/availability.js";
 
 describe("encrypted workspace availability", () => {
   it("fails closed unless the build flag is exactly true", () => {
@@ -34,5 +34,13 @@ describe("agent registry availability", () => {
     for (const value of [undefined, "false", "TRUE", "1", false]) expect(agentRegistryEnabled(value)).toBe(false);
     expect(agentRegistryEnabled("true")).toBe(true);
     expect(agentRegistryEnabled(true)).toBe(true);
+  });
+});
+
+describe("job evidence availability", () => {
+  it("fails closed unless the build flag is exactly true", () => {
+    for (const value of [undefined, "false", "TRUE", "1", false]) expect(agentJobsEnabled(value)).toBe(false);
+    expect(agentJobsEnabled("true")).toBe(true);
+    expect(agentJobsEnabled(true)).toBe(true);
   });
 });

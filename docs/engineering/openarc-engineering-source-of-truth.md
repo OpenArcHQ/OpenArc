@@ -697,6 +697,17 @@ Exit gate:
 
 ### Milestone 06 - ERC-8183 job evidence
 
+Deployed-reference clarification (2026-09-04): `getJob()` does not expose a
+deliverable digest. Accept an optional explicit `submissionTransactionHash` on
+the job-evidence request and extract only an exact, successful, anchored
+`JobSubmitted` event from the fixed reference contract. Without that receipt,
+show the digest as not observed. No broad event scanning or external content
+fetching. Pin the reviewed EIP-1967 implementation at observation/submission
+anchors and validate the fixed USDC payment token. Zero budgets are valid;
+deadline timing is separate from recorded status. See
+[`06-erc8183-job-evidence.md`](../releases/06-erc8183-job-evidence.md) for the
+deployed source review and precise bounds.
+
 Build:
 
 - fixed Testnet reference-contract job reads;

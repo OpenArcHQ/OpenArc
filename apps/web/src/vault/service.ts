@@ -567,12 +567,14 @@ function assertWorkspaceRelationships(
   const permissions = parsedRecords.filter((record) => record.kind === "permission_receipt");
   const observations = parsedRecords.filter((record) => record.kind === "arc_observation");
   const registryObservations = parsedRecords.filter((record) => record.kind === "agent_registry_observation");
+  const jobObservations = parsedRecords.filter((record) => record.kind === "job_observation");
   requireUnique(agents.map((record) => record.agentId));
   requireUnique(policies.map((record) => record.policy.policyId));
   requireUnique(actions.map((record) => record.action.actionId));
   requireUnique(evidence.map((record) => record.evidence.evidenceId));
   requireUnique(observations.map((record) => record.permissionReceiptId));
   requireUnique(registryObservations.map((record) => record.permissionReceiptId));
+  requireUnique(jobObservations.map((record) => record.permissionReceiptId));
 
   const permissionById = new Map(permissions.map((record) => [record.recordId, record]));
   for (const observation of observations) {
@@ -599,6 +601,20 @@ function assertWorkspaceRelationships(
       (permission.released.feedbackQuery?.feedbackIndex ?? null) !== (observation.observation.feedback?.feedbackIndex ?? null) ||
       (permission.released.validationRequestHash ?? null) !== (observation.observation.validation?.requestHash ?? null) ||
       (observation.linkedAgentProfileRecordId !== null && !agentRecordIds.has(observation.linkedAgentProfileRecordId))) {
+      invalidRelationships();
+    }
+  }
+
+  const actionRecordIds = new Set(actions.map((record) => record.recordId));
+  for (const observation of jobObservations) {
+    const permission = permissionById.get(observation.permissionReceiptId);
+    const deliverable = observation.observation.deliverable;
+    if (!permission || permission.recordSchema !== "openarc.permission-receipt.v4" ||
+      permission.outcome !== "completed" || permission.released.network !== observation.observation.network ||
+      permission.released.jobId !== observation.observation.jobId ||
+      (permission.released.submissionTransactionHash ?? null) !==
+        (deliverable.availability === "submission_event" ? deliverable.transactionHash : null) ||
+      (observation.linkedActionRecordId !== null && !actionRecordIds.has(observation.linkedActionRecordId))) {
       invalidRelationships();
     }
   }

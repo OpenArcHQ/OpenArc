@@ -9,6 +9,8 @@ import {
   type ArcAccountSnapshotEnvelope, type ArcAccountSnapshotRequest,
   type ArcTransactionEvidenceEnvelope, type ArcTransactionEvidenceRequest,
   type AgentRegistryEvidenceEnvelope, type AgentRegistryEvidenceRequest,
+  ARC_ERC8183, JOB_EVIDENCE_PATH, JobEvidenceRequestSchema, JobEvidenceEnvelopeSchema,
+  type JobEvidenceRequest,
 } from "@openarc/shared";
 import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
@@ -16,6 +18,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import type { ApiConfig } from "./config.js";
 import type { ArcAccountService } from "./arc/account-service.js";
 import type { AgentRegistryService } from "./arc/agent-registry-service.js";
+import type { JobService } from "./arc/job-service.js";
 import type { ArcTransactionService } from "./arc/transaction-service.js";
 import { ApiBoundaryError, apiErrorEnvelope, normalizeApiError } from "./http/errors.js";
 import { verifyBrowserOrigin, verifyPreflight } from "./http/origin.js";
@@ -43,10 +46,10 @@ export interface CreateAppOptions {
   arcAccountService?: ArcAccountService;
   arcTransactionService?: ArcTransactionService;
   agentRegistryService?: AgentRegistryService;
+  jobService?: JobService;
 }
 
 const disabledPaths = [
-  "/v1/private/arc/job-evidence",
   "/v1/private/gateway/transfer-evidence",
 ] as const;
 
@@ -59,12 +62,13 @@ function routeClass(url: string): RouteClass {
   if (path === ARC_ACCOUNT_SNAPSHOT_PATH) return "arc_account";
   if (path === ARC_TRANSACTION_EVIDENCE_PATH) return "arc_transaction";
   if (path === AGENT_REGISTRY_EVIDENCE_PATH) return "agent_registry";
+  if (path === JOB_EVIDENCE_PATH) return "agent_job";
   if (disabledPaths.some((candidate) => candidate === path)) return "disabled_source";
   return "not_found";
 }
 
 export function createApp({ config, logger = config.NODE_ENV !== "test", logSink, metrics = new AggregateMetrics(),
-  sourceBudget, arcAccountService, arcTransactionService, agentRegistryService }: CreateAppOptions): FastifyInstance {
+  sourceBudget, arcAccountService, arcTransactionService, agentRegistryService, jobService }: CreateAppOptions): FastifyInstance {
   // Framework request/error logging is disabled, including parser failures.
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: API_MAX_REQUEST_BYTES,
     requestIdHeader: false, genReqId: () => randomUUID(), exposeHeadRoutes: false,
@@ -133,14 +137,14 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
     reply.header("Vary", "Origin");
   } }, async (request) => CapabilitiesEnvelopeSchema.parse({
     ok: true,
-    data: { capabilityVersion: config.AGENT_REGISTRY_ENABLED ? "openarc.capabilities.m05.v1" : "openarc.capabilities.m04.v1",
+    data: { capabilityVersion: config.AGENT_JOBS_ENABLED ? "openarc.capabilities.m06.v1" : config.AGENT_REGISTRY_ENABLED ? "openarc.capabilities.m05.v1" : "openarc.capabilities.m04.v1",
       environment: "testnet", network: ARC_TESTNET.caip2,
-      sourceRevision: config.AGENT_REGISTRY_ENABLED ? ARC_ERC8004.sourceRevision : ARC_TESTNET.sourceRevision,
+      sourceRevision: config.AGENT_JOBS_ENABLED ? ARC_ERC8183.sourceRevision : config.AGENT_REGISTRY_ENABLED ? ARC_ERC8004.sourceRevision : ARC_TESTNET.sourceRevision,
       reviewedAt: config.AGENT_REGISTRY_ENABLED ? ARC_ERC8004.reviewedAt : ARC_TESTNET.reviewedAt,
-      writes: false, enabledConnectors: config.AGENT_REGISTRY_ENABLED
+      writes: false, enabledConnectors: config.AGENT_JOBS_ENABLED ? ["arc_primary_rpc", "erc8004_registries", "erc8183_reference"] : config.AGENT_REGISTRY_ENABLED
         ? ["arc_primary_rpc", "erc8004_registries"] : config.ARC_OBSERVATION_ENABLED ? ["arc_primary_rpc"] : [],
       features: { arcObservation: config.ARC_OBSERVATION_ENABLED, agentRegistry: config.AGENT_REGISTRY_ENABLED,
-        agentJobs: false, gatewayEvidence: false },
+        agentJobs: config.AGENT_JOBS_ENABLED, gatewayEvidence: false },
       limits: { requestBytes: API_MAX_REQUEST_BYTES, responseBytes: API_MAX_RESPONSE_BYTES,
         sourceResponseBytes: config.SOURCE_MAX_RESPONSE_BYTES, sourceTimeoutMs: config.SOURCE_TIMEOUT_MS,
         sourceMaxSubcalls: config.SOURCE_MAX_SUBCALLS, requestsPerPeerHour: config.REQUESTS_PER_IP_HOUR,
@@ -190,6 +194,21 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
   } else {
     app.all(AGENT_REGISTRY_EVIDENCE_PATH,
       { onRequest: async () => { throw new ApiBoundaryError("FEATURE_DISABLED"); } }, async () => undefined);
+  }
+
+  if (config.AGENT_JOBS_ENABLED) {
+    if (!sourceBudget || !jobService) throw new Error("Job evidence dependencies are unavailable");
+    registerSourceRoute<JobEvidenceRequest, ReturnType<typeof JobEvidenceEnvelopeSchema.parse>>(app, {
+      path: JOB_EVIDENCE_PATH, source: "arc_rpc", route: "agent_job", enabled: true,
+      appOrigin: config.APP_ORIGIN, proxySecret: config.SOURCE_PROXY_SECRET!, budget: sourceBudget,
+      timeoutMs: config.SOURCE_TIMEOUT_MS, requestSchema: JobEvidenceRequestSchema,
+      responseSchema: JobEvidenceEnvelopeSchema,
+      execute: async (input, context) => ({ ok: true as const,
+        data: await jobService.observe(input, context.lease, context.signal),
+        meta: { schemaVersion: API_SCHEMA_VERSION, requestId: context.requestId, buildSha: config.COMMIT_SHA } }),
+    });
+  } else {
+    app.all(JOB_EVIDENCE_PATH, { onRequest: async () => { throw new ApiBoundaryError("FEATURE_DISABLED"); } }, async () => undefined);
   }
 
   for (const path of disabledPaths) {

@@ -41,6 +41,8 @@ import {
 import { VaultError } from "../src/vault/errors.js";
 import { runArcObservationPermissionFlow } from "../src/api/arc-permission-flow.js";
 import { OpenArcRequestError } from "../src/api/client.js";
+import { runJobPermissionFlow } from "../src/api/job-permission-flow.js";
+import { jobTestEnvelope, JOB_TEST_REQUEST } from "../../../test-fixtures/job-evidence.js";
 import {
   assertWorkspaceIntegrity,
   createAgentProfileRecord,
@@ -144,6 +146,40 @@ afterEach(async () => {
 });
 
 describe("encrypted local workspace", () => {
+  it("round-trips M06 job consent and evidence through backup, recovery, and paired deletion", async () => {
+    const created = await createLocalWorkspace(originalPassphrase);
+    const result = await runJobPermissionFlow({ workspace: created, origin: "https://app.example.test",
+      request: JOB_TEST_REQUEST, linkedActionRecordId: null, signal: new AbortController().signal,
+      assertActive: () => undefined, save: saveWorkspaceRecords, fetch: async () => jobTestEnvelope() });
+    const plaintext = JSON.stringify(await readRawDatabase());
+    expect(plaintext).not.toContain("PUBLIC_UNTRUSTED_JOB_DESCRIPTION");
+    expect(plaintext).not.toContain("arc_job_evidence");
+    const backup = await exportLocalWorkspace(result.workspace, backupPassphrase);
+    expect(JSON.stringify(backup)).not.toContain(jobTestEnvelope().data.client);
+    const imported = await importLocalWorkspace(backup, backupPassphrase, restoredPassphrase, result.workspace.meta);
+    const recovered = await recoverLocalWorkspace(imported.meta, imported.recoverySecret, originalPassphrase);
+    expect(recovered.records).toContainEqual(expect.objectContaining({ kind: "job_observation", recordId: result.observation.recordId }));
+    await expect(deleteWorkspaceRecords(recovered, [result.receipt.recordId])).rejects.toMatchObject({ code: "INVALID_BACKUP" });
+    const deleted = await deleteWorkspaceRecords(recovered, [result.receipt.recordId, result.observation.recordId]);
+    expect(deleted.records.some((record) => record.kind === "job_observation")).toBe(false);
+  });
+
+  it("rejects orphan, mismatched, duplicate, or nonexistent local job associations", async () => {
+    const created = await createLocalWorkspace(originalPassphrase);
+    const result = await runJobPermissionFlow({ workspace: created, origin: "https://app.example.test",
+      request: JOB_TEST_REQUEST, linkedActionRecordId: null, signal: new AbortController().signal,
+      assertActive: () => undefined, save: saveWorkspaceRecords, fetch: async () => jobTestEnvelope() });
+    const observation = result.observation;
+    for (const records of [
+      result.workspace.records.filter((record) => record.recordId !== result.receipt.recordId),
+      result.workspace.records.map((record) => record.recordId === observation.recordId
+        ? { ...observation, observation: { ...observation.observation, jobId: "2" } } : record),
+      [...result.workspace.records, { ...observation, recordId: crypto.randomUUID() }],
+      result.workspace.records.map((record) => record.recordId === observation.recordId
+        ? { ...observation, linkedActionRecordId: crypto.randomUUID(), linkBasis: "explicit_local_confirmation" as const } : record),
+    ]) expect(() => assertWorkspaceIntegrity(records)).toThrow(VaultError);
+  });
+
   it("normalizes Unicode passphrases and rejects control or edge whitespace", () => {
     expect(validatePassphrase("Cafe\u0301 workspace passphrase")).toBe("Café workspace passphrase");
     expect(() => validatePassphrase(" leading workspace passphrase")).toThrow(VaultError);

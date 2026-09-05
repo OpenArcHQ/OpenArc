@@ -366,9 +366,16 @@ facts only when requested by route version and within fixed caps.
 
 ### `POST /v1/private/arc/job-evidence`
 
-Request contains network plus one base-10 job ID. The Testnet reference contract
-is fixed. Response includes exact job fields and the explicit reference-contract
-limitation.
+Request contains network, one positive canonical uint256 decimal job ID, and
+optional `submissionTransactionHash`. The Testnet reference contract and reviewed
+EIP-1967 implementation are fixed. Seven bounded calls read the job; at most
+eleven also verify the exact submission receipt and its historical implementation.
+The payment token must be the fixed six-decimal USDC contract. Zero budget is
+valid; `jobHasBudget` distinguishes default from explicitly assigned zero.
+Response includes exact job fields and the explicit reference-contract limitation.
+`getJob` does not return a deliverable digest: without an exact matching
+`JobSubmitted` receipt event the response says `not_observed`. Deadline timing
+is not a synthesized status transition. See the M06 release source review.
 
 ### `POST /v1/private/gateway/transfer-evidence`
 
@@ -551,8 +558,9 @@ It validates:
 - exact supported status enum;
 - contract and anchor identity.
 
-Deliverable hashes are evidence of submitted bytes, not proof of deliverable
-quality or retrievability. Local action linking occurs in the browser, not server.
+Deliverable hashes are bytes32 claims emitted in a matching submission event,
+not proof that the underlying content exists, has a particular quality, or is
+retrievable. Local action linking occurs in the browser, not server.
 
 ## 14. Gateway adapter
 

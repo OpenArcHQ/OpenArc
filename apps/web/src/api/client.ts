@@ -7,6 +7,7 @@ import {
   type ARC_ACCOUNT_SNAPSHOT_PATH,
   type ARC_TRANSACTION_EVIDENCE_PATH,
   type AGENT_REGISTRY_EVIDENCE_PATH,
+  type JOB_EVIDENCE_PATH,
   type CAPABILITIES_PATH,
 } from "@openarc/shared";
 
@@ -22,7 +23,7 @@ export class OpenArcRequestError extends Error {
 
 export type OpenArcFetch = typeof fetch;
 type AllowedPath = typeof CAPABILITIES_PATH | typeof ARC_ACCOUNT_SNAPSHOT_PATH |
-  typeof ARC_TRANSACTION_EVIDENCE_PATH | typeof AGENT_REGISTRY_EVIDENCE_PATH;
+  typeof ARC_TRANSACTION_EVIDENCE_PATH | typeof AGENT_REGISTRY_EVIDENCE_PATH | typeof JOB_EVIDENCE_PATH;
 type RuntimeSchema<T> = {
   parse(value: unknown): T;
   safeParse(value: unknown): { success: true; data: T } | { success: false };

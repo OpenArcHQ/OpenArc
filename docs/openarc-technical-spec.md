@@ -142,6 +142,13 @@ deliverable hash, and settlement state. OpenArc can observe this reference
 contract as an optional evidence source, but must label it a Testnet reference
 implementation rather than a universal Arc job standard or production guarantee.
 
+The deployed `getJob()` tuple does not include a deliverable digest. M06 only
+extracts it from an explicitly supplied, matching `JobSubmitted` transaction
+receipt, with fixed implementation and anchor checks. Otherwise the digest is
+not observed. Zero budget is valid; passing the deadline does not automatically
+change the recorded job state. See the controlling engineering specification
+and M06 release source review for exact deployed semantics.
+
 ### x402 and Gateway Nanopayments
 
 x402 is the HTTP payment negotiation protocol. It does not by itself settle

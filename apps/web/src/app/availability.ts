@@ -21,3 +21,9 @@ export function agentRegistryEnabled(
 ): boolean {
   return value === true || value === "true";
 }
+
+export function agentJobsEnabled(
+  value: string | boolean | undefined = import.meta.env.VITE_AGENT_JOBS_ENABLED,
+): boolean {
+  return value === true || value === "true";
+}

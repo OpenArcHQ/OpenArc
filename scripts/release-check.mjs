@@ -382,7 +382,7 @@ for (const requiredToken of [
 }
 for (const requiredToken of [
   "openarc-web-m05:ci", "VITE_AGENT_REGISTRY_ENABLED=true", "AGENT_REGISTRY_ENABLED=true",
-  "SOURCE_MAX_SUBCALLS=10", "e2e:agent-registry:production", '"agentRegistry":true',
+  "SOURCE_MAX_SUBCALLS=11", "e2e:agent-registry:production", '"agentRegistry":true',
   "image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m05:ci",
   "openarc-web-m05:ci -o cyclonedx-json > sbom-web-m05.cdx.json",
 ]) {
@@ -390,6 +390,23 @@ for (const requiredToken of [
 }
 
 const networkSource = await readFile(path.join(root, "packages/shared/src/network.ts"), "utf8");
+for (const requiredToken of [
+  "openarc-web-m06:ci", "VITE_AGENT_JOBS_ENABLED=true", "AGENT_JOBS_ENABLED=true",
+  "SOURCE_MAX_SUBCALLS=11", "e2e:job-evidence:production", '"agentJobs":true',
+  "image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m06:ci",
+  "openarc-web-m06:ci -o cyclonedx-json > sbom-web-m06.cdx.json",
+]) {
+  if (!m02WorkflowSource.includes(requiredToken)) failures.push(`Hosted M06 exact-source/image gate is missing ${requiredToken}`);
+}
+for (const [file, tokens] of [
+  ["apps/api/src/arc/job-service.ts", ["requireImplementation", "jobHasBudget", "requireSameBlock", "JobSubmitted(uint256,address,bytes32)"]],
+  ["packages/shared/src/job-evidence.ts", ["not_returned_by_getJob", "deadlineReachedAtAnchor", "explicitlySet"]],
+  ["apps/web/src/api/job-permission-flow.ts", ["openarc.permission-receipt.v4", "options.assertActive()", "explicit_local_confirmation"]],
+  ["apps/web/src/vault/service.ts", ["job_observation", "openarc.permission-receipt.v4", "linkedActionRecordId"]],
+]) {
+  const source = await readFile(path.join(root, file), "utf8");
+  for (const token of tokens) if (!source.includes(token)) failures.push(`M06 ${file} is missing ${token}`);
+}
 for (const requiredValue of ["5042002", "0x4cef52", "https://rpc.testnet.arc.io"]) {
   if (!networkSource.includes(requiredValue)) failures.push(`Network registry is missing ${requiredValue}`);
 }
@@ -489,4 +506,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log("[release-check] M05 ERC-8004 agent evidence, M04 Arc observation, M03 API/privacy boundary, M02 workspace, M01 engine, and M00 foundation verified");
+console.log("[release-check] M06 job evidence, M05 ERC-8004 agent evidence, M04 Arc observation, M03 API/privacy boundary, M02 workspace, M01 engine, and M00 foundation structural checks verified");
