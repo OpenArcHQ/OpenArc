@@ -35,6 +35,18 @@ It does not:
 
 ## 2. Frontend package layout
 
+M07 uses a dedicated Payments panel and strict local normalized metadata import,
+not the M08 general agent connector. Receipt v5 discloses exactly network and
+Gateway transfer UUID. A local bundle association is explicit and never released.
+The encrypted `x402_bundle` and `gateway_observation` record variants share the
+unchanged 6,602 global record ceiling and existing backup/recovery integrity rules.
+Gateway observations require a matching completed v5 receipt and a valid optional
+local bundle reference. Imported metadata never gains signature or fulfillment
+verification. Reconciliation cites local input IDs and a rule version, separates
+duplicate claims from contradictory replay-scope claims, and limits an explicitly
+selected saved Arc transaction comparison to batch inclusion—not individual payment
+settlement. No background queries or transaction controls are added.
+
 ```text
 apps/web/
   src/

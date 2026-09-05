@@ -377,7 +377,7 @@ Response includes exact job fields and the explicit reference-contract limitatio
 `JobSubmitted` receipt event the response says `not_observed`. Deadline timing
 is not a synthesized status transition. See the M06 release source review.
 
-### `POST /v1/private/gateway/transfer-evidence`
+### `POST /v1/private/gateway/transfer`
 
 Optional, default disabled. Request contains one UUID transfer ID plus expected
 network. It cannot search arbitrary wallet history in MVP.
@@ -395,8 +395,12 @@ amount in atomic USDC units
 EIP-3009 nonce
 nullable batch settlement transaction hash (not individual payment proof)
 created and updated times
-source and limitations
+fixed source identity and observation time
 ```
+
+Evidence limitations are fixed local UI/reconciliation copy, not provider-supplied
+text. The adapter accepts only the flat current REST fields; no arbitrary nested
+metadata, resource content, credentials, or raw authorization payload is returned.
 
 Authentication, account association, terms, retention, and rate behavior must be
 approved before this route can be enabled outside isolated staging.

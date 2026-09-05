@@ -918,8 +918,16 @@ footer code {
 
 .workspace-rail nav {
   display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin-bottom: 16px;
+  padding-right: 4px;
   gap: 8px;
 }
+
+.workspace-rail > :not(nav) { flex-shrink: 0; }
 
 .workspace-rail nav button {
   display: grid;
@@ -1016,6 +1024,48 @@ footer code {
   min-height: calc(100vh - 72px);
   padding: clamp(46px, 7vw, 92px) clamp(24px, 6vw, 86px);
 }
+
+.payment-evidence .workspace-card {
+  min-width: 0;
+  margin: 24px 0;
+  padding: clamp(18px, 3vw, 32px);
+  border: 1px solid var(--line);
+  background: #101a29;
+  overflow-wrap: anywhere;
+}
+
+.payment-evidence .form-stack {
+  display: grid;
+  gap: 18px;
+  max-width: 860px;
+}
+
+.payment-evidence label:not(.confirm-row) {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+  color: #d5dfec;
+}
+
+.payment-evidence input:not([type="checkbox"]),
+.payment-evidence select,
+.payment-evidence textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 12px;
+  border: 1px solid #597092;
+  border-radius: 3px;
+  background: #0b1320;
+  color: #eef4fd;
+  font: inherit;
+}
+
+.payment-evidence p,
+.payment-evidence li { color: #bdc9d9; line-height: 1.65; }
+.payment-evidence summary { min-height: 44px; color: #9dccff; cursor: pointer; line-height: 1.6; }
+.payment-evidence pre { max-width: 100%; padding: 16px; overflow: auto; background: #0b1320; font-size: 0.75rem; }
+.payment-evidence h4 { font-size: 1rem; line-height: 1.6; }
 
 .workspace-section-heading {
   display: grid;

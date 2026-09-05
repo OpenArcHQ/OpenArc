@@ -9,6 +9,7 @@ import { ARC_TESTNET } from "./network.js";
 import { ArcAccountSnapshotSchema, ArcTransactionEvidenceSchema } from "./arc-observation.js";
 import { AgentRegistryEvidenceSchema } from "./agent-registry-evidence.js";
 import { JobEvidenceSchema } from "./job-evidence.js";
+import { X402ReceiptBundleSchema, GatewayTransferObservationSchema } from "./x402-evidence.js";
 import { PermissionReceiptRecordSchema } from "./permission.js";
 import { VaultRevisionSchema, WorkspaceRecordIdSchema } from "./workspace-primitives.js";
 export { VaultRevisionSchema, WorkspaceRecordIdSchema } from "./workspace-primitives.js";
@@ -114,6 +115,27 @@ export const JobObservationRecordSchema = z.strictObject({
   }
 });
 
+export const X402BundleRecordSchema = z.strictObject({
+  ...recordBase,
+  recordSchema: z.literal("openarc.x402-bundle-record.v1"),
+  kind: z.literal("x402_bundle"),
+  bundle: X402ReceiptBundleSchema,
+});
+
+export const GatewayObservationRecordSchema = z.strictObject({
+  ...recordBase,
+  recordSchema: z.literal("openarc.gateway-observation-record.v1"),
+  kind: z.literal("gateway_observation"),
+  permissionReceiptId: WorkspaceRecordIdSchema,
+  linkedBundleRecordId: WorkspaceRecordIdSchema.nullable(),
+  linkBasis: z.literal("explicit_local_confirmation").nullable(),
+  observation: GatewayTransferObservationSchema,
+}).superRefine((record, context) => {
+  if ((record.linkedBundleRecordId === null) !== (record.linkBasis === null)) {
+    context.addIssue({ code: "custom", message: "A bundle association requires explicit local confirmation" });
+  }
+});
+
 export const SentinelRecordSchema = z.strictObject({
   ...recordBase,
   kind: z.literal("sentinel"),
@@ -146,6 +168,8 @@ const WorkspaceRecordVariantSchema = z.union([
   ArcObservationRecordSchema,
   AgentRegistryObservationRecordSchema,
   JobObservationRecordSchema,
+  X402BundleRecordSchema,
+  GatewayObservationRecordSchema,
 ]);
 
 export const WorkspaceRecordSchema = WorkspaceRecordVariantSchema.superRefine((record, context) => {
@@ -169,3 +193,5 @@ export type WorkspaceSettingsRecord = z.infer<typeof WorkspaceSettingsRecordSche
 export type ArcObservationRecord = z.infer<typeof ArcObservationRecordSchema>;
 export type AgentRegistryObservationRecord = z.infer<typeof AgentRegistryObservationRecordSchema>;
 export type JobObservationRecord = z.infer<typeof JobObservationRecordSchema>;
+export type X402BundleRecord = z.infer<typeof X402BundleRecordSchema>;
+export type GatewayObservationRecord = z.infer<typeof GatewayObservationRecordSchema>;

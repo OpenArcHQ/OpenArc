@@ -424,7 +424,7 @@ POST /v1/private/arc/account-snapshot
 POST /v1/private/arc/transaction-evidence
 POST /v1/private/arc/agent-registry-evidence
 POST /v1/private/arc/job-evidence
-POST /v1/private/gateway/transfer-evidence   optional, flag off by default
+POST /v1/private/gateway/transfer            optional, flag off by default
 ```
 
 Common route behavior:
@@ -723,6 +723,15 @@ Exit gate:
 - no claim that all Arc agent jobs use ERC-8183 or this deployment.
 
 ### Milestone 07 - controlled x402 and Gateway evidence
+
+Implementation contracts are dedicated `openarc.x402-receipt-bundle.v1` and
+`openarc.gateway-transfer-observation.v1` schemas, not widened M01 synthetic
+evidence. Imported metadata is always `authentication: not_verified`. Permission
+receipt v5 releases only network and exact transfer UUID; local bundle associations
+are never sent. The strict REST route replaces the unimplemented placeholder
+`transfer-evidence` route. Both Gateway flags remain false by default and require
+the cumulative M06 capabilities. Detailed boundaries and gates are recorded in
+`docs/releases/07-x402-gateway-evidence.md` and `m07-x402-preflight.md`.
 
 Build:
 

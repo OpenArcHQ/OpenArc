@@ -8,6 +8,8 @@ import { loadConfig } from "./config.js";
 import { connectBudgetRedis, SourceBudget } from "./limits/budget.js";
 import { AggregateMetrics } from "./ops/metrics.js";
 import { BoundedProviderClient } from "./providers/http.js";
+import { BoundedGatewayClient } from "./gateway/client.js";
+import { GatewayTransferService } from "./gateway/transfer-service.js";
 
 async function start(): Promise<void> {
   const config = loadConfig();
@@ -25,6 +27,9 @@ async function start(): Promise<void> {
     maxResponseBytes: config.SOURCE_MAX_RESPONSE_BYTES,
   })) : undefined;
   const app = createApp({ config, metrics,
+    ...(config.GATEWAY_EVIDENCE_ENABLED ? { gatewayTransferService: new GatewayTransferService(new BoundedGatewayClient({
+      timeoutMs: config.SOURCE_TIMEOUT_MS, maxResponseBytes: config.SOURCE_MAX_RESPONSE_BYTES,
+    })) } : {}),
     ...(sourceBudget ? { sourceBudget } : {}),
     ...(rpc ? { arcAccountService: new ArcAccountService(rpc), arcTransactionService: new ArcTransactionService(rpc),
       ...(config.AGENT_REGISTRY_ENABLED ? { agentRegistryService: new AgentRegistryService(rpc) } : {}),

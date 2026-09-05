@@ -18,6 +18,8 @@ export const VAULT_RECORD_CAPS = Object.freeze({
   arc_observation: 1_000,
   agent_registry_observation: 1_000,
   job_observation: 1_000,
+  x402_bundle: 1_000,
+  gateway_observation: 1_000,
   workspace_settings: 1,
   sentinel: 1,
 } as const);

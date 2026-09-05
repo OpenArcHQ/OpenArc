@@ -43,7 +43,9 @@ const EnvironmentSchema = z.object({
     context.addIssue({ code: "custom", message: "Operator secrets must be distinct" });
   }
   if (config.GATEWAY_EVIDENCE_ENABLED) {
-    context.addIssue({ code: "custom", message: "Later source adapters are unavailable in M06" });
+    if (!config.AGENT_JOBS_ENABLED) {
+      context.addIssue({ code: "custom", path: ["GATEWAY_EVIDENCE_ENABLED"], message: "Gateway evidence requires the cumulative job evidence milestone" });
+    }
   }
   if (config.ARC_OBSERVATION_ENABLED) {
     if (!config.API_BOUNDARY_ENABLED) {

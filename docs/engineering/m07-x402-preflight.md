@@ -1,7 +1,7 @@
 # M07 x402/Gateway preflight — 2026-09-05
 
-Status: researched; implementation not started. M06 is complete. No M07 branch,
-Gateway runtime, signer, new account, paid provider, or mainnet adapter was enabled.
+Status: implementation active on `codex/07-x402-gateway-evidence`. M06 is complete.
+Gateway remains disabled by default; no mainnet adapter or paid provider is enabled.
 The controlling build order remains `openarc-engineering-source-of-truth.md`.
 
 ## Verified source changes
@@ -21,6 +21,20 @@ Sources: [current REST schema](https://developers.circle.com/api-reference/gatew
 [dated changes](https://developers.circle.com/release-notes/gateway-2026),
 [supported-kind API](https://developers.circle.com/api-reference/gateway/all/get-supported-x402payment-kinds).
 
+The current nanopayments FAQ describes settlement batches as periodic throughout
+the day; no numeric Testnet interval or SLA was found. An accepted transfer can
+remain `received` with a null batch hash while waiting. Do not infer failure from
+elapsed minutes or send another payment to force settlement.
+[Batch timing](https://www.circle.com/nanopayments).
+
+SDK 3.4.0 contains a mainnet configuration entry, but this is not evidence of
+public operational readiness. The official public launch remains September 16,
+2026, and public RPC/contract references still lack mainnet parameters. Keep the
+product Testnet-only until the separately gated mainnet milestone.
+[Launch](https://www.arc.io/blog/arc-mainnet-goes-live-on-september-16-2026),
+[RPC reference](https://docs.arc.io/arc/references/rpc-endpoints),
+[Contract reference](https://docs.arc.io/arc/references/contract-addresses).
+
 ## Proposed implementation boundary
 
 Keep M01's synthetic evidence engine unchanged. Introduce dedicated strict,
@@ -38,6 +52,12 @@ inclusion separate. Preserve missing evidence, conflicts, replay scope, old
 authorization validity, cancellation, recovery, and atomic-save failure states.
 
 ## Live-proof permission boundary
+
+On 2026-09-05 the user approved a disposable external Arc Testnet payer: at most
+1 test USDC deposited and 0.01 test USDC paid in total, plus testnet gas. This
+authorizes only valueless faucet tokens, not real funds, user wallets, paid
+services, or product signing. CAPTCHA or another permission boundary requires
+user action. Keys and signing stay outside the OpenArc repository.
 
 Gateway reads require no API key according to Circle's explicit permissionless
 product exception. No paid account or per-read fee was identified; this is not a

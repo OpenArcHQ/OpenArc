@@ -12,6 +12,7 @@ import {
   JobEvidenceRequestSchema, JOB_DISCLOSURE, JOB_EVIDENCE_PATH,
   compareIsoTimestamps,
   type JobEvidenceRequest, type JobObservationRecord,
+  type GatewayTransferRequest, type GatewayObservationRecord,
   CAPABILITIES_PATH,
   CAPABILITY_DISCLOSURE,
   type ArcObservationRecord,
@@ -36,7 +37,10 @@ import { createPortal } from "react-dom";
 
 import type { BuildInfo } from "@openarc/shared";
 
-import { agentRegistryEnabled, agentJobsEnabled, apiBoundaryEnabled, arcObservationEnabled, workspaceSectionUsesNetwork } from "../app/availability.js";
+import { agentRegistryEnabled, agentJobsEnabled, gatewayEvidenceEnabled, apiBoundaryEnabled, arcObservationEnabled, workspaceSectionUsesNetwork } from "../app/availability.js";
+import { requestGatewayTransfer } from "../api/gateway-transfer.js";
+import { GatewayFinalizationError, runGatewayPermissionFlow } from "../api/gateway-permission-flow.js";
+import { PaymentsPanel } from "./PaymentsPanel.js";
 import { requestJobEvidence } from "../api/job-evidence.js";
 import { JobFinalizationError, runJobPermissionFlow } from "../api/job-permission-flow.js";
 import { requestAgentRegistryEvidence } from "../api/agent-registry.js";
@@ -91,7 +95,7 @@ import type {
   VaultStorageStatus,
 } from "./types.js";
 
-type WorkspaceView = "overview" | "agents" | "activity" | "policies" | "evidence" | "settings" | "sources" | "jobs";
+type WorkspaceView = "overview" | "agents" | "activity" | "policies" | "evidence" | "settings" | "sources" | "jobs" | "payments";
 type Screen =
   | { phase: "probing" }
   | { phase: "unsupported" }
@@ -120,6 +124,7 @@ const API_BOUNDARY_ENABLED = apiBoundaryEnabled();
 const ARC_OBSERVATION_ENABLED = API_BOUNDARY_ENABLED && arcObservationEnabled();
 const AGENT_REGISTRY_ENABLED = ARC_OBSERVATION_ENABLED && agentRegistryEnabled();
 const AGENT_JOBS_ENABLED = AGENT_REGISTRY_ENABLED && agentJobsEnabled();
+const GATEWAY_EVIDENCE_ENABLED = AGENT_JOBS_ENABLED && gatewayEvidenceEnabled();
 const VIEWS: readonly { id: WorkspaceView; label: string; note: string }[] = [
   { id: "overview", label: "Overview", note: "Local workspace status" },
   { id: "agents", label: "Agents", note: AGENT_REGISTRY_ENABLED ? "Local profiles + registry evidence" : "Owner-supplied profiles" },
@@ -129,6 +134,7 @@ const VIEWS: readonly { id: WorkspaceView; label: string; note: string }[] = [
   { id: "settings", label: "Settings", note: "Backup, recovery, delete" },
   ...(API_BOUNDARY_ENABLED ? [{ id: "sources" as const, label: "Sources", note: "Explicit connection checks" }] : []),
   ...(AGENT_JOBS_ENABLED ? [{ id: "jobs" as const, label: "Jobs", note: "Reference contract evidence" }] : []),
+  ...(GATEWAY_EVIDENCE_ENABLED ? [{ id: "payments" as const, label: "Payments", note: "x402 metadata + Gateway reports" }] : []),
 ];
 
 export function VaultWorkspace({ build }: { build: BuildInfo }) {
@@ -1026,6 +1032,47 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
     }
   };
 
+  const observeGateway = async (request: GatewayTransferRequest,
+    linkedBundleRecordId: string | null): Promise<GatewayObservationRecord | null> => {
+    const current = unlockedRef.current;
+    if (!current || !GATEWAY_EVIDENCE_ENABLED) return null;
+    const guard = createSessionGuard();
+    let expected = current;
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      const result = await runGatewayPermissionFlow({ workspace: current, origin: window.location.origin,
+        request, linkedBundleRecordId, signal: guard.signal,
+        assertActive: () => {
+          guard.assertActive();
+          if (unlockedRef.current !== expected) throw new Error("Vault session changed");
+        },
+        save: async (workspace, records, assertActive, signal) => {
+          const saved = await saveWorkspaceRecords(workspace, records, assertActive, signal);
+          assertActive(); expected = saved; unlockedRef.current = saved;
+          deadlineRef.current = Date.now() + INACTIVITY_MS;
+          setScreen({ phase: "unlocked", workspace: saved }); broadcast("changed", saved.meta.vaultId);
+          return saved;
+        }, fetch: requestGatewayTransfer,
+      });
+      guard.assertActive(); setBusy(false);
+      setNotice("Gateway report encrypted locally. Imported metadata, Gateway status and fulfillment remain separate.");
+      return result.observation;
+    } catch (cause) {
+      if (!guard.isActive()) return null;
+      const storageBoundary = cause instanceof GatewayFinalizationError ? cause.storageCause : cause;
+      if (await handleObservedVaultBoundary(storageBoundary, guard.isActive)) return null;
+      if (!guard.isActive()) return null;
+      setBusy(false);
+      setError(cause instanceof GatewayFinalizationError
+        ? "The Gateway request may have reached the source, but its outcome could not be saved. The encrypted approval remains."
+        : cause instanceof OpenArcRequestError
+          ? cause.phase === "pre-send" ? "The Gateway request was not sent. Check the transfer UUID."
+            : `No Gateway evidence was accepted (${cause.code}). Prior evidence remains unchanged.`
+          : vaultErrorMessage(cause));
+      return null;
+    }
+  };
+
   const deleteRecords = async (ids: readonly string[], message: string) => {
     const current = unlockedRef.current;
     if (!current) return false;
@@ -1243,6 +1290,7 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
           onObserveArc={observeArc}
           onObserveAgentRegistry={observeAgentRegistry}
           onObserveJob={observeJob}
+          onObserveGateway={observeGateway}
           onImport={importBackup}
           onAcceptCreated={acceptCreated}
           onDestroy={destroy}
@@ -1380,6 +1428,7 @@ function WorkspaceViewPanel(props: {
   onObserveAgentRegistry: (request: AgentRegistryEvidenceRequest,
     linkedAgentProfileRecordId: string | null) => Promise<AgentRegistryObservationRecord | null>;
   onObserveJob: (request: JobEvidenceRequest, linkedActionRecordId: string | null) => Promise<JobObservationRecord | null>;
+  onObserveGateway: (request: GatewayTransferRequest, linkedBundleRecordId: string | null) => Promise<GatewayObservationRecord | null>;
   onImport: (file: File, backupPassphrase: string, nextPassphrase: string) => Promise<void>;
   onAcceptCreated: (created: CreatedWorkspace, message: string) => void;
   onDestroy: () => Promise<void>;
@@ -1399,6 +1448,7 @@ function WorkspaceViewPanel(props: {
   if (props.view === "evidence") return <EvidencePanel {...props} />;
   if (props.view === "sources") return <SourcesPanel {...props} />;
   if (props.view === "jobs") return <JobsPanel {...props} />;
+  if (props.view === "payments") return <PaymentsPanel {...props} />;
   return <SettingsPanel {...props} />;
 
   function navigateFromPanel(view: WorkspaceView) {
@@ -2146,7 +2196,7 @@ function TourDialog({ onClose, returnFocus }: { onClose: () => void; returnFocus
   return <Modal title={steps[step]![0]} onClose={onClose} returnFocus={returnFocus}><p className="tour-count">STEP {step + 1} OF {steps.length}</p><p>{steps[step]![1]}</p><div className="tour-dots" aria-label={`Tour step ${step + 1} of ${steps.length}`}>{steps.map((_, index) => <span key={index} className={index === step ? "active" : ""} />)}</div><div className="modal-actions">{step > 0 ? <button type="button" onClick={() => setStep(step - 1)}>Back</button> : <button type="button" onClick={onClose}>Skip</button>}<button className="button" type="button" onClick={() => { if (step === steps.length - 1) onClose(); else setStep(step + 1); }}>{step === steps.length - 1 ? "Open workspace" : "Next"}</button></div></Modal>;
 }
 
-function Modal({ title, children, onClose, closeDisabled = false, returnFocus: explicitReturnFocus = null }: { title: string; children: ReactNode; onClose: () => void; closeDisabled?: boolean; returnFocus?: HTMLElement | null }) {
+export function Modal({ title, children, onClose, closeDisabled = false, returnFocus: explicitReturnFocus = null }: { title: string; children: ReactNode; onClose: () => void; closeDisabled?: boolean; returnFocus?: HTMLElement | null }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   const closeRef = useRef(onClose);
@@ -2198,9 +2248,10 @@ function WorkspaceWait({ label }: { label: string }) {
   return <main className="workspace-wait"><img src="/openarc-logo.jpeg" alt="" /><div className="workspace-spinner" aria-hidden="true" /><p role="status">{label}</p></main>;
 }
 
-function SectionHeading({ eyebrow, title, id, children, onLearn }: { eyebrow: string; title: string; id: string; children: ReactNode; onLearn: (target: HTMLElement) => void }) {
+export function SectionHeading({ eyebrow, title, id, children, onLearn }: { eyebrow: string; title: string; id: string; children: ReactNode; onLearn: (target: HTMLElement) => void }) {
   const usesNetwork = workspaceSectionUsesNetwork(id, { apiBoundary: API_BOUNDARY_ENABLED,
-    arcObservation: ARC_OBSERVATION_ENABLED, agentRegistry: AGENT_REGISTRY_ENABLED, agentJobs: AGENT_JOBS_ENABLED });
+    arcObservation: ARC_OBSERVATION_ENABLED, agentRegistry: AGENT_REGISTRY_ENABLED, agentJobs: AGENT_JOBS_ENABLED,
+    gatewayEvidence: GATEWAY_EVIDENCE_ENABLED });
   return <header className="workspace-section-heading"><div><p className="eyebrow">{eyebrow}</p><div className="workspace-title-row"><h1 id={id}>{title}</h1><details className="workspace-info"><summary role="button" aria-label={`About ${title}`} title={`About ${title}`}>i</summary><p>{children}</p></details></div></div><div className="workspace-heading-context"><p>{children}</p><div><span className="workspace-view-status">{usesNetwork ? "EXPLICIT READ-ONLY LOOKUPS" : "ENABLED · LOCAL ONLY"}</span><a href="#workspace-tour" onClick={(event) => { event.preventDefault(); onLearn(event.currentTarget); }}>Learn how this works</a></div></div></header>;
 }
 

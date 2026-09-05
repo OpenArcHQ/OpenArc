@@ -411,6 +411,58 @@ for (const requiredValue of ["5042002", "0x4cef52", "https://rpc.testnet.arc.io"
   if (!networkSource.includes(requiredValue)) failures.push(`Network registry is missing ${requiredValue}`);
 }
 
+// M07 supplements all earlier gates; synthetic CI source proof is not the live release gate.
+const m07Files = [
+  "docs/releases/07-x402-gateway-evidence.md", "packages/shared/src/x402-evidence.ts",
+  "packages/shared/src/x402-reconciliation.ts", "packages/shared/test/x402-evidence.test.ts",
+  "packages/shared/test/x402-reconciliation.test.ts", "apps/api/src/gateway/client.ts",
+  "apps/api/src/gateway/transfer-service.ts", "apps/api/test/gateway.test.ts",
+  "apps/api/test/gateway-routes.test.ts", "apps/web/src/api/gateway-transfer.ts",
+  "apps/web/src/api/gateway-permission-flow.ts", "apps/web/test/gateway-flow.test.ts",
+  "apps/web/test/gateway-vault.test.ts", "e2e-gateway-evidence/gateway-evidence.spec.ts",
+  "playwright.gateway-evidence.config.ts", "playwright.gateway-evidence.production.config.ts",
+  "scripts/gateway-transfer-fixture.mjs",
+];
+for (const required of m07Files) {
+  try { await stat(path.join(root, required)); }
+  catch { failures.push(`Missing required M07 file: ${required}`); }
+}
+for (const [file, tokens] of [
+  ["packages/shared/src/x402-evidence.ts", ["openarc.x402-receipt-bundle.v1", "openarc.gateway-transfer-observation.v1",
+    "GatewayWalletBatched", "not_verified", "txHash: TransactionHashSchema.nullable()"]],
+  ["apps/api/src/gateway/client.ts", ["gateway-api-testnet.circle.com", "/v1/x402/transfers/", 'method: "GET"',
+    "rejectUnauthorized: true", "readProviderJson", 'lease.source !== "gateway"', 'response.status === 404']],
+  ["apps/api/src/gateway/transfer-service.ts", ["SOURCE_WRONG_NETWORK", "SOURCE_CONFLICT", "GatewayTransferObservationSchema.safeParse"]],
+  ["apps/web/src/api/gateway-permission-flow.ts", ["options.assertActive()", "linkedBundleRecordId", "GatewayFinalizationError"]],
+]) {
+  let source = "";
+  try { source = await readFile(path.join(root, file), "utf8"); } catch { continue; }
+  for (const token of tokens) if (!source.includes(token)) failures.push(`M07 ${file} is missing ${token}`);
+  for (const forbidden of ["sendTransaction", "broadcastTransaction", "writeContract", "signTypedData", "privateKeyToAccount",
+    "window.ethereum", 'credentials: "include"', 'redirect: "follow"', "rejectUnauthorized: false"]) {
+    if (source.includes(forbidden)) failures.push(`M07 ${file} contains forbidden execution/provider behavior: ${forbidden}`);
+  }
+}
+for (const flag of ["GATEWAY_EVIDENCE_ENABLED=false", "VITE_GATEWAY_EVIDENCE_ENABLED=false"]) {
+  if (!envExample.includes(flag)) failures.push(`M07 feature flag must default false: ${flag}`);
+}
+if (!webDockerfile.includes("ARG VITE_GATEWAY_EVIDENCE_ENABLED=false")) {
+  failures.push("M07 Gateway evidence must default false in the web image");
+}
+for (const config of ["playwright.gateway-evidence.config.ts", "playwright.gateway-evidence.production.config.ts"]) {
+  if (!packageSource.includes(`playwright test -c ${config}`)) failures.push(`M07 browser gate is missing ${config}`);
+}
+for (const token of [
+  "openarc-web-m07:ci", "VITE_GATEWAY_EVIDENCE_ENABLED=true", "GATEWAY_EVIDENCE_ENABLED=true",
+  "gateway-transfer-fixture.mjs", 'gateway-api-testnet.circle.com:${gateway_fixture_ip}',
+  'test "${gateway_fixture_ready}" = "1"', 'test "${m07_ready}" = "1"', '"gatewayEvidence":true',
+  "pnpm e2e:gateway-evidence:production",
+  "image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m07:ci",
+  "openarc-web-m07:ci -o cyclonedx-json > sbom-web-m07.cdx.json",
+]) {
+  if (!m02WorkflowSource.includes(token)) failures.push(`Hosted M07 exact-source/image gate is missing ${token}`);
+}
+
 if (/mainnet\s*[:=]/iu.test(networkSource) || /ARC_MAINNET/u.test(networkSource)) {
   failures.push("M00 must not contain a mainnet network configuration");
 }
@@ -507,4 +559,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log("[release-check] M06 job evidence, M05 ERC-8004 agent evidence, M04 Arc observation, M03 API/privacy boundary, M02 workspace, M01 engine, and M00 foundation structural checks verified");
+console.log("[release-check] M07 x402/Gateway evidence, M06 job evidence, M05 ERC-8004 agent evidence, M04 Arc observation, M03 API/privacy boundary, M02 workspace, M01 engine, and M00 foundation structural checks verified");

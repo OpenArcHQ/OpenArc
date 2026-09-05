@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { agentJobsEnabled, agentRegistryEnabled, apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled, workspaceSectionUsesNetwork } from "../src/app/availability.js";
+import { gatewayEvidenceEnabled, agentJobsEnabled, agentRegistryEnabled, apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled, workspaceSectionUsesNetwork } from "../src/app/availability.js";
 
 describe("encrypted workspace availability", () => {
   it("fails closed unless the build flag is exactly true", () => {
@@ -46,6 +46,17 @@ describe("job evidence availability", () => {
 });
 
 describe("workspace section network claims", () => {
+  it("keeps Gateway disabled for malformed flags and incomplete prerequisites", () => {
+    for (const value of [undefined, "false", "TRUE", "1", false]) expect(gatewayEvidenceEnabled(value)).toBe(false);
+    expect(gatewayEvidenceEnabled("true")).toBe(true);
+    expect(gatewayEvidenceEnabled(true)).toBe(true);
+    for (const apiBoundary of [false, true]) for (const arcObservation of [false, true])
+      for (const agentRegistry of [false, true]) for (const agentJobs of [false, true])
+        for (const gatewayEvidence of [false, true]) {
+          expect(workspaceSectionUsesNetwork("payments-title", { apiBoundary, arcObservation, agentRegistry, agentJobs, gatewayEvidence }))
+            .toBe(apiBoundary && arcObservation && agentRegistry && agentJobs && gatewayEvidence);
+        }
+  });
   it("only describes lookups when every cumulative feature gate is enabled", () => {
     for (const apiBoundary of [false, true]) for (const arcObservation of [false, true])
       for (const agentRegistry of [false, true]) for (const agentJobs of [false, true]) {

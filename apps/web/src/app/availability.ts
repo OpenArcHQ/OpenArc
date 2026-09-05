@@ -28,13 +28,20 @@ export function agentJobsEnabled(
   return value === true || value === "true";
 }
 
+export function gatewayEvidenceEnabled(
+  value: string | boolean | undefined = import.meta.env.VITE_GATEWAY_EVIDENCE_ENABLED,
+): boolean {
+  return value === true || value === "true";
+}
+
 export function workspaceSectionUsesNetwork(id: string, flags: {
-  apiBoundary: boolean; arcObservation: boolean; agentRegistry: boolean; agentJobs: boolean;
+  apiBoundary: boolean; arcObservation: boolean; agentRegistry: boolean; agentJobs: boolean; gatewayEvidence?: boolean;
 }): boolean {
   if (!flags.apiBoundary) return false;
   if (id === "sources-title") return true;
   if (!flags.arcObservation) return false;
   if (id === "activity-title") return true;
   if (!flags.agentRegistry) return false;
-  return id === "agents-title" || (id === "jobs-title" && flags.agentJobs);
+  return id === "agents-title" || (id === "jobs-title" && flags.agentJobs) ||
+    (id === "payments-title" && flags.agentJobs && flags.gatewayEvidence === true);
 }

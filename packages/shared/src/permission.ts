@@ -4,6 +4,7 @@ import { ApiErrorCodeSchema, CAPABILITIES_PATH, WorkspaceOriginSchema } from "./
 import { ARC_ACCOUNT_SNAPSHOT_PATH, ARC_TRANSACTION_EVIDENCE_PATH } from "./arc-observation.js";
 import { AGENT_REGISTRY_EVIDENCE_PATH, AgentRegistryEvidenceRequestSchema } from "./agent-registry-evidence.js";
 import { JOB_EVIDENCE_PATH, JobEvidenceRequestSchema } from "./job-evidence.js";
+import { GATEWAY_TRANSFER_PATH, GatewayTransferRequestSchema } from "./x402-evidence.js";
 import { ARC_TESTNET } from "./network.js";
 import { EvmAddressSchema, IsoTimestampSchema, TransactionHashSchema, compareIsoTimestamps } from "./primitives.js";
 import { VaultRevisionSchema, WorkspaceRecordIdSchema } from "./workspace-primitives.js";
@@ -229,11 +230,47 @@ export const JobPermissionReceiptRecordSchema = z.strictObject({
   }
 });
 
+export const GATEWAY_DISCLOSURE = Object.freeze({
+  credentials: "omit",
+  openArcRetention: "No request or response body is retained by the OpenArc API. The approved result is stored only in the encrypted local workspace.",
+  providerRetention: "Circle Gateway receives the exact transfer UUID under Circle's current terms and privacy policy. Provider retention is not controlled by OpenArc.",
+  hostingMetadata: "OpenArc, its hosting provider, and Circle Gateway receive ordinary network metadata, including IP and user-agent where applicable.",
+} as const);
+
+export const GatewayPermissionReceiptRecordSchema = z.strictObject({
+  ...observationBase,
+  recordSchema: z.literal("openarc.permission-receipt.v5"),
+  connectorId: z.literal("circle_gateway_transfer"),
+  destination: z.strictObject({ origin: WorkspaceOriginSchema,
+    path: z.literal(GATEWAY_TRANSFER_PATH), method: z.literal("POST"),
+    upstreams: z.tuple([z.literal("https://gateway-api-testnet.circle.com")]) }),
+  releasedFields: z.tuple([z.literal("network"), z.literal("transferId")]),
+  released: GatewayTransferRequestSchema,
+  purpose: z.literal("Read one exact Circle Gateway Arc Testnet transfer; this does not verify fulfillment."),
+  providerRetention: z.literal(GATEWAY_DISCLOSURE.providerRetention),
+  hostingMetadata: z.literal(GATEWAY_DISCLOSURE.hostingMetadata),
+}).superRefine((receipt, context) => {
+  if (![receipt.createdAt, receipt.updatedAt, receipt.approvedAt, receipt.resolvedAt]
+    .every((value) => value === null || IsoTimestampSchema.safeParse(value).success)) return;
+  const fail = (message: string) => context.addIssue({ code: "custom", message });
+  if (receipt.createdAt !== receipt.approvedAt) fail("Receipt creation must equal approval");
+  if (receipt.updatedAt !== (receipt.resolvedAt ?? receipt.approvedAt)) fail("Receipt update must match its last outcome time");
+  if (receipt.outcome === "approved") {
+    if (receipt.resolvedAt !== null || receipt.failureCode !== null) fail("Approval is unresolved");
+  } else {
+    if (receipt.resolvedAt === null || compareIsoTimestamps(receipt.resolvedAt, receipt.approvedAt) < 0) {
+      fail("Resolved receipt cannot predate approval");
+    }
+    if ((receipt.outcome === "failed") !== (receipt.failureCode !== null)) fail("Only a failed receipt has a failure code");
+  }
+});
+
 export const PermissionReceiptRecordSchema = z.union([
   CapabilityPermissionReceiptRecordSchema,
   ArcObservationPermissionReceiptRecordSchema,
   AgentRegistryPermissionReceiptRecordSchema,
   JobPermissionReceiptRecordSchema,
+  GatewayPermissionReceiptRecordSchema,
 ]);
 
 export type PermissionReceiptRecord = z.infer<typeof PermissionReceiptRecordSchema>;
@@ -242,3 +279,4 @@ export type ArcObservationPermissionReceiptRecord = z.infer<typeof ArcObservatio
 export type AgentRegistryPermissionReceiptRecord = z.infer<typeof AgentRegistryPermissionReceiptRecordSchema>;
 export type PermissionFailureCode = z.infer<typeof PermissionFailureCodeSchema>;
 export type JobPermissionReceiptRecord = z.infer<typeof JobPermissionReceiptRecordSchema>;
+export type GatewayPermissionReceiptRecord = z.infer<typeof GatewayPermissionReceiptRecordSchema>;

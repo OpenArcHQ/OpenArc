@@ -129,7 +129,17 @@ export const M06CapabilitiesSchema = M05CapabilitiesSchema.extend({
     agentJobs: z.literal(true), gatewayEvidence: z.literal(false) }),
 });
 
-export const CapabilitiesSchema = z.union([M04CapabilitiesSchema, M05CapabilitiesSchema, M06CapabilitiesSchema]);
+export const M07CapabilitiesSchema = M06CapabilitiesSchema.extend({
+  capabilityVersion: z.literal("openarc.capabilities.m07.v1"),
+  sourceRevision: z.literal("circle-gateway-x402-2026-09-05"),
+  reviewedAt: z.literal("2026-09-05"),
+  enabledConnectors: z.tuple([z.literal("arc_primary_rpc"), z.literal("erc8004_registries"),
+    z.literal("erc8183_reference"), z.literal("circle_gateway_testnet")]),
+  features: z.strictObject({ arcObservation: z.literal(true), agentRegistry: z.literal(true),
+    agentJobs: z.literal(true), gatewayEvidence: z.literal(true) }),
+});
+
+export const CapabilitiesSchema = z.union([M04CapabilitiesSchema, M05CapabilitiesSchema, M06CapabilitiesSchema, M07CapabilitiesSchema]);
 
 export const CapabilitiesEnvelopeSchema = z.strictObject({
   ok: z.literal(true),

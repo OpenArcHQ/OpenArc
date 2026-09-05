@@ -568,6 +568,10 @@ function assertWorkspaceRelationships(
   const observations = parsedRecords.filter((record) => record.kind === "arc_observation");
   const registryObservations = parsedRecords.filter((record) => record.kind === "agent_registry_observation");
   const jobObservations = parsedRecords.filter((record) => record.kind === "job_observation");
+  const bundles = parsedRecords.filter((record) => record.kind === "x402_bundle");
+  const gatewayObservations = parsedRecords.filter((record) => record.kind === "gateway_observation");
+  requireUnique(bundles.map((record) => record.bundle.bundleId));
+  requireUnique(gatewayObservations.map((record) => record.permissionReceiptId));
   requireUnique(agents.map((record) => record.agentId));
   requireUnique(policies.map((record) => record.policy.policyId));
   requireUnique(actions.map((record) => record.action.actionId));
@@ -620,6 +624,16 @@ function assertWorkspaceRelationships(
   }
 
   const policyRecordIds = new Set(policies.map((record) => record.recordId));
+  const bundleRecordIds = new Set(bundles.map((record) => record.recordId));
+  for (const observation of gatewayObservations) {
+    const permission = permissionById.get(observation.permissionReceiptId);
+    if (!permission || permission.recordSchema !== "openarc.permission-receipt.v5" ||
+      permission.outcome !== "completed" || permission.released.network !== observation.observation.network ||
+      permission.released.transferId !== observation.observation.transfer.id ||
+      (observation.linkedBundleRecordId !== null && !bundleRecordIds.has(observation.linkedBundleRecordId))) {
+      invalidRelationships();
+    }
+  }
   const policyIds = new Set(policies.map((record) => record.policy.policyId));
   const policyRecordIdByPolicyId = new Map(
     policies.map((record) => [record.policy.policyId, record.recordId]),

@@ -70,35 +70,7 @@ export class BoundedProviderClient {
         if (deadline.aborted) { response.close(); throw new ApiBoundaryError("SOURCE_UNAVAILABLE"); }
         if (response.status === 429) throw new ApiBoundaryError("SOURCE_RATE_LIMITED");
         if (response.status !== 200) throw new ApiBoundaryError("SOURCE_UNAVAILABLE");
-        const type = response.headers["content-type"];
-        if (typeof type !== "string" || !/^application\/json(?:\s*;\s*charset=utf-8)?$/iu.test(type)) {
-          throw new ApiBoundaryError("SOURCE_MALFORMED");
-        }
-        if (response.headers["content-encoding"] !== undefined && response.headers["content-encoding"] !== "identity") {
-          throw new ApiBoundaryError("SOURCE_MALFORMED");
-        }
-        const length = response.headers["content-length"];
-        if (length !== undefined && (typeof length !== "string" || !/^(?:0|[1-9]\d{0,9})$/u.test(length))) {
-          throw new ApiBoundaryError("SOURCE_MALFORMED");
-        }
-        if (length !== undefined && Number(length) > this.options.maxResponseBytes) throw new ApiBoundaryError("SOURCE_RESPONSE_TOO_LARGE");
-        const chunks: Buffer[] = [];
-        let bytes = 0;
-        for await (const chunk of response.body) {
-          if (deadline.aborted) throw new ApiBoundaryError("SOURCE_UNAVAILABLE");
-          if (!(chunk instanceof Uint8Array)) throw new ApiBoundaryError("SOURCE_MALFORMED");
-          bytes += chunk.byteLength;
-          if (bytes > this.options.maxResponseBytes) throw new ApiBoundaryError("SOURCE_RESPONSE_TOO_LARGE");
-          chunks.push(Buffer.from(chunk));
-        }
-        if (length !== undefined && bytes !== Number(length)) throw new ApiBoundaryError("SOURCE_MALFORMED");
-        try {
-          const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
-          const value: unknown = JSON.parse(text);
-          if (!value || typeof value !== "object") throw new Error("Invalid JSON root");
-          assertJsonBounds(value);
-          return value;
-        } catch { throw new ApiBoundaryError("SOURCE_MALFORMED"); }
+        return readProviderJson(response, this.options.maxResponseBytes, deadline);
       }, deadline), deadline);
     } catch (error) {
       if (error instanceof ApiBoundaryError) throw error;
@@ -109,6 +81,39 @@ export class BoundedProviderClient {
       response?.close();
     }
   }
+}
+
+/** Shared strict decoder for fixed-origin Arc POST and Gateway GET transports. */
+export async function readProviderJson(response: ProviderResponse, maxResponseBytes: number, deadline: AbortSignal): Promise<unknown> {
+  const type = response.headers["content-type"];
+  if (typeof type !== "string" || !/^application\/json(?:\s*;\s*charset=utf-8)?$/iu.test(type)) {
+    throw new ApiBoundaryError("SOURCE_MALFORMED");
+  }
+  if (response.headers["content-encoding"] !== undefined && response.headers["content-encoding"] !== "identity") {
+    throw new ApiBoundaryError("SOURCE_MALFORMED");
+  }
+  const length = response.headers["content-length"];
+  if (length !== undefined && (typeof length !== "string" || !/^(?:0|[1-9]\d{0,9})$/u.test(length))) {
+    throw new ApiBoundaryError("SOURCE_MALFORMED");
+  }
+  if (length !== undefined && Number(length) > maxResponseBytes) throw new ApiBoundaryError("SOURCE_RESPONSE_TOO_LARGE");
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of response.body) {
+    if (deadline.aborted) throw new ApiBoundaryError("SOURCE_UNAVAILABLE");
+    if (!(chunk instanceof Uint8Array)) throw new ApiBoundaryError("SOURCE_MALFORMED");
+    bytes += chunk.byteLength;
+    if (bytes > maxResponseBytes) throw new ApiBoundaryError("SOURCE_RESPONSE_TOO_LARGE");
+    chunks.push(Buffer.from(chunk));
+  }
+  if (length !== undefined && bytes !== Number(length)) throw new ApiBoundaryError("SOURCE_MALFORMED");
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+    const value: unknown = JSON.parse(text);
+    if (!value || typeof value !== "object") throw new Error("Invalid JSON root");
+    assertJsonBounds(value);
+    return value;
+  } catch { throw new ApiBoundaryError("SOURCE_MALFORMED"); }
 }
 
 function assertJsonBounds(root: unknown): void {
