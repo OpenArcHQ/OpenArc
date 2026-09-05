@@ -45,7 +45,9 @@ try {
     await page.getByRole("button", { name: "Approve and observe job" }).click();
     const response = await pending;
     assert.equal(response.status(), 200, "Staging job lookup must succeed");
-    assert.equal(response.headers()["cache-control"], "no-store");
+    // Nginx and the API each add no-store; repeated identical directives are safe.
+    const cacheDirectives = (response.headers()["cache-control"] ?? "").split(",").map((value) => value.trim());
+    assert.ok(cacheDirectives.length > 0 && cacheDirectives.every((value) => value === "no-store"));
     const envelope = JobEvidenceEnvelopeSchema.parse(await response.json());
     assert.equal(envelope.meta.buildSha, expectedSha);
     assert.equal(envelope.data.jobId, request.jobId);

@@ -1,6 +1,7 @@
 # M06 — ERC-8183 reference job evidence
 
-Status: implementation in progress. Not an RC, not deployed, not a public-release readiness claim.
+Status: implementation, hosted gates, and staging verification passed.
+Not an RC or a public-release readiness claim. Independent review is still required.
 Branch: `codex/06-erc8183-job-evidence`, based on M05-complete main `e21ddae68e445bccadc5490593100dbd223bd9a1`.
 
 ## Source review — 2026-09-04
@@ -62,8 +63,10 @@ No signing, transaction broadcasts, payable integrations, new providers, or spen
 - [x] API capability version and default-off route wiring.
 - [x] Route, browser client, permission, encrypted-storage, and UI failure tests.
 - [x] Jobs workspace with explicit local-only action association.
-- [ ] Full local release gate, production-image tests, scans/SBOM, hosted CI.
-- [ ] Exact RC tag and staging runtime verification; milestone closeout.
+- [x] Full local release gate, production-image tests, scans/SBOM, hosted CI.
+- [x] Exact candidate staging runtime verification.
+- [ ] Independent review without unresolved P0/P1 findings.
+- [ ] Exact RC tag and milestone closeout.
 
 The pinned Node 22 / Redis 8 clean-room release gate passed with 282 shared/API/web
 tests and 76 browser journeys, including audit, license, lint, typecheck, and build.
@@ -98,4 +101,62 @@ violations were found in the rendered Jobs view.
 
 Explorer lookups were used only to locate public test examples during development;
 they are not runtime providers. Runtime evidence above came from the fixed Arc RPC.
-This document must be updated with hosted/image/staging evidence before release.
+## Hosted candidate verification
+
+Candidate `f9729acd63175d4abb246802b392a00f8e120989` passed all three jobs in
+[GitHub Actions run 33932526330](https://github.com/OpenArcHQ/OpenArc/actions/runs/33932526330)
+before staging configuration changed. This includes 284 shared/API/web tests,
+76 browser journeys, exact production-image source tests through M06, the
+immutable older-reader compatibility gate, dependency/license checks, and
+HIGH/CRITICAL image scans. Production tests use verified TLS and real disposable
+Redis. The CycloneDX artifact `9959126354` (`openarc-sboms`) has digest
+`sha256:58af99daf81b989e9938c9b30cbe8ff3013f77285dcbaac9cd795ed4939bceab`
+and expires `2026-12-04T00:18:17Z`.
+
+## Rollback boundary
+
+After a workspace saves M06 job observations or v4 permission receipts, do not
+replace its browser with the M05 reader: that older build cannot read these new
+record schemas. To stop new source observations, retain the M06 browser/vault
+reader and disable the API's `AGENT_JOBS_ENABLED` flag. Existing encrypted evidence,
+export, recovery, and deletion must remain available. Do not delete or rewrite
+user records to make an old build appear compatible.
+
+## Staging verification — 2026-09-05 UTC
+
+The existing staging services reached `SUCCESS` on candidate
+`f9729acd63175d4abb246802b392a00f8e120989`:
+
+- API deployment `<deployment-id>`, image
+  `sha256:a179a57aafc46ccc450664dbb1bebe830bc5cb3634e813632a9b6fe005b29e87`.
+- Web deployment `<deployment-id>`, image
+  `sha256:d1261c5c0485c3f65a1c1d643fd7d305588a90ce58f1457161836a1c5e03e80c`.
+- API `/readyz`: ready, configuration up, source routes enabled, Redis up, exact
+  candidate SHA. Both browser build marker and job response marker matched it.
+
+`scripts/smoke-job-staging.mjs` passed on the deployed application in an isolated
+disposable browser, with two explicitly consented public lookups, encrypted
+record checks, reload/lock/unlock persistence, and no automatic repeat lookups.
+Job `1` was Completed with 5 USDC recorded budget and no observed digest at block
+`60495186`, hash `0xb46a787eee1bc887730192dca7c3151f4e33370d2e285619be2c3290e5dc10a5`.
+Job `183309` was Completed and its supplied submission receipt yielded the exact
+digest documented above, anchored at block `60495188`, hash
+`0x46a7c2bbab33347eabf7cf1c1597d2db9e6c479c38fe37b384d1c5c7c8585b42`.
+Desktop and 390-pixel mobile staging screenshots were visually inspected; no
+horizontal page overflow was found. The user's browser/vault was not opened.
+
+The first smoke attempt stopped after one successful response because Nginx and
+the API both supply `no-store`, yielding `no-store, no-store`. The smoke assertion
+was corrected to accept repeated identical no-store directives while rejecting
+other directives; the complete second run passed. This verification-script-only
+correction and this evidence document follow the deployed application candidate;
+they do not change application runtime code. Syntax, ESLint, and diff checks passed.
+
+Only existing staging API/web settings were changed: cumulative Jobs flags,
+the eleven-subcall source budget, and exact build markers. No production service,
+new service, paid provider, plan, or billing configuration was changed. Independent
+review remains pending, so no M06 RC tag, main merge, or M07 implementation has
+been made.
+
+Staging proof and independent review must be recorded before milestone closeout;
+M07 must not begin before this milestone is closed.
