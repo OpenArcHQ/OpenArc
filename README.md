@@ -1,6 +1,6 @@
 # OpenArc marketing and technical product package
 
-Status: **M05 complete on staging; M06 reference job evidence in release verification**
+Status: **M06 complete on staging; M07 live-proof preflight next**
 Prepared: **2026-08-15; ERC-8183 reference reviewed 2026-09-04**
 
 OpenArc is the proposed private intelligence, policy, and investigation layer for
@@ -9,7 +9,7 @@ requests, payments, service receipts, and settlement evidence into one coherent
 view without taking custody or pretending that an onchain transfer proves why an
 agent acted.
 
-Nothing in this package is a claim that OpenArc is live, endorsed by Circle or
+Nothing in this package is a claim that OpenArc is publicly launched, endorsed by Circle or
 Arc, available on Arc mainnet, or able to enforce another wallet's policies.
 
 Arc has announced public mainnet for September 16, 2026. OpenArc remains pinned
@@ -34,13 +34,16 @@ parity, and a separately reviewed mainnet release exist.
 
 ## Current implementation
 
-Milestones 00–05 are complete: foundation, evidence engine, encrypted local
+Milestones 00–06 are complete: foundation, evidence engine, encrypted local
 workspace, consent-first API boundary, Arc account/transaction observations,
-and ERC-8004 registry evidence. M06 adds fixed-reference ERC-8183 job evidence
+ERC-8004 registry evidence, and fixed-reference ERC-8183 job evidence
 behind the default-off `AGENT_JOBS_ENABLED` / `VITE_AGENT_JOBS_ENABLED` flags.
-Its source review and remaining release gates are recorded in
+Its source review and completed release gates are recorded in
 [`docs/releases/06-erc8183-job-evidence.md`](docs/releases/06-erc8183-job-evidence.md).
 This is not a public-release or mainnet readiness claim.
+
+[M07 preflight](docs/engineering/m07-x402-preflight.md) records the refreshed
+Gateway contract and external live-payment proof boundary before the next build.
 
 - `packages/shared` owns the fail-closed Arc Testnet registry and primitive
   schemas, versioned evidence records, append-only action states, deterministic
@@ -71,7 +74,7 @@ The foundation evidence record is in
 [`docs/releases/01-evidence-engine.md`](docs/releases/01-evidence-engine.md). The
 completed local-only M02 boundary is in
 [`docs/releases/02-encrypted-workspace.md`](docs/releases/02-encrypted-workspace.md).
-The active M03 boundary and ordered work are in
+The completed M03 boundary and ordered work are in
 [`docs/releases/03-api-privacy-boundary.md`](docs/releases/03-api-privacy-boundary.md).
 
 ## Logo

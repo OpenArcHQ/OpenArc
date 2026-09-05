@@ -1,8 +1,7 @@
 # M06 — ERC-8183 reference job evidence
 
-Status: implementation and independent engineering review passed; reviewed
-candidate awaiting final hosted gates and exact-SHA staging verification.
-Earlier candidate staging proof is recorded below. Not yet an RC or a public-release readiness claim.
+Status: **complete** — immutable `rc/06-erc8183-job-evidence/1`.
+This is an M06 Testnet milestone, not public-release or mainnet readiness.
 Branch: `codex/06-erc8183-job-evidence`, based on M05-complete main `e21ddae68e445bccadc5490593100dbd223bd9a1`.
 
 ## Source review — 2026-09-04
@@ -65,9 +64,9 @@ No signing, transaction broadcasts, payable integrations, new providers, or spen
 - [x] Route, browser client, permission, encrypted-storage, and UI failure tests.
 - [x] Jobs workspace with explicit local-only action association.
 - [x] Full local release gate, production-image tests, scans/SBOM, hosted CI.
-- [ ] Final reviewed candidate staging runtime verification (earlier candidate passed).
+- [x] Final reviewed candidate staging runtime verification.
 - [x] Independent review without unresolved P0/P1 findings.
-- [ ] Exact RC tag and milestone closeout.
+- [x] Exact RC tag and milestone closeout.
 
 The pinned Node 22 / Redis 8 clean-room release gate passed with 282 shared/API/web
 tests and 76 browser journeys, including audit, license, lint, typecheck, and build.
@@ -156,8 +155,8 @@ they do not change application runtime code. Syntax, ESLint, and diff checks pas
 Only existing staging API/web settings were changed: cumulative Jobs flags,
 the eleven-subcall source budget, and exact build markers. No production service,
 new service, paid provider, plan, or billing configuration was changed. Independent
-review remains pending, so no M06 RC tag, main merge, or M07 implementation has
-been made.
+review was pending at this earlier-candidate checkpoint, so no M06 RC tag, main
+merge, or M07 implementation had then been made. Final closeout follows below.
 
 ## Independent engineering review — 2026-09-05
 
@@ -182,8 +181,8 @@ no additional P0/P1 findings. This is engineering peer review, not the external
 application-security audit required for public hardening. Updated Arc/Circle
 primary-source documentation was also reviewed; M07 runtime and mainnet remain off.
 
-Final hosted gates and exact-SHA staging proof must pass before the immutable RC
-is tagged. M07 must not begin before this milestone is closed.
+Final hosted gates and exact-SHA staging proof passed before the immutable RC
+was tagged. M07 runtime work did not begin before this milestone closed.
 
 ### Fresh image-advisory gate
 
@@ -193,3 +192,57 @@ util-linux advisories on inherited `libuuid 2.41.4-r0`. Fixed versions begin at
 The web runtime and release guard now pin that available patched version. No
 advisory suppression, scan-severity relaxation, broad package upgrade, or failed
 candidate deployment was performed. Fresh image scans remain mandatory.
+
+## Final release evidence — 2026-09-05
+
+RC `rc/06-erc8183-job-evidence/1` points immutably to application commit
+`134a3a720494b134d8bfc01ff4751d65ed8384c3`. It passed
+[CI run 33994931544](https://github.com/OpenArcHQ/OpenArc/actions/runs/33994931544):
+verify 1m39s, images 4m33s, browser 13m03s. Checks included 67 shared, 133 API,
+and 86 web tests (286 total), 76 Chromium/WebKit journeys, exact production-image
+source flows, older-reader compatibility, verified TLS, real disposable Redis,
+audit/license checks, and all seven blocking HIGH/CRITICAL image scans.
+SBOM artifact `9977819293` has digest
+`sha256:f19c003debc26ce2553f6fead7fd57c5fab11a77755abdde3d5a759837536328`
+and expires `2026-12-04T22:06:06Z`.
+
+The final pinned Node 22/Redis 8 clean-room gate passed as image
+`sha256:6d793aab6292734bb527dc5ecfbc09052c5bc40e9604415bb09d99b2e77b0b8e`.
+The patched local web image also passed a fresh blocking HIGH/CRITICAL scan.
+Independent review confirmed Alpine's v3.23 security database requires
+`libuuid 2.41.6-r1` for CVE-2026-78408; five other findings were fixed in r0.
+Source: [Alpine v3.23 security database](https://secdb.alpinelinux.org/v3.23/main.json).
+
+Final staging deployments both reached `SUCCESS`:
+
+- API `<deployment-id>`, image
+  `sha256:c99e7c91e588b2bcb72e899ded17cac4d5e2e0b215eb36255d4b178b2f5c1e46`.
+- Web `<deployment-id>`, image
+  `sha256:1677163c9d00b7a822b416da9be809f12fe84817a00ce510d14610718d6107d1`.
+
+API readiness reported configuration and Redis up, source routes enabled, and
+the exact RC marker. The landing browser also verified that marker and the M06
+badge. Two completed disposable-browser smoke runs confirmed exact public job
+results, encrypted-only storage, mobile overflow bounds, and lock/reload/unlock
+persistence with no automatic repeat lookups. The final run anchored job `1` at
+`60647610` / `0x581a4b5783fefbb473acae175186c90f6479faffb5cbd15b57f1ba94d1be2bf7`
+and job `183309` at
+`60647612` / `0x6fef3bd9107dac56ba0f6bedae09dc6446c4deb01c5571fb8d07d9811dc9087b`.
+The latter retained the exact submission digest recorded above. Staging desktop,
+mobile, and landing screenshots were checked. No user vault or keys were accessed.
+
+Verification tooling is versioned separately: follow-up commit `fc9d3e4` captures
+response bodies immediately rather than after Playwright click auto-waiting.
+The first final smoke attempt encountered Chromium's unavailable-response-body
+error and was not counted as passing. The corrected harness passed against the
+same deployed application; syntax, ESLint, and independent review also passed.
+No application/runtime file differs between the RC and this verification-only
+follow-up. The tag points to the CI-verified/deployed application, not the later
+verification or evidence-document commits. The branch and RC were pushed and
+fast-forwarded into `main`; no tag was moved or reused.
+
+Only existing staging build markers changed in the final deployment. Production
+has no services in this project; no billing setting or additional service changed.
+M07's external live-payment proof requires an authentic artifact bundle or separate
+authorization for an isolated Testnet payer. See the
+[M07 preflight](../engineering/m07-x402-preflight.md).
