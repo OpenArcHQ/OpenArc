@@ -449,6 +449,7 @@ for (const [relativePath, requiredPackages] of [
       "libcurl=8.22.0-r0",
       "libexpat=2.8.4-r0",
       "libssl3=3.5.8-r0",
+      "libuuid=2.41.6-r1",
       "libxml2=2.13.9-r1",
       "nghttp2-libs=1.69.0-r0",
     ],

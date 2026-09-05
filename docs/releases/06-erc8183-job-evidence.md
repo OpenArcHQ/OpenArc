@@ -184,3 +184,12 @@ primary-source documentation was also reviewed; M07 runtime and mainnet remain o
 
 Final hosted gates and exact-SHA staging proof must pass before the immutable RC
 is tagged. M07 must not begin before this milestone is closed.
+
+### Fresh image-advisory gate
+
+Hosted run `33994662432` rejected the candidate's web image with six HIGH
+util-linux advisories on inherited `libuuid 2.41.4-r0`. Fixed versions begin at
+`2.41.6-r0`; the official Alpine 3.23 repository currently supplies `2.41.6-r1`.
+The web runtime and release guard now pin that available patched version. No
+advisory suppression, scan-severity relaxation, broad package upgrade, or failed
+candidate deployment was performed. Fresh image scans remain mandatory.
