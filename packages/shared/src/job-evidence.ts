@@ -26,7 +26,7 @@ export const JobEvidenceSchema = z.strictObject({
   schemaVersion: z.literal("openarc.job-evidence.v1"),
   network: z.literal(ARC_TESTNET.caip2),
   jobId: Uint256DecimalSchema.refine((value) => value !== "0"),
-  anchor: ArcAnchorSchema,
+  anchor: ArcAnchorSchema.extend({ blockNumber: Uint256DecimalSchema }),
   client: EvmAddressSchema,
   provider: EvmAddressSchema,
   evaluator: EvmAddressSchema,
@@ -87,6 +87,7 @@ export const JobEvidenceSchema = z.strictObject({
   if (job.provider === zero && job.status !== "Open" && job.status !== "Rejected") {
     issue(["provider"], "This state requires an assigned provider");
   }
+  if (job.provider === zero && job.budget.explicitlySet) issue(["budget"], "An unassigned provider cannot have set a budget");
   if (job.status === "Expired" && !job.expiry.deadlineReachedAtAnchor) issue(["status"], "Expired state precedes deadline");
   if (job.deliverable.availability === "submission_event") {
     if (job.status === "Open" || job.status === "Funded") issue(["deliverable"], "Submission conflicts with current state");

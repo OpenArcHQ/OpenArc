@@ -67,8 +67,10 @@ No signing, transaction broadcasts, payable integrations, new providers, or spen
 
 The pinned Node 22 / Redis 8 clean-room release gate passed with 282 shared/API/web
 tests and 76 browser journeys, including audit, license, lint, typecheck, and build.
-A subsequent default-off Jobs flag test passed separately (the cumulative suite
-now contains 283 checks); final lint/typecheck also passed. Desktop and
+The final host release gate then passed with 284 checks and all 76 browser
+journeys after the default-off flag and source-invariant regressions were added.
+The staging smoke script uses an isolated disposable browser and two bounded
+public lookups; it never opens the user's browser vault. Desktop and
 390-pixel mobile screenshots were inspected; the inherited cramped multi-column
 card was replaced with a dedicated readable job layout. No serious/critical axe
 violations were found in the rendered Jobs view.

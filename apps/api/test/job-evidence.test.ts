@@ -113,6 +113,7 @@ describe("M06 reviewed reference job evidence", () => {
     ["zero expiry", { job: { expiredAt: 0n } }, "SOURCE_MALFORMED"],
     ["unset nonzero budget", { explicitlySet: false }, "SOURCE_MALFORMED"],
     ["missing assigned provider", { job: { provider: zero, status: 1 } }, "SOURCE_MALFORMED"],
+    ["budget assigned without a provider", { job: { provider: zero, budget: 0n } }, "SOURCE_MALFORMED"],
     ["missing client", { job: { client: zero } }, "SOURCE_MALFORMED"],
     ["missing evaluator", { job: { evaluator: zero } }, "SOURCE_MALFORMED"],
     ["premature expired state", { job: { status: 5 } }, "SOURCE_MALFORMED"],
@@ -151,6 +152,11 @@ describe("M06 reviewed reference job evidence", () => {
     expect(JobEvidenceSchema.safeParse({ ...result, budget: { ...result.budget, decimal: "1" } }).success).toBe(false);
     expect(JobEvidenceSchema.safeParse({ ...result, expiry: { ...result.expiry, deadlineReachedAtAnchor: true } }).success).toBe(false);
     expect(JobEvidenceSchema.safeParse({ ...result, source: { ...result.source, contract: provider } }).success).toBe(false);
+    expect(JobEvidenceSchema.safeParse({ ...result, anchor: { ...result.anchor, blockNumber: (1n << 256n).toString() } }).success).toBe(false);
+    for (const value of ["garbage", "1.0", "", "-1"]) {
+      expect(JobEvidenceSchema.safeParse({ ...result, budget: { ...result.budget, baseUnits: value } }).success).toBe(false);
+      expect(JobEvidenceSchema.safeParse({ ...result, expiry: { ...result.expiry, unixSeconds: value } }).success).toBe(false);
+    }
   });
 
   it.each(["0", "01", "-1", "1.0", "garbage", "", ((1n << 256n)).toString()])("rejects invalid job ID %s", (jobId) => {
