@@ -211,3 +211,57 @@ a WebKit-compatible IndexedDB interception; no production assertion was weakened
 Review confirms the proven P1 path is resolved. The final candidate still requires
 the full 524-unit/integration, 112-development-browser and hosted production gates,
 plus live staging regression verification before RC/main closure.
+
+### Corrected candidate verification
+
+Final application candidate: `5fe1bc47d1870c541d64bf042c0a9cec98c3307f`.
+The complete Node 22 Docker gate passed 524 unit/integration tests (221 shared,
+185 API, 118 web) and 112 development browser tests with no retries, including
+both browsers' permanent unlock-boundary regression. Production audit, four-group
+license policy, lint, types, builds and structural checks passed. Gate image:
+`sha256:596479f86388679b2e9d7dc131c977e5d8a8fb0e7b412dcda130931ee6dd5693`;
+manifest list `sha256:545d8d6b72455faf57a7fdf7b6870f62b4dae99923fc98240e0b0ee4a021b78b`.
+
+[CI run 34009370487](https://github.com/OpenArcHQ/OpenArc/actions/runs/34009370487)
+passed code verification and all ten blocking image scans. Its ten CycloneDX SBOMs
+are in exact-SHA artifact `9982058952`, 975,890 bytes, digest
+`sha256:12ec8ee60f17ee2d58918feefb1fd53ee9a52c49a316882a3af95093418bd6f9`,
+expiry `2026-12-05T03:35:26Z`. The hosted browser job failed on WebKit's first
+M09 development journey: the graph checkbox click did not change its state after
+the target moved during scrolling/focus. Production and compatibility completion
+are not established by this run. Investigation and a fresh gate are required;
+no RC has been created. The intermediate selector-only CI run
+`34009026442` was superseded by this corrected candidate and is not release proof.
+
+The same existing Railway staging services were updated only after the local gate,
+hosted code verification and scans passed:
+
+- API deployment `<deployment-id>`, successful, image
+  `sha256:718c7e7c071d11c965e8713dba161c8bb26905547e7934ecc4af6cd1645e4e41`.
+- Web deployment `<deployment-id>`, successful, image
+  `sha256:12d7a29daf52207b9a3132e6fe5e9c0256090f1eb10a95ba4cc52dd17d64434c`.
+- API readiness and web HTML expose exact `5fe1bc47…` with HTTP 200 and valid TLS;
+  Redis, source routes and configuration are ready.
+- Eight live M09 journeys passed first try (19.0s); fourteen live M08 regressions
+  passed first try (25.8s), both asserting the exact build marker.
+- Ten supplemental live cross-tab/inactivity checks passed first try (30.4s),
+  including both browsers' stale-decrypted-session regression. Total: 32 live
+  checks passed. The supplemental suite used the same public origin with normal
+  TLS and markers checked before the sequence; it does not internally assert SHA.
+- These tests used fresh synthetic local vaults, no user vault, no payments or
+  signing, and no source fetch/XHR requests. No public-origin TLS bypass or proxy
+  test header was used. Redis, production, service count and plan were unchanged.
+
+The failed hosted run reached 110 development cases: 109 passed and one failed;
+the final two flag-off cases and all 44 production cases were not reached. There
+were no retries. Its exact-SHA diagnostics artifact `9982115185` is 9,055,851 bytes,
+digest `sha256:c28b0f527e64afb23cc7727ce73cadd0a307ed9b36916429962499968d1c581b`,
+expiry `2026-09-09T03:46:57Z`. The trace shows the viewport moved 17 pixels during
+checkbox dispatch. Selection focus now runs before paint, prevents implicit focus
+scrolling and explicitly positions the selected heading instantly. Other site
+motion is unchanged. The graph journey explicitly exercises normal motion,
+heading focus and repeated ordinary checkbox clicks without forced actions or
+test retries; reduced-motion/mobile coverage remains separate.
+The normal-motion journey passed six focused runs (three per browser, 27.8s), each
+with three uncheck/check cycles. Typecheck, lint and independent focused review
+passed; the final full gate remains required rather than inferred from stress QA.

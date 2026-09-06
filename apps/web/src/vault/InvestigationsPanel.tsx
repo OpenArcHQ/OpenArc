@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   buildInvestigationIndex, filterInvestigations, buildInvestigationDetail,
   INVESTIGATION_LIMITS, INVESTIGATION_SOURCE_CLASSES, INVESTIGATION_STATUSES,
@@ -29,7 +29,14 @@ export function InvestigationsPanel(props: Props) {
   const mounted = useRef(true);
   const detailHeading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  useEffect(() => { if (selected && mounted.current) detailHeading.current?.focus(); }, [selected]);
+  useLayoutEffect(() => {
+    const heading = detailHeading.current;
+    if (!selected || !heading) return;
+    // Finish this accessibility jump before paint: delayed focus scrolling can
+    // move the next control between pointer-down and pointer-up in WebKit.
+    heading.focus({ preventScroll: true });
+    heading.scrollIntoView({ behavior: "instant", block: "start" });
+  }, [selected]);
   useEffect(() => { setExportPreview(null); setExportError(null); }, [selected, detailPage, policyRecordId, exportOptions]);
   const sourceHistory = useMemo(() => {
     const enabledConnectors: string[] = [];

@@ -33,11 +33,19 @@ async function report(page: Page, count = 1) {
   return data;
 }
 test("saved fixtures have identical graph/list facts, local filters and honest source history", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   const network = requests(page); await create(page); await fixtures(page);
   await page.getByRole("button", { name: /^Inspect /u }).first().click();
   await expect(page.getByRole("heading", { name: "Selected investigation", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Selected investigation", exact: true })).toBeFocused();
   await expect(page.getByRole("heading", { name: "Chronological evidence list", exact: true })).toBeVisible();
   await page.getByLabel("Show evidence graph", { exact: true }).check();
+  for (let index = 0; index < 3; index += 1) {
+    await expect(page.getByLabel("Show evidence graph", { exact: true })).toBeChecked();
+    await page.getByLabel("Show evidence graph", { exact: true }).uncheck();
+    await expect(page.getByLabel("Show evidence graph", { exact: true })).not.toBeChecked();
+    await page.getByLabel("Show evidence graph", { exact: true }).check();
+  }
   const list = await page.locator('.investigation-evidence > [data-node-key]').evaluateAll(elements => elements.map(element => element.getAttribute("data-node-key")));
   const graph = await page.locator('.investigation-graph svg [data-node-key]').evaluateAll(elements => elements.map(element => element.getAttribute("data-node-key")));
   expect(list.length).toBeGreaterThan(0); expect(graph).toEqual(list);
