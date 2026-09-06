@@ -11,6 +11,10 @@ test("runs the encrypted workspace lifecycle without plaintext or network leakag
   page,
   baseURL,
 }, testInfo) => {
+  // This combined lifecycle includes multiple independent PBKDF2 rounds for
+  // creation, backup, restore and recovery. Bound the whole scenario without
+  // changing any action/assertion timeout or application performance contract.
+  test.setTimeout(60_000);
   const appOrigin = new URL(baseURL ?? "").origin;
   const dynamicRequests: string[] = [];
   const requestObservations: string[] = [];
@@ -313,6 +317,9 @@ test("locks at the exact inactivity deadline", async ({ page }) => {
 
 test("cancels a hidden pre-unlock operation before it can persist or reveal plaintext", async ({ page }) => {
   await page.goto("/workspace");
+  // The startup capability probe also derives a key. Hold only the intended
+  // create operation after the probe has made the access form available.
+  await expect(page.getByRole("heading", { name: "Create a private workspace", exact: true })).toBeVisible();
   await page.evaluate(() => {
     const subtle = crypto.subtle;
     const original = subtle.deriveKey.bind(subtle);
