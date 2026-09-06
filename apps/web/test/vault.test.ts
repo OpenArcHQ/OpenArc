@@ -1068,7 +1068,7 @@ describe("M02 static privacy boundary", () => {
     const [dockerfile, nginx, workflow, productionTest] = await Promise.all([
       readFile(path.resolve(import.meta.dirname, "../Dockerfile"), "utf8"),
       readFile(path.resolve(import.meta.dirname, "../nginx.conf"), "utf8"),
-      readFile(path.resolve(import.meta.dirname, "../../../.github/workflows/release-gates.yml"), "utf8"),
+      readFile(path.resolve(import.meta.dirname, "../../../docs/engineering/release-gates.reference.yml"), "utf8"),
       readFile(path.resolve(import.meta.dirname, "../../../e2e-production/workspace-production.spec.ts"), "utf8"),
     ]);
     expect(dockerfile).toContain("ARG VITE_ENCRYPTED_WORKSPACE_ENABLED=false");
