@@ -21,6 +21,8 @@ jobs:
           fetch-depth: 0
       - name: Check public commit identities
         run: node scripts/check-public-history.mjs
+      - name: Test public history safeguards
+        run: node --test scripts/check-public-history.test.mjs
       - name: Verify source, units and development browser journeys
         run: docker build -f scripts/Dockerfile.node22-gate -t openarc-public-source-gate .
       - name: Record verification boundary
