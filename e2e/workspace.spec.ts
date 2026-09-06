@@ -15,6 +15,7 @@ test("runs the encrypted workspace lifecycle without plaintext or network leakag
   // creation, backup, restore and recovery. Bound the whole scenario without
   // changing any action/assertion timeout or application performance contract.
   test.setTimeout(60_000);
+  page.setDefaultTimeout(30_000);
   const appOrigin = new URL(baseURL ?? "").origin;
   const dynamicRequests: string[] = [];
   const requestObservations: string[] = [];
