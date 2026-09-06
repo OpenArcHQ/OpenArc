@@ -128,3 +128,12 @@ An earlier clean-room run was cancelled after these source changes superseded it
 snapshot and concurrent local browser work caused severe test timing contention.
 It is not release evidence. The final clean-room gate runs alone against the fixed
 source before any M08 staging deployment.
+
+The clean-room gate also exposed an inherited Redis deadline gap: the client
+library stops listening for cancellation after writing a command, so a stalled
+reply could keep a request waiting beyond its deadline. The budget boundary now
+owns its deadline race, consumes late replies/rejections, and never retries or
+refunds a potentially executed reservation. The Redis fault fixture holds its
+pause until rejection and drains the connection before inspecting counters;
+deterministic pending-reply and caller-cancellation cases cover the same boundary.
+The failed run is not release evidence; all gates must pass on the corrected SHA.

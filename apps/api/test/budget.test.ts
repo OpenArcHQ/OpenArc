@@ -300,14 +300,57 @@ describe("M03 real Redis atomic controls", () => {
   it("does not retry or dispatch when Redis stops replying within the command deadline", async () => {
     const budget = new SourceBudget(clients[1]!, options({ commandTimeoutMs: 25 }));
     const lease = await budget.begin("arc_rpc", "arc_account", "192.0.2.1", signal());
-    await clients[0]!.sendCommand(["CLIENT", "PAUSE", "150", "ALL"]);
+    // Hold the fault until dispatch has rejected. A short server-clock pause can
+    // expire before its ACK reaches a contended test worker, testing no fault at all.
+    // WRITE blocks every EVAL (the budget command) but allows CLIENT UNPAUSE.
+    await clients[0]!.sendCommand(["CLIENT", "PAUSE", "10000", "WRITE"]);
     const operation = vi.fn(async () => "not sent");
-    await expect(lease.dispatch(operation)).rejects.toMatchObject({ code: "BUDGET_STORE_UNAVAILABLE" });
-    await delay(220);
+    try {
+      await expect(lease.dispatch(operation)).rejects.toMatchObject({ code: "BUDGET_STORE_UNAVAILABLE" });
+      expect(operation).not.toHaveBeenCalled();
+    } finally {
+      await clients[0]!.sendCommand(["CLIENT", "UNPAUSE"]);
+    }
+    // Drain the dispatch connection: an already written reservation must finish
+    // before inspecting counters, without relying on an arbitrary sleep.
+    expect(await clients[1]!.ping()).toBe("PONG");
     expect(operation).not.toHaveBeenCalled();
     // An already written command may reserve once after timeout; no retry/refund.
     const state = await clients[0]!.hGetAll(dailyKey);
     expect(Number(state.subcalls)).toBeLessThanOrEqual(1);
     expect(Number(state.attempts)).toBe(1);
+  });
+
+  it.each(["resolve", "reject"] as const)("owns the in-flight command deadline and safely absorbs a late %s", async (outcome) => {
+    let resolveReply!: (value: unknown) => void;
+    let rejectReply!: (cause: Error) => void;
+    const pending = new Promise<unknown>((resolve, reject) => { resolveReply = resolve; rejectReply = reject; });
+    // Match a transport that removes its cancellation listener after writing.
+    const sendCommand = vi.fn().mockResolvedValueOnce([0, 0]).mockReturnValueOnce(pending);
+    const budget = new SourceBudget({ isReady: true, sendCommand }, options({ commandTimeoutMs: 25 }));
+    const lease = await budget.begin("arc_rpc", "arc_account", "192.0.2.1", signal());
+    const operation = vi.fn(async () => "not sent");
+    await expect(lease.dispatch(operation)).rejects.toMatchObject({ code: "BUDGET_STORE_UNAVAILABLE" });
+    expect(operation).not.toHaveBeenCalled();
+    if (outcome === "resolve") resolveReply([0, 0]);
+    else rejectReply(new Error("SYNTHETIC_LATE_TRANSPORT_ERROR"));
+    await delay(0);
+    expect(operation).not.toHaveBeenCalled();
+    expect(sendCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors caller cancellation while a written reservation is still waiting for a reply", async () => {
+    let resolveReply!: (value: unknown) => void;
+    const pending = new Promise<unknown>((resolve) => { resolveReply = resolve; });
+    const sendCommand = vi.fn().mockResolvedValueOnce([0, 0]).mockReturnValueOnce(pending);
+    const controller = new AbortController();
+    const budget = new SourceBudget({ isReady: true, sendCommand }, options({ commandTimeoutMs: 2000 }));
+    const lease = await budget.begin("arc_rpc", "arc_account", "192.0.2.1", controller.signal);
+    const operation = vi.fn(async () => "not sent");
+    const dispatched = lease.dispatch(operation);
+    controller.abort();
+    await expect(dispatched).rejects.toMatchObject({ code: "BUDGET_STORE_UNAVAILABLE" });
+    resolveReply([0, 0]); await delay(0);
+    expect(operation).not.toHaveBeenCalled(); expect(sendCommand).toHaveBeenCalledTimes(2);
   });
 });

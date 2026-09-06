@@ -77,9 +77,24 @@ export class SourceBudget {
   private async command(args: string[], signal: AbortSignal): Promise<unknown> {
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(this.timeout)]);
     if (!this.redis.isReady || deadline.aborted) throw new ApiBoundaryError("BUDGET_STORE_UNAVAILABLE");
-    const result = await this.redis.sendCommand(args, { abortSignal: deadline, timeout: this.timeout });
-    if (deadline.aborted) throw new ApiBoundaryError("BUDGET_STORE_UNAVAILABLE");
-    return result;
+    // Redis cancels queued commands, but an already-written command can keep
+    // waiting for its reply. Own the deadline without retrying or refunding a
+    // reservation that the server may still execute. Handle late rejections too.
+    let onAbort: () => void = () => undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(new ApiBoundaryError("BUDGET_STORE_UNAVAILABLE"));
+      deadline.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      const result = await Promise.race([
+        aborted,
+        this.redis.sendCommand(args, { abortSignal: deadline, timeout: this.timeout }),
+      ]);
+      if (deadline.aborted) throw new ApiBoundaryError("BUDGET_STORE_UNAVAILABLE");
+      return result;
+    } finally {
+      deadline.removeEventListener("abort", onAbort);
+    }
   }
 
   private async reserve(source: SourceClass, keys: string[], mode: "attempt" | "subcall", signal: AbortSignal): Promise<void> {
