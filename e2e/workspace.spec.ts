@@ -232,6 +232,73 @@ test("coordinates revision changes and lock across tabs", async ({ context, page
   await expect(second.getByRole("heading", { name: "Create a private workspace" })).toBeVisible();
 });
 
+test("rejects a stale decrypted session when a previously announced peer lock commits during derivation", async ({ context, page }) => {
+  const sourceRequests: string[] = [];
+  context.on("request", request => {
+    if (["fetch", "xhr"].includes(request.resourceType())) sourceRequests.push(request.url());
+  });
+  await page.goto("/workspace");
+  await page.getByLabel("Workspace passphrase", { exact: false }).fill(localPassphrase);
+  await page.getByLabel("Confirm passphrase").fill(localPassphrase);
+  await page.getByRole("button", { name: "Create encrypted workspace" }).click();
+  await page.getByRole("checkbox", { name: /I saved it somewhere private/u }).check();
+  await page.getByRole("button", { name: "Continue to workspace", exact: true }).click();
+  await page.getByRole("button", { name: "Skip", exact: true }).click();
+  await expect(page.getByText("Tour preference saved inside the encrypted workspace.", { exact: true })).toBeVisible();
+  const second = await context.newPage();
+  await second.goto("/workspace"); await unlock(second, localPassphrase);
+  await page.evaluate(() => {
+    const original = IDBFactory.prototype.open;
+    IDBFactory.prototype.open = function (...args) {
+      const request = original.apply(this, args);
+      Object.defineProperty(request, "onsuccess", { configurable: true,
+        set(callback: (this: IDBOpenDBRequest, event: Event) => unknown) {
+          request.addEventListener("success", (event: Event) => {
+            Object.assign(globalThis, { __openArcReleaseLockOpen: () => callback.call(request, event) });
+          });
+        },
+      });
+      IDBFactory.prototype.open = original;
+      return request;
+    };
+  });
+  // The real immediate hint clears the peer, while the durable write is held.
+  await page.getByRole("button", { name: "Lock workspace", exact: true }).click();
+  await expect(second.getByRole("heading", { name: "Unlock your private workspace", exact: true })).toBeVisible();
+  await second.evaluate(() => {
+    const original = crypto.subtle.deriveKey.bind(crypto.subtle);
+    crypto.subtle.deriveKey = (...args) => {
+      crypto.subtle.deriveKey = original;
+      return new Promise((resolve, reject) => {
+        Object.assign(globalThis, { __openArcReleaseUnlockDerivation: () => original(...args).then(resolve, reject) });
+      });
+    };
+    let mounted = false;
+    new MutationObserver(() => {
+      if (document.body.textContent?.includes("UNLOCKED LOCALLY")) mounted = true;
+    }).observe(document.body, { subtree: true, childList: true });
+    Object.assign(globalThis, { __openArcStaleSessionMounted: () => mounted });
+  });
+  await second.getByLabel("Workspace passphrase", { exact: false }).fill(localPassphrase);
+  await second.getByRole("button", { name: "Unlock workspace", exact: true }).click();
+  await second.waitForFunction(() => "__openArcReleaseUnlockDerivation" in globalThis);
+  await page.evaluate(() => (globalThis as typeof globalThis & { __openArcReleaseLockOpen: () => void }).__openArcReleaseLockOpen());
+  // Sender access appears only after its durable lock transaction completes.
+  await expect(page.getByRole("heading", { name: "Unlock your private workspace", exact: true })).toBeVisible();
+  await second.evaluate(() => (globalThis as typeof globalThis & { __openArcReleaseUnlockDerivation: () => void }).__openArcReleaseUnlockDerivation());
+  await second.waitForFunction(() =>
+    (globalThis as typeof globalThis & { __openArcStaleSessionMounted: () => boolean }).__openArcStaleSessionMounted() ||
+    document.body.textContent?.includes("The encrypted workspace changed while this action was finishing. Unlock again to load the latest revision."));
+  expect(await second.evaluate(() => (globalThis as typeof globalThis & { __openArcStaleSessionMounted: () => boolean }).__openArcStaleSessionMounted())).toBe(false);
+  await expect(second.getByText("The encrypted workspace changed while this action was finishing. Unlock again to load the latest revision.", { exact: true })).toBeVisible();
+  await expect(second.getByRole("heading", { name: "Unlock your private workspace", exact: true })).toBeVisible();
+  expect(await second.evaluate(() => (globalThis as typeof globalThis & { __openArcStaleSessionMounted: () => boolean }).__openArcStaleSessionMounted())).toBe(false);
+  await expect(second.getByText("UNLOCKED LOCALLY", { exact: true })).toHaveCount(0);
+  await unlock(second, localPassphrase);
+  await expect(second.getByText("UNLOCKED LOCALLY", { exact: true })).toBeVisible();
+  expect(sourceRequests).toEqual([]);
+});
+
 test("keeps peer access hidden until BroadcastChannel metadata readback completes", async ({ context, page }) => {
   const sourceRequests: string[] = [];
   context.on("request", request => {

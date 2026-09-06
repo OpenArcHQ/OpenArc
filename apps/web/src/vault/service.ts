@@ -112,6 +112,18 @@ export async function unlockLocalWorkspace(
   const snapshot = await readVaultSnapshot(meta.vaultId, meta.revision, meta.coordinationRevision);
   const unlocked = await unlockVaultSnapshot(snapshot.meta, snapshot.records, passphrase);
   assertWorkspaceIntegrity(unlocked.records);
+  // Decryption is asynchronous. A peer may commit a lock, replacement, save or
+  // deletion after the initial snapshot was read but before it can be revealed.
+  const current = await readVaultMeta();
+  if (
+    !current ||
+    current.vaultId !== snapshot.meta.vaultId ||
+    current.revision !== snapshot.meta.revision ||
+    current.coordinationRevision !== snapshot.meta.coordinationRevision ||
+    current.deletionPending
+  ) {
+    throw new VaultError("VAULT_CONFLICT", "The workspace changed while unlocking. Unlock again to load the current revision.");
+  }
   return unlocked;
 }
 

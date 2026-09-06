@@ -3,7 +3,7 @@ import "fake-indexeddb/auto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ARC_ACCOUNT_SNAPSHOT_PATH,
   AGENT_REGISTRY_DISCLOSURE,
@@ -142,10 +142,49 @@ function m05RegistryRecords(recordRevision: string, linkedAgentProfileRecordId: 
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await deleteDatabase();
 });
 
 describe("encrypted local workspace", () => {
+  it.each(["lock", "deletion", "record revision", "replacement"] as const)(
+    "rejects a stale unlock when %s changes during key derivation without writing ciphertext", async (change) => {
+      const created = await createLocalWorkspace(originalPassphrase);
+      const originalRecords = (await readRawDatabase()).records;
+      let reached!: () => void;
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { reached = resolve; });
+      const barrier = new Promise<void>(resolve => { release = resolve; });
+      const derive = crypto.subtle.deriveKey.bind(crypto.subtle);
+      vi.spyOn(crypto.subtle, "deriveKey").mockImplementationOnce(async (...args) => {
+        reached(); await barrier; return derive(...args);
+      });
+      // Install only after creation: this barrier belongs to this unlock, not a capability probe.
+      const pending = unlockLocalWorkspace(created.meta, originalPassphrase);
+      const rejected = expect(pending).rejects.toMatchObject({ code: "VAULT_CONFLICT" });
+      await held;
+      try {
+        if (change === "lock") await signalWorkspaceLock(created.meta);
+        else if (change === "deletion") await prepareLocalWorkspaceDeletion(created.meta);
+        else if (change === "record revision") {
+          const profile = createAgentProfileRecord({ displayName: "Concurrent saved profile", walletAddress: "", frameworkLabel: "", purposeNote: "" }, created.meta.revision);
+          await saveWorkspaceRecords(created, [profile]);
+        } else {
+          await destroyLocalWorkspace();
+          await createLocalWorkspace(originalPassphrase);
+        }
+        const afterChange = await readRawDatabase();
+        if (change === "lock" || change === "deletion") expect(afterChange.records).toEqual(originalRecords);
+        release(); await rejected;
+        expect((await readRawDatabase()).records).toEqual(afterChange.records);
+        const freshMeta = await readVaultMeta();
+        expect(freshMeta).not.toBeNull();
+        if (change === "deletion") await expect(unlockLocalWorkspace(freshMeta!, originalPassphrase)).rejects.toMatchObject({ code: "VAULT_CONFLICT" });
+        else await expect(unlockLocalWorkspace(freshMeta!, originalPassphrase)).resolves.toMatchObject({ meta: freshMeta });
+      } finally { release(); }
+    },
+  );
+
   it("round-trips M06 job consent and evidence through backup, recovery, and paired deletion", async () => {
     const created = await createLocalWorkspace(originalPassphrase);
     const result = await runJobPermissionFlow({ workspace: created, origin: "https://app.example.test",

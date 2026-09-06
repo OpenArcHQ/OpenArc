@@ -1,6 +1,6 @@
 # M09 — investigation operations
 
-Status: **implementation and staging QA complete; final hosted browser gate pending**.
+Status: **implementation and unlock-boundary regression verification complete; fresh full gates pending**.
 Branch: `codex/09-investigation-operations`, from M08-complete main
 `8da23ba0350c932e7d5f68aba1169aea99117d1c`.
 M08 RC: `rc/08-local-agent-connector/1` at `16cd6f5cf557512cc373c2c5d1fb57dc89c0d63f`.
@@ -92,7 +92,7 @@ completed without observation. These states do not infer a successful lookup res
 - [x] Desktop/mobile/keyboard/reduced-motion/axe browser journeys.
 - [x] Zero source calls, export cancellation, lock/revision invalidation.
 - [x] Large bounded dataset responsiveness and explicit overflow failures.
-- [x] Independent review; no unresolved P0/P1 findings.
+- [x] Independent review; reproduced unlock-boundary P1 fixed and regression verified.
 - [ ] Full Node 22 gate, exact CI/scans/SBOM, exact staging build and live proof.
 - [ ] Immutable RC and main closure before M10.
 
@@ -175,3 +175,39 @@ checks. Redis, production, service count and the hosting plan were unchanged.
 M09 adds no persisted record kind. Hiding Investigations does not remove evidence,
 and the M08 reader remains the minimum reader for M08 agent-report records. The
 downloaded plaintext report is not a backup and is never automatically uploaded.
+
+### Additional pre-release session-boundary finding
+
+The selector-only candidate `20e6d016b41aad8b0e9e0f921c4a29801ff6663e` passed
+the complete local Node 22 gate (520 unit/integration and 110 browser tests,
+zero retries); its gate image manifest is
+`sha256:ab4198e0eaed9892a4b63cfd976a3ac4e8157e7a8bac5505836831ad616c97a1`.
+Independent local seed and restore checks also passed at that exact SHA with
+unchanged ciphertext and no source requests. Historical-reader verification is
+reserved for the hosted compatibility sequence, not inferred from those two checks.
+
+A separate deterministic Chromium review reproduced an inherited P1 session-boundary
+race twice: a peer lock committed while another tab was deriving its unlock key,
+but that tab accepted the stale decrypted snapshot before its next revision poll.
+The correct passphrase was still required; this was not a password bypass. No
+user workspace or real data was used. This finding blocks RC/main closure even
+though it predates M09. The fix rereads durable metadata after decryption and
+rejects changed vault identity, record revision, coordination revision or pending
+deletion before returning the decrypted workspace. Unit and browser regression
+proof plus fresh exact-candidate gates are required. The separate precommit lock
+hint/form-reset timing annoyance remains a hardening follow-up; it is not a
+substitute for this release-blocking stale-session check.
+
+Four deterministic unit regressions passed for lock, deletion, record-save and
+workspace-replacement changes during held key derivation; the full vault suite
+passed 45 tests. Ciphertext is not rewritten by a rejected unlock, and a fresh
+current-revision unlock succeeds where the workspace remains available.
+The permanent Chromium and WebKit regression failed against a task-only served
+baseline with only this guard removed: both detected an actual stale private UI
+mount, not a fixture timeout. With the guard present, both passed first time after
+the fixture was finalized (1.3s / 1.9s), asserting no stale mount, the exact revision
+conflict notice and successful fresh unlock. Original fixture development required
+a WebKit-compatible IndexedDB interception; no production assertion was weakened.
+Review confirms the proven P1 path is resolved. The final candidate still requires
+the full 524-unit/integration, 112-development-browser and hosted production gates,
+plus live staging regression verification before RC/main closure.
