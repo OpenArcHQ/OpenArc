@@ -218,7 +218,7 @@ test("coordinates revision changes and lock across tabs", async ({ context, page
     });
     Object.assign(globalThis, { __openArcLockedDeleteBlocker: database });
   });
-  await page.getByRole("button", { name: /05 Settings/u }).click();
+  await page.getByRole("navigation").getByRole("button", { name: /^\d+ Settings\b/u }).click();
   await page.getByRole("checkbox", { name: /cannot be undone/u }).check();
   await page.getByRole("button", { name: "Permanently delete", exact: true }).click();
   await expect(second.getByRole("heading", { name: "Deleting encrypted workspace" })).toBeVisible();
@@ -364,7 +364,7 @@ test("uses revision polling when BroadcastChannel is unavailable", async ({ cont
     });
     Object.assign(globalThis, { __openArcDeleteBlocker: database });
   });
-  await page.getByRole("button", { name: /05 Settings/u }).click();
+  await page.getByRole("navigation").getByRole("button", { name: /^\d+ Settings\b/u }).click();
   await page.getByRole("checkbox", { name: /cannot be undone/u }).check();
   await page.getByRole("button", { name: "Permanently delete", exact: true }).click();
   await expect(second.getByRole("heading", { name: "Deleting encrypted workspace" })).toBeVisible();
