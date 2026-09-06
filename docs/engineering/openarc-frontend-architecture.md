@@ -734,6 +734,11 @@ service digests perform no network requests. A false-by-default
 
 Searches only decrypted local records plus explicit one-ID source lookup. Shows
 expected versus observed, gaps, conflicts, source links, and redacted report.
+M09 itself performs no source lookup: existing source panels retain their explicit
+consent flow. Its bounded local projection, graph/list parity, default-redacted
+JSON export and saved source-history semantics are frozen in
+[`09-investigation-operations.md`](../releases/09-investigation-operations.md).
+`VITE_INVESTIGATIONS_ENABLED` is false by default and requires the encrypted workspace.
 
 ### Sources
 

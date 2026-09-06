@@ -1,5 +1,9 @@
 # OpenArc backend architecture
 
+M09 investigation operations introduce no backend route, provider or persistence.
+Search, evidence projection and report export use already-saved local records;
+existing consent and source budgets remain unchanged.
+
 M08 local agent import and policy comparison add no API route, source adapter,
 server persistence or provider. All imported fields remain inside the encrypted
 browser workspace; see [M08 scope](../releases/08-local-agent-connector.md).

@@ -777,6 +777,12 @@ Exit gate:
 
 ### Milestone 09 - investigation operations
 
+The active contract, explicit local-only boundaries, projection/export limits and
+verification ledger are frozen in
+[`09-investigation-operations.md`](../releases/09-investigation-operations.md).
+M09 adds no stored record kind; optional notes are omitted. Existing typed evidence
+classes remain separate, and redacted export is an explicit plaintext operation.
+
 Build:
 
 - action search and exception inbox;
