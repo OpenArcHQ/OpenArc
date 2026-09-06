@@ -463,6 +463,35 @@ for (const token of [
   if (!m02WorkflowSource.includes(token)) failures.push(`Hosted M07 exact-source/image gate is missing ${token}`);
 }
 
+for (const [file, tokens] of [
+  ["packages/shared/src/agent-import.ts", ["openarc.agent-import.v1", "AGENT_IMPORT_MAX_BYTES", "UNSUPPORTED_SIGNATURE", "FUTURE_CAPTURE"]],
+  ["packages/shared/src/agent-policy.ts", ["openarc.agent-policy.v2", "partial_supplied_events", "DAILY_HISTORY_INCOMPLETE", "not_verified"]],
+  ["apps/web/src/vault/AgentReportsPanel.tsx", ["LOCAL MONITORING ONLY", "prepareLocalAgentImport", "createSessionGuard", "Compare locally"]],
+  ["apps/web/src/vault/service.ts", ["agent_import", "agent_monitoring_policy", "prepareLocalAgentImport", "prepareAgentMonitoringPolicyRecord"]],
+  ["docs/releases/08-local-agent-connector.md", ["UTC calendar day", "512", "32"]],
+]) {
+  let source = "";
+  try { source = await readFile(path.join(root, file), "utf8"); }
+  catch { failures.push(`Missing M08 file: ${file}`); continue; }
+  for (const token of tokens) if (!source.includes(token)) failures.push(`M08 ${file} is missing ${token}`);
+  if (file.endsWith(".ts") || file.endsWith(".tsx")) {
+    for (const forbidden of ["sendTransaction", "signTypedData", "privateKeyToAccount", "window.ethereum"]) {
+      if (source.includes(forbidden)) failures.push(`M08 ${file} contains execution behavior: ${forbidden}`);
+    }
+  }
+}
+if (!envExample.includes("VITE_GENERIC_AGENT_IMPORT_ENABLED=false") ||
+  !webDockerfile.includes("ARG VITE_GENERIC_AGENT_IMPORT_ENABLED=false")) failures.push("M08 local import must default off");
+for (const token of ["openarc-web-m08:ci", "VITE_GENERIC_AGENT_IMPORT_ENABLED=true", "pnpm e2e:local-agent-import:production",
+  'test "${m08_ready}" = "1"', "test-m07-agent-import-compat.mjs seed", "test-m07-agent-import-compat.mjs verify",
+  "rc/07-x402-gateway-evidence/1^{commit}", 'test "${m07_reader_ready}" = "1"',
+  "image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m08:ci", "openarc-web-m08:ci -o cyclonedx-json > sbom-web-m08.cdx.json"]) {
+  if (!m02WorkflowSource.includes(token)) failures.push(`Hosted M08 gate is missing ${token}`);
+}
+for (const config of ["playwright.local-agent-import.config.ts", "playwright.local-agent-import.production.config.ts"]) {
+  if (!packageSource.includes(`playwright test -c ${config}`)) failures.push(`M08 browser gate is missing ${config}`);
+}
+
 if (/mainnet\s*[:=]/iu.test(networkSource) || /ARC_MAINNET/u.test(networkSource)) {
   failures.push("M00 must not contain a mainnet network configuration");
 }
@@ -559,4 +588,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log("[release-check] M07 x402/Gateway evidence, M06 job evidence, M05 ERC-8004 agent evidence, M04 Arc observation, M03 API/privacy boundary, M02 workspace, M01 engine, and M00 foundation structural checks verified");
+console.log("[release-check] M08 local agent import, M07 x402/Gateway evidence, M06 job evidence, M05 ERC-8004 agent evidence, M04 Arc observation, M03 API/privacy boundary, M02 workspace, M01 engine, and M00 foundation structural checks verified");

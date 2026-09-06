@@ -2,6 +2,8 @@ import {
   ARC_TESTNET,
   ActionEnvelopeRecordSchema,
   AgentProfileRecordSchema,
+  AgentImportRecordSchema, AgentImportSchema, AgentMonitoringPolicyRecordSchema, AgentMonitoringPolicySchema,
+  AGENT_POLICY_MAX_EVENTS, compareIsoTimestamps, IsoTimestampSchema,
   EvidenceRecordRecordSchema,
   MonitoringPolicyRecordSchema,
   MonitoringPolicySchema,
@@ -9,6 +11,7 @@ import {
   WorkspaceSettingsRecordSchema,
   reconcileAction,
   type AgentProfileRecord,
+  type AgentImportRecord, type AgentMonitoringPolicyRecord,
   type EvidenceFixture,
   type MonitoringPolicyRecord,
   type WorkspaceRecord,
@@ -130,6 +133,7 @@ export async function saveWorkspaceRecords(
   assertWorkspaceIntegrity(authenticated.records);
   const meta = nextMeta(unlocked.meta);
   const versionedChanges = changedRecords.map((record) => versionRecord(record, meta.revision));
+  assertAgentRecordChanges(authenticated.records, versionedChanges);
   const changedIds = new Set(versionedChanges.map((record) => record.recordId));
   if (changedIds.size !== changedRecords.length) {
     throw new VaultError("INVALID_BACKUP", "A workspace write contains duplicate record IDs.");
@@ -140,6 +144,7 @@ export async function saveWorkspaceRecords(
   ].filter((record) => record.kind !== "sentinel");
   assertWorkspaceRecordCapacity(recordsWithoutSentinel);
   assertLogicalBackupCapacity(recordsWithoutSentinel);
+  assertWorkspaceRelationships(recordsWithoutSentinel, false);
   const usedIvs = new Set(snapshot.records.map((record) => record.iv));
   const encrypted: Awaited<ReturnType<typeof encryptWorkspaceRecord>>[] = [];
   for (const record of versionedChanges) {
@@ -394,6 +399,103 @@ export async function prepareLocalWorkspaceDeletion(meta: PublicVaultMeta): Prom
   return markVaultDeleting(meta.vaultId);
 }
 
+export class AgentImportIdentityError extends VaultError {
+  constructor(readonly reason: "DUPLICATE_IMPORT" | "IMPORT_ID_CONFLICT") {
+    super("INVALID_BACKUP", reason === "DUPLICATE_IMPORT"
+      ? "This report is already stored. Duplicate import identities cannot be saved again."
+      : "This import identity is already stored with different content. Existing evidence was not overwritten.");
+    this.name = "AgentImportIdentityError";
+  }
+}
+
+/** Pure preparation for an explicit local preview/save; it never contacts a source. */
+export function prepareLocalAgentImport(workspace: UnlockedWorkspace, report: unknown,
+  agentProfileRecordId: string, explicitConfirmation: boolean, now = new Date().toISOString()): AgentImportRecord {
+  const parsed = AgentImportSchema.safeParse(report);
+  if (!parsed.success || !IsoTimestampSchema.safeParse(now).success) {
+    throw new VaultError("INVALID_BACKUP", "The report is not supported normalized local metadata.");
+  }
+  if (explicitConfirmation !== true || !workspace.records.some((record) =>
+    record.kind === "agent_profile" && record.recordId === agentProfileRecordId)) {
+    throw new VaultError("INVALID_BACKUP", "Explicitly associate this report with an existing local agent profile.");
+  }
+  if (compareIsoTimestamps(parsed.data.capturedAt, now) > 0) {
+    throw new VaultError("INVALID_BACKUP", "The report capture is in the future. Nothing was saved.");
+  }
+  const duplicate = workspace.records.find((record) => record.kind === "agent_import" && record.report.importId === parsed.data.importId);
+  if (duplicate?.kind === "agent_import") {
+    throw new AgentImportIdentityError(JSON.stringify(duplicate.report) === JSON.stringify(parsed.data) ? "DUPLICATE_IMPORT" : "IMPORT_ID_CONFLICT");
+  }
+  const record = AgentImportRecordSchema.parse({ recordSchema: "openarc.agent-import-record.v1", kind: "agent_import",
+    recordId: crypto.randomUUID(), recordRevision: workspace.meta.revision, createdAt: now, updatedAt: now,
+    report: parsed.data, linkedAgentProfileRecordId: agentProfileRecordId, linkBasis: "explicit_local_confirmation" });
+  assertWorkspaceRecordCapacity([...workspace.records, record]);
+  assertAgentEventCapacity([...workspace.records, record]);
+  return record;
+}
+
+/** Policy identity is immutable; the helper owns revision advancement, not imported/UI input. */
+export function prepareAgentMonitoringPolicyRecord(workspace: UnlockedWorkspace, policy: unknown,
+  existing?: AgentMonitoringPolicyRecord, now = new Date().toISOString()): AgentMonitoringPolicyRecord {
+  const parsed = AgentMonitoringPolicySchema.safeParse(policy);
+  if (!parsed.success || !IsoTimestampSchema.safeParse(now).success) {
+    throw new VaultError("INVALID_BACKUP", "The local monitoring policy does not match its supported contract.");
+  }
+  if (!workspace.records.some((record) => record.kind === "agent_profile" && record.recordId === parsed.data.agentProfileRecordId)) {
+    throw new VaultError("INVALID_BACKUP", "A local monitoring policy requires an existing agent profile.");
+  }
+  const stored = existing ? workspace.records.find((record) => record.recordId === existing.recordId) : undefined;
+  if (existing && (!stored || stored.kind !== "agent_monitoring_policy" ||
+    JSON.stringify(stored) !== JSON.stringify(existing) || stored.policy.policyId !== parsed.data.policyId ||
+    compareIsoTimestamps(now, stored.updatedAt) < 0)) {
+    throw new VaultError("INVALID_BACKUP", "The policy identity, revision or timestamp changed. Reload before editing.");
+  }
+  if (!existing && workspace.records.some((record) =>
+    record.kind === "agent_monitoring_policy" && record.policy.policyId === parsed.data.policyId)) {
+    throw new VaultError("INVALID_BACKUP", "This policy identity is already stored. Edit the existing policy instead.");
+  }
+  const result = AgentMonitoringPolicyRecordSchema.parse({ recordSchema: "openarc.agent-policy-record.v2", kind: "agent_monitoring_policy",
+    recordId: existing?.recordId ?? crypto.randomUUID(), recordRevision: workspace.meta.revision,
+    createdAt: existing?.createdAt ?? now, updatedAt: now,
+    policy: { ...parsed.data, revision: existing ? existing.policy.revision + 1 : 1 } });
+  assertWorkspaceRecordCapacity([...workspace.records.filter((record) => record.recordId !== result.recordId), result]);
+  return result;
+}
+
+function assertAgentEventCapacity(records: readonly WorkspaceRecord[]): void {
+  const events = records.reduce((total, record) => total + (record.kind === "agent_import" ? record.report.events.length : 0), 0);
+  if (events > AGENT_POLICY_MAX_EVENTS) throw new VaultError("VAULT_CAPACITY", "At most 512 imported events may be stored. No events were truncated.");
+}
+
+function assertAgentRecordChanges(previous: readonly WorkspaceRecord[], changes: readonly WorkspaceRecord[]): void {
+  const byId = new Map(previous.map((record) => [record.recordId, record]));
+  const imports = previous.filter((record) => record.kind === "agent_import");
+  for (const changed of changes) {
+    const old = byId.get(changed.recordId);
+    if (changed.kind === "agent_import") {
+      const duplicate = imports.find((record) => record.report.importId === changed.report.importId);
+      if (duplicate) throw new AgentImportIdentityError(JSON.stringify(duplicate.report) === JSON.stringify(changed.report)
+        ? "DUPLICATE_IMPORT" : "IMPORT_ID_CONFLICT");
+      if (old) throw new VaultError("INVALID_BACKUP", "An import must have a new immutable local record identity.");
+      if (compareIsoTimestamps(changed.report.capturedAt, new Date().toISOString()) > 0) {
+        throw new VaultError("INVALID_BACKUP", "Future-captured reports cannot be saved.");
+      }
+    }
+    if (old?.kind === "agent_import") throw new VaultError("INVALID_BACKUP", "Imported reports cannot be overwritten or reclassified.");
+    if (changed.kind === "agent_monitoring_policy") {
+      if (old && (old.kind !== "agent_monitoring_policy" || old.policy.policyId !== changed.policy.policyId ||
+        changed.policy.revision !== old.policy.revision + 1 || changed.createdAt !== old.createdAt ||
+        compareIsoTimestamps(changed.updatedAt, old.updatedAt) < 0)) {
+        throw new VaultError("INVALID_BACKUP", "A policy edit must preserve its identity and creation time and increment its revision exactly once.");
+      }
+      if (!old && changed.policy.revision !== 1) throw new VaultError("INVALID_BACKUP", "A new local monitoring policy begins at revision one.");
+    }
+    if (old?.kind === "agent_monitoring_policy" && changed.kind !== "agent_monitoring_policy") {
+      throw new VaultError("INVALID_BACKUP", "Local monitoring policy records cannot be reclassified.");
+    }
+  }
+}
+
 export function createAgentProfileRecord(
   draft: AgentProfileDraft,
   recordRevision: string,
@@ -552,6 +654,7 @@ function assertWorkspaceRelationships(
     invalidRelationships();
   }
   assertWorkspaceRecordCapacity(parsedRecords);
+  assertAgentEventCapacity(parsedRecords);
   const recordIds = parsedRecords.map((record) => record.recordId);
   if (new Set(recordIds).size !== recordIds.length) invalidRelationships();
   const sentinels = parsedRecords.filter((record) => record.kind === "sentinel");
@@ -570,6 +673,13 @@ function assertWorkspaceRelationships(
   const jobObservations = parsedRecords.filter((record) => record.kind === "job_observation");
   const bundles = parsedRecords.filter((record) => record.kind === "x402_bundle");
   const gatewayObservations = parsedRecords.filter((record) => record.kind === "gateway_observation");
+  const agentImports = parsedRecords.filter((record) => record.kind === "agent_import");
+  const agentPolicies = parsedRecords.filter((record) => record.kind === "agent_monitoring_policy");
+  requireUnique(agentImports.map((record) => record.report.importId));
+  requireUnique(agentPolicies.map((record) => record.policy.policyId));
+  const localAgentRecordIds = new Set(agents.map((record) => record.recordId));
+  if (agentImports.some((record) => !localAgentRecordIds.has(record.linkedAgentProfileRecordId)) ||
+    agentPolicies.some((record) => !localAgentRecordIds.has(record.policy.agentProfileRecordId))) invalidRelationships();
   requireUnique(bundles.map((record) => record.bundle.bundleId));
   requireUnique(gatewayObservations.map((record) => record.permissionReceiptId));
   requireUnique(agents.map((record) => record.agentId));

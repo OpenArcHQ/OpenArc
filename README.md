@@ -1,6 +1,6 @@
 # OpenArc marketing and technical product package
 
-Status: **M07 complete on staging; M08 local agent import next**
+Status: **M07 complete on staging; M08 local agent import in verification**
 Prepared: **2026-08-15; Arc and Gateway sources reviewed 2026-09-05**
 
 OpenArc is the proposed private intelligence, policy, and investigation layer for
@@ -46,6 +46,8 @@ This is not a public-release or mainnet readiness claim.
 [M07 preflight](docs/engineering/m07-x402-preflight.md) records the refreshed
 Gateway contract and external live-payment proof boundary. M08 adds bounded local
 agent reports and monitoring-policy comparison; it introduces no execution path.
+Its active scope and gates are recorded in
+[`docs/releases/08-local-agent-connector.md`](docs/releases/08-local-agent-connector.md).
 
 - `packages/shared` owns the fail-closed Arc Testnet registry and primitive
   schemas, versioned evidence records, append-only action states, deterministic

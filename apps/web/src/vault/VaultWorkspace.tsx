@@ -37,10 +37,11 @@ import { createPortal } from "react-dom";
 
 import type { BuildInfo } from "@openarc/shared";
 
-import { agentRegistryEnabled, agentJobsEnabled, gatewayEvidenceEnabled, apiBoundaryEnabled, arcObservationEnabled, workspaceSectionUsesNetwork } from "../app/availability.js";
+import { genericAgentImportEnabled, agentRegistryEnabled, agentJobsEnabled, gatewayEvidenceEnabled, apiBoundaryEnabled, arcObservationEnabled, workspaceSectionUsesNetwork } from "../app/availability.js";
 import { requestGatewayTransfer } from "../api/gateway-transfer.js";
 import { GatewayFinalizationError, runGatewayPermissionFlow } from "../api/gateway-permission-flow.js";
 import { PaymentsPanel } from "./PaymentsPanel.js";
+import { AgentReportsPanel } from "./AgentReportsPanel.js";
 import { requestJobEvidence } from "../api/job-evidence.js";
 import { JobFinalizationError, runJobPermissionFlow } from "../api/job-permission-flow.js";
 import { requestAgentRegistryEvidence } from "../api/agent-registry.js";
@@ -95,7 +96,7 @@ import type {
   VaultStorageStatus,
 } from "./types.js";
 
-type WorkspaceView = "overview" | "agents" | "activity" | "policies" | "evidence" | "settings" | "sources" | "jobs" | "payments";
+type WorkspaceView = "overview" | "agents" | "activity" | "policies" | "evidence" | "settings" | "sources" | "jobs" | "payments" | "agent-reports";
 type Screen =
   | { phase: "probing" }
   | { phase: "unsupported" }
@@ -135,6 +136,7 @@ const VIEWS: readonly { id: WorkspaceView; label: string; note: string }[] = [
   ...(API_BOUNDARY_ENABLED ? [{ id: "sources" as const, label: "Sources", note: "Explicit connection checks" }] : []),
   ...(AGENT_JOBS_ENABLED ? [{ id: "jobs" as const, label: "Jobs", note: "Reference contract evidence" }] : []),
   ...(GATEWAY_EVIDENCE_ENABLED ? [{ id: "payments" as const, label: "Payments", note: "x402 metadata + Gateway reports" }] : []),
+  ...(genericAgentImportEnabled() ? [{ id: "agent-reports" as const, label: "Agent reports", note: "Local imports + policy comparisons" }] : []),
 ];
 
 export function VaultWorkspace({ build }: { build: BuildInfo }) {
@@ -455,13 +457,21 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
     if (!["empty", "unlocked", "locked", "unlocking"].includes(screen.phase)) return;
     let stopped = false;
     const verifyRevision = async () => {
+      const boundaryGeneration = generationRef.current;
       try {
         const currentWorkspace = unlockedRef.current;
         const currentMeta =
           currentWorkspace?.meta ??
           (screen.phase === "locked" || screen.phase === "unlocking" ? screen.meta : null);
+        // Creation/import can commit before their completion callback delivers
+        // the new session and recovery secret. Do not mistake that own commit
+        // for a peer-created vault. Existing-session polling remains active.
+        if (!currentMeta && pendingRef.current) return;
         const meta = await readVaultMeta();
+        if (stopped || boundaryGeneration !== generationRef.current) return;
+        if (currentWorkspace && unlockedRef.current !== currentWorkspace) return;
         if (!currentMeta) {
+          if (pendingRef.current || unlockedRef.current) return;
           if (!stopped && meta) {
             clearPrivateState(
               meta.deletionPending ? { phase: "deleting", meta } : { phase: "locked", meta },
@@ -494,7 +504,7 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
           );
         }
       } catch (cause) {
-        if (!stopped) {
+        if (!stopped && boundaryGeneration === generationRef.current) {
           clearPrivateState({ phase: "fatal", message: vaultErrorMessage(cause) });
         }
       }
@@ -1449,6 +1459,7 @@ function WorkspaceViewPanel(props: {
   if (props.view === "sources") return <SourcesPanel {...props} />;
   if (props.view === "jobs") return <JobsPanel {...props} />;
   if (props.view === "payments") return <PaymentsPanel {...props} />;
+  if (props.view === "agent-reports") return <AgentReportsPanel {...props} />;
   return <SettingsPanel {...props} />;
 
   function navigateFromPanel(view: WorkspaceView) {
@@ -1469,17 +1480,19 @@ function Overview({ records, onNavigate, onOpenTour }: { records: readonly Works
         <Stat value={counts.policies} label="Monitoring policies" />
         <Stat value={counts.actions} label="Action envelopes" />
         <Stat value={counts.evidence} label="Evidence records" />
+        {genericAgentImportEnabled() ? <Stat value={counts.agentReports} label="Agent reports" /> : null}
         {ARC_OBSERVATION_ENABLED ? <Stat value={counts.observations} label="Arc observations" /> : null}
         {AGENT_REGISTRY_ENABLED ? <Stat value={counts.registryObservations} label="Registry evidence" /> : null}
         {AGENT_JOBS_ENABLED ? <Stat value={counts.jobObservations} label="Job observations" /> : null}
       </div>
       <div className="workspace-callouts">
         <article><span>01</span><h3>Describe an agent</h3><p>Add only what you know and label wallet associations as owner-supplied.</p><button type="button" onClick={() => onNavigate("agents")}>Open Agents →</button></article>
-        <article><span>02</span><h3>Define a local rule</h3><p>Record a monitoring boundary. OpenArc does not enforce or execute it in M02.</p><button type="button" onClick={() => onNavigate("policies")}>Open Policies →</button></article>
+        <article><span>02</span><h3>Define a local rule</h3><p>Record a monitoring boundary. OpenArc does not enforce it or execute transactions.</p><button type="button" onClick={() => onNavigate("policies")}>Open Policies →</button></article>
         <article><span>03</span><h3>Inspect evidence</h3><p>Copy one of the six synthetic M01 cases into your encrypted workspace.</p><button type="button" onClick={() => onNavigate("evidence")}>Open Evidence →</button></article>
         {ARC_OBSERVATION_ENABLED ? <article><span>04</span><h3>Observe Arc explicitly</h3><p>Review exactly what is released, then read one public address or transaction at an exact final block.</p><button type="button" onClick={() => onNavigate("activity")}>Open Activity →</button></article> : null}
+        {genericAgentImportEnabled() ? <article><span>05</span><h3>Compare an agent report</h3><p>Preview a local report and compare supplied attempts with monitoring rules. Authorship and enforcement remain unverified.</p><button type="button" onClick={() => onNavigate("agent-reports")}>Open Agent reports →</button></article> : null}
       </div>
-      <div className="privacy-strip"><strong>Nothing refreshes automatically.</strong><span>Only an approved Agents, Activity, or Sources action may call the network. Reload starts locked.</span></div>
+      <div className="privacy-strip"><strong>Nothing refreshes automatically.</strong><span>Only an explicitly approved source lookup may call the network. Agent-report imports and comparisons stay local. Reload starts locked.</span></div>
     </section>
   );
 }
@@ -2214,11 +2227,11 @@ export function Modal({ title, children, onClose, closeDisabled = false, returnF
       background.setAttribute("aria-hidden", "true");
     }
     const dialog = dialogRef.current;
-    dialog?.querySelector<HTMLElement>("button:not([disabled]), input:not([disabled]), textarea:not([disabled])")?.focus();
+    dialog?.querySelector<HTMLElement>("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])")?.focus();
     const keyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !closeDisabledRef.current) { event.preventDefault(); closeRef.current(); return; }
       if (event.key !== "Tab" || !dialog) return;
-      const items = [...dialog.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), textarea:not([disabled]), a[href]")];
+      const items = [...dialog.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]")];
       if (items.length === 0) return;
       const first = items[0]!;
       const last = items.at(-1)!;
@@ -2283,7 +2296,8 @@ function EmptyState({ title, body }: { title: string; body: string }) {
 function recordCounts(records: readonly WorkspaceRecord[]) {
   return {
     agents: records.filter((record) => record.kind === "agent_profile").length,
-    policies: records.filter((record) => record.kind === "monitoring_policy").length,
+    policies: records.filter((record) => record.kind === "monitoring_policy" || record.kind === "agent_monitoring_policy").length,
+    agentReports: records.filter((record) => record.kind === "agent_import").length,
     actions: records.filter((record) => record.kind === "action_envelope").length,
     evidence: records.filter((record) => record.kind === "evidence_record").length,
     observations: records.filter((record) => record.kind === "arc_observation").length,

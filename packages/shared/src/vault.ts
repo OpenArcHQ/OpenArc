@@ -10,6 +10,8 @@ import { ArcAccountSnapshotSchema, ArcTransactionEvidenceSchema } from "./arc-ob
 import { AgentRegistryEvidenceSchema } from "./agent-registry-evidence.js";
 import { JobEvidenceSchema } from "./job-evidence.js";
 import { X402ReceiptBundleSchema, GatewayTransferObservationSchema } from "./x402-evidence.js";
+import { AgentImportSchema } from "./agent-import.js";
+import { AgentMonitoringPolicySchema } from "./agent-policy.js";
 import { PermissionReceiptRecordSchema } from "./permission.js";
 import { VaultRevisionSchema, WorkspaceRecordIdSchema } from "./workspace-primitives.js";
 export { VaultRevisionSchema, WorkspaceRecordIdSchema } from "./workspace-primitives.js";
@@ -136,6 +138,27 @@ export const GatewayObservationRecordSchema = z.strictObject({
   }
 });
 
+export const AgentImportRecordSchema = z.strictObject({
+  ...recordBase,
+  recordSchema: z.literal("openarc.agent-import-record.v1"),
+  kind: z.literal("agent_import"),
+  report: AgentImportSchema,
+  linkedAgentProfileRecordId: WorkspaceRecordIdSchema,
+  linkBasis: z.literal("explicit_local_confirmation"),
+}).superRefine((record, context) => {
+  if (IsoTimestampSchema.safeParse(record.createdAt).success && IsoTimestampSchema.safeParse(record.report.capturedAt).success &&
+    compareIsoTimestamps(record.report.capturedAt, record.createdAt) > 0) {
+    context.addIssue({ code: "custom", path: ["report", "capturedAt"], message: "An import capture cannot follow local record creation" });
+  }
+});
+
+export const AgentMonitoringPolicyRecordSchema = z.strictObject({
+  ...recordBase,
+  recordSchema: z.literal("openarc.agent-policy-record.v2"),
+  kind: z.literal("agent_monitoring_policy"),
+  policy: AgentMonitoringPolicySchema,
+});
+
 export const SentinelRecordSchema = z.strictObject({
   ...recordBase,
   kind: z.literal("sentinel"),
@@ -170,6 +193,8 @@ const WorkspaceRecordVariantSchema = z.union([
   JobObservationRecordSchema,
   X402BundleRecordSchema,
   GatewayObservationRecordSchema,
+  AgentImportRecordSchema,
+  AgentMonitoringPolicyRecordSchema,
 ]);
 
 export const WorkspaceRecordSchema = WorkspaceRecordVariantSchema.superRefine((record, context) => {
@@ -195,3 +220,5 @@ export type AgentRegistryObservationRecord = z.infer<typeof AgentRegistryObserva
 export type JobObservationRecord = z.infer<typeof JobObservationRecordSchema>;
 export type X402BundleRecord = z.infer<typeof X402BundleRecordSchema>;
 export type GatewayObservationRecord = z.infer<typeof GatewayObservationRecordSchema>;
+export type AgentImportRecord = z.infer<typeof AgentImportRecordSchema>;
+export type AgentMonitoringPolicyRecord = z.infer<typeof AgentMonitoringPolicyRecordSchema>;

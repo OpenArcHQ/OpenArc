@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { BuildInfo } from "@openarc/shared";
 
 import { FixtureExplorer } from "./evidence/FixtureExplorer.js";
-import { gatewayEvidenceEnabled, agentJobsEnabled, agentRegistryEnabled, apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled } from "./app/availability.js";
+import { genericAgentImportEnabled, gatewayEvidenceEnabled, agentJobsEnabled, agentRegistryEnabled, apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled } from "./app/availability.js";
 import { VaultWorkspace } from "./vault/VaultWorkspace.js";
 
 interface AppProps {
@@ -25,6 +25,7 @@ export function App({ build }: AppProps) {
   const registryEnabled = observationEnabled && agentRegistryEnabled();
   const jobsEnabled = registryEnabled && agentJobsEnabled();
   const paymentsEnabled = jobsEnabled && gatewayEvidenceEnabled();
+  const reportsEnabled = workspaceEnabled && genericAgentImportEnabled();
 
   useEffect(() => {
     const onPopState = () => setPath(window.location.pathname);
@@ -59,7 +60,7 @@ export function App({ build }: AppProps) {
           {workspaceEnabled ? <a href="/workspace">Workspace</a> : null}
           <a href="#fixture-explorer">Explorer</a>
           <a href="#network">Network</a>
-          <span className="phase">{paymentsEnabled ? "M07 · PAYMENT EVIDENCE" : jobsEnabled ? "M06 · JOB EVIDENCE" : registryEnabled ? "M05 · AGENT EVIDENCE" : observationEnabled
+          <span className="phase">{reportsEnabled ? "M08 · LOCAL AGENT REPORTS" : paymentsEnabled ? "M07 · PAYMENT EVIDENCE" : jobsEnabled ? "M06 · JOB EVIDENCE" : registryEnabled ? "M05 · AGENT EVIDENCE" : observationEnabled
             ? "M04 · ARC OBSERVATION"
             : apiBoundaryEnabled() ? "M03 · API PRIVACY BOUNDARY" : "M02 · ENCRYPTED WORKSPACE"}</span>
         </div>

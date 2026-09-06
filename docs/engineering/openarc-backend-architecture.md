@@ -1,5 +1,9 @@
 # OpenArc backend architecture
 
+M08 local agent import and policy comparison add no API route, source adapter,
+server persistence or provider. All imported fields remain inside the encrypted
+browser workspace; see [M08 scope](../releases/08-local-agent-connector.md).
+
 Status: **normative backend specification**  
 Specification version: **0.2.1-draft**
 Parent: `docs/engineering/openarc-engineering-source-of-truth.md`  

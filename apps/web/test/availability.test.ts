@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { gatewayEvidenceEnabled, agentJobsEnabled, agentRegistryEnabled, apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled, workspaceSectionUsesNetwork } from "../src/app/availability.js";
+import { genericAgentImportEnabled, gatewayEvidenceEnabled, agentJobsEnabled, agentRegistryEnabled, apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled, workspaceSectionUsesNetwork } from "../src/app/availability.js";
+
+describe("local agent import availability", () => {
+  it("fails closed and never claims network activity", () => {
+    for (const value of [undefined, "false", "TRUE", "1", false]) expect(genericAgentImportEnabled(value)).toBe(false);
+    expect(genericAgentImportEnabled(true)).toBe(true);
+    expect(genericAgentImportEnabled("true")).toBe(true);
+    expect(workspaceSectionUsesNetwork("agent-reports-title", {
+      apiBoundary: true, arcObservation: true, agentRegistry: true, agentJobs: true, gatewayEvidence: true,
+    })).toBe(false);
+  });
+});
 
 describe("encrypted workspace availability", () => {
   it("fails closed unless the build flag is exactly true", () => {

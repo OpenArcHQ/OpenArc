@@ -1067,6 +1067,37 @@ footer code {
 .payment-evidence pre { max-width: 100%; padding: 16px; overflow: auto; background: #0b1320; font-size: 0.75rem; }
 .payment-evidence h4 { font-size: 1rem; line-height: 1.6; }
 
+.agent-reports { min-width: 0; }
+.agent-reports .workspace-card { width: 100%; }
+.agent-reports .report-intro { border-left: 3px solid #6bb9ff; }
+.agent-reports .report-intro h3 { color: #f0f6ff; }
+.agent-reports .report-preview,
+.agent-reports .report-policy,
+.agent-reports .report-comparison { margin-top: 24px; padding-top: 24px; border-top: 1px solid #34465e; }
+.agent-reports .report-preview > * + * { margin-top: 16px; }
+.agent-reports .report-comparison h4 { font-size: 1.25rem; color: #c2e2ff; }
+.agent-reports h4,
+.agent-reports h5,
+.agent-reports code,
+.agent-reports p { overflow-wrap: anywhere; }
+.agent-reports select { width: 100%; min-width: 0; }
+.agent-reports details > div { margin-top: 20px; }
+.agent-reports .button-row { display: flex; flex-wrap: wrap; gap: 12px; }
+.agent-reports button:not(.danger-link) { min-height: 44px; }
+.agent-reports button:not(.button):not(.info-button):not(.danger-link) {
+  background: #162941; color: #c6e3ff; border: 1px solid #507196;
+  padding: 10px 14px; border-radius: 3px; font: inherit; cursor: pointer;
+}
+.agent-reports button.danger-link {
+  background: transparent; color: #ffadb6; border: 0; min-height: 44px;
+  padding: 10px 0; font: inherit; cursor: pointer;
+}
+.agent-reports button:disabled { cursor: not-allowed; opacity: 0.55; }
+.agent-reports input::file-selector-button {
+  background: #162941; color: #c6e3ff; border: 1px solid #507196;
+  padding: 8px 12px; margin-right: 10px; border-radius: 3px; font: inherit;
+}
+
 .workspace-section-heading {
   display: grid;
   margin-bottom: 38px;

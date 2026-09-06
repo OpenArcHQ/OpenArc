@@ -752,6 +752,13 @@ Exit gate:
 
 ### Milestone 08 - local agent connector and policy comparison
 
+The frozen local-only contracts, bounds, UTC-day attempt-total semantics,
+partial-history limitations, unsupported-signature behavior and release evidence
+are recorded in [`08-local-agent-connector.md`](../releases/08-local-agent-connector.md).
+Dedicated import and policy v2 schemas preserve M01 synthetic contracts. Imported
+agent identity/approval are unverified claims; source-proven wallet enforcement
+is not available in this milestone. No imported evaluation cache is trusted.
+
 Build:
 
 - bounded local JSON import first;

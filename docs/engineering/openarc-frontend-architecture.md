@@ -721,6 +721,15 @@ Gateway state, and Arc settlement as separate rows. No execution control.
 Creates local monitoring rules and shows simulated comparison. Each result says
 either `LOCAL MONITORING ONLY` or cites exact enforcement evidence.
 
+M08 adds dedicated local agent-report import and monitoring-policy v2 records;
+M01 fixture policies remain unchanged. The exact contract and bounds are frozen in
+[`08-local-agent-connector.md`](../releases/08-local-agent-connector.md). M08 uses
+UTC calendar-day reported-attempt totals, not rolling windows or confirmed spend.
+Partial history cannot pass a daily-limit rule. All M08 evaluations are local
+monitoring only, with no verified enforcement. Preview/import, comparisons and
+service digests perform no network requests. A false-by-default
+`VITE_GENERIC_AGENT_IMPORT_ENABLED` flag requires encrypted workspace support.
+
 ### Investigations
 
 Searches only decrypted local records plus explicit one-ID source lookup. Shows
