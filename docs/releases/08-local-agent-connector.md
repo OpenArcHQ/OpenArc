@@ -1,6 +1,6 @@
 # M08 — local agent import and policy comparison
 
-Status: **implementation active; not deployed or release-ready**.
+Status: **implementation complete; staging QA passed; CI compatibility harness repair in verification**.
 Branch: `codex/08-local-agent-connector`, from M07-complete main `2788de0`.
 
 ## Frozen scope
@@ -129,7 +129,8 @@ evidence. Unbounded worker discovery launched nine browsers in a 7.75 GiB Docker
 VM; the baseline runner now uses two workers. ARM Linux WebKit still exhausted
 the aggregate budget of several long scenarios. Verification therefore includes
 the full native macOS Node 22 gate and independently built Linux CI images;
-the ARM Docker run is not described as passing.
+those earlier ARM Docker runs are not described as passing. The corrected final
+ARM Docker run subsequently passed, as recorded below.
 
 The clean-room gate also exposed an inherited Redis deadline gap: the client
 library stops listening for cancellation after writing a command, so a stalled
@@ -164,3 +165,79 @@ An inherited lock-timing limitation remains for M10 hardening: the immediate loc
 hint can precede its durable coordination write, so this readback alone does not
 promise that every lock-related revision race is eliminated. Immediate private
 state invalidation and conservative re-locking are preserved.
+
+## Final candidate and hosted verification
+
+Staging-tested candidate: `8ddef64fc982ad3542369eea0f2abb33e110524e`.
+Its pinned Node 22 / Redis 8 clean-room `pnpm release:gate` passed all 466
+unit/integration tests (167 shared, 185 API, 114 web) and 100 development-browser
+checks, without retries, plus release checks, audit, licenses, lint, types and
+builds. The gate image manifest is
+`sha256:85b0e3a72e63090356507d879cd9544984f24b6b8c865fbdbd56e65beaf0de46`
+(manifest list
+`sha256:3e612227a93e9c89208119088017cac6485e36ebce70442bf722c9af87515ecd`).
+The preceding application-equivalent `276849b` also passed the full native macOS
+Node 22 gate and the isolated Linux gate. The final revision changes only the
+inactivity-test setup synchronization and retention of synthetic CI diagnostics.
+
+An earlier CI run passed only after retrying an inactivity test. The test had
+advanced virtual time before acknowledging encrypted tour-preference persistence;
+the late save can reset the deadline. The original ordering is inferred from code,
+not claimed as trace-proven: that green-on-retry run did not retain diagnostics.
+The corrected setup awaits the existing saved notice, retaining the exact deadline
+assertions. Six targeted runs (three per browser, retries disabled) passed. CI now
+retains synthetic browser diagnostics for three days even when a retry makes the
+overall job green. Earlier retried runs do not establish a first-pass final gate.
+
+Exact candidate CI: [34004971041](https://github.com/OpenArcHQ/OpenArc/actions/runs/34004971041).
+Its verify job passed the 466 tests and code/dependency checks. All nine blocking
+HIGH/CRITICAL production-image scans passed and generated nine CycloneDX SBOMs.
+SBOM artifact `9980707121`, 870960 bytes, digest
+`sha256:36efe23f1433ddda4fc4e226012f4ce2e3872c4e071f4440889b27f85c5010a6`,
+expires `2026-12-05T01:51:36Z`. All 100 development and 36 production browser
+cases passed first attempt (16 fixture-only production cases intentionally skipped).
+The compatibility seed passed, but the job failed before the old-reader phase:
+immediate reuse of a stopped auto-removed container name raced Docker cleanup.
+Distinct names for the seed, old-reader and restored-reader containers remove
+that name collision. A fresh complete CI run is required before RC closure;
+the failed run is not presented as a completed compatibility gate. Its retained
+synthetic diagnostic artifact is `9980839212`.
+
+### Existing Railway staging
+
+Only the existing staging API and web were deployed. Redis, production, the plan,
+and service count were unchanged. The additional web flag enables the local-only
+agent-report interface; no provider or paid path was added.
+
+- API deployment: `<deployment-id>`, successful;
+  image `sha256:a3d8e00fd568dc045531276742e1c9c4849b2dde14265abd1197d556d9394aeb`.
+- Web deployment: `<deployment-id>`, successful;
+  image `sha256:2310fc2431b748bf64442e372602c1f95a26194d307fd8da4b178c541ac3a9c0`.
+- Web HTML and API readiness expose the exact candidate SHA. Both returned HTTP
+  200 with normal TLS validation; configuration, source routes and Redis are ready.
+- All 14 production-mode M08 journeys passed against the actual staging origin in
+  Chromium and WebKit, with zero retries (33.5 seconds). This includes normal-UI
+  backup/recovery/restore, strict invalid imports, policy boundaries, duplicates,
+  conflicts, same-ID variants and the own-initialization race regression.
+- Live tests used fresh isolated browser contexts and synthetic reports. They
+  asserted zero fetch/XHR/WebSocket source calls; no user vault, wallet, key,
+  payment, TLS bypass or synthetic proxy-identity header was used.
+- The retained M07 staging smoke also passed on this candidate: two explicitly
+  approved read-only lookups of the previously generated Testnet evidence,
+  Gateway status `completed`, complete metadata `consistent`, the expected three
+  incomplete-evidence gaps, and successful batch inclusion at block `60654320`.
+  Encrypted persistence survived, automatic refresh remained false, and individual
+  settlement remained unverified. No new payment, deposit or signing occurred.
+- Eight supplemental live Chromium/WebKit checks also passed, with valid TLS and
+  no retries (29.3 seconds): cross-tab coordination, held post-save metadata
+  readback, revision polling without BroadcastChannel, and inactivity locking.
+  Their verification-only revision is
+  `b18dede373ca371cce440e0921807540c88833f3`: two Settings locators use semantic
+  navigation names because all-flags staging inserts Activity before Settings.
+  The initial supplemental run expected the default configuration's item 05;
+  staging correctly rendered item 06. No product change was made. The deployed,
+  scanned and eventual RC application remains `8ddef64fc982ad3542369eea0f2abb33e110524e`.
+
+The staging deployment followed the complete local gate, verified image scans
+and CI code checks; live QA ran in parallel with the remaining CI browser checks.
+The immutable RC and main closure remain held until all final gates pass.

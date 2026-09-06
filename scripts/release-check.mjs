@@ -491,6 +491,16 @@ for (const token of ["openarc-web-m08:ci", "VITE_GENERIC_AGENT_IMPORT_ENABLED=tr
 for (const config of ["playwright.local-agent-import.config.ts", "playwright.local-agent-import.production.config.ts"]) {
   if (!packageSource.includes(`playwright test -c ${config}`)) failures.push(`M08 browser gate is missing ${config}`);
 }
+// Docker stop can return before --rm releases a container name. Compatibility
+// phases must have unique names rather than race asynchronous auto-removal.
+for (const name of ["openarc-web-m08", "openarc-web-m07-compat-reader", "openarc-web-m08-compat-restore"]) {
+  if (m02WorkflowSource.split(`--name ${name} `).length - 1 !== 1) {
+    failures.push(`M08 compatibility must start exactly one container named ${name}`);
+  }
+  if (!m02WorkflowSource.includes(`docker stop ${name}\n`)) {
+    failures.push(`M08 compatibility must stop its ${name} phase`);
+  }
+}
 
 if (/mainnet\s*[:=]/iu.test(networkSource) || /ARC_MAINNET/u.test(networkSource)) {
   failures.push("M00 must not contain a mainnet network configuration");
