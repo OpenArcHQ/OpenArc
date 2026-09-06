@@ -387,6 +387,9 @@ test("locks at the exact inactivity deadline", async ({ page }) => {
   await page.getByRole("checkbox", { name: /I saved it somewhere private/u }).check();
   await page.getByRole("button", { name: "Continue to workspace" }).click();
   await page.getByRole("button", { name: "Skip" }).click();
+  // Tour dismissal saves asynchronously and its successful completion starts
+  // a fresh idle interval. Finish setup before advancing the inactivity clock.
+  await expect(page.getByText("Tour preference saved inside the encrypted workspace.")).toBeVisible();
   await page.clock.fastForward(10 * 60 * 1_000 + 1_000);
   // The deadline fires synchronously, then the lock marker commits through
   // IndexedDB before React can show the locked screen. Allow that bounded
