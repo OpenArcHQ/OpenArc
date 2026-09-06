@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { chromium, expect } from "@playwright/test";
-import { ARC_TESTNET, ARC_TRANSACTION_EVIDENCE_PATH, ArcTransactionEvidenceEnvelopeSchema,
+import { API_MAX_RESPONSE_BYTES, ARC_TESTNET, ARC_TRANSACTION_EVIDENCE_PATH, ArcTransactionEvidenceEnvelopeSchema,
   GATEWAY_TRANSFER_PATH, GatewayTransferEnvelopeSchema,
   X402ReceiptBundleSchema } from "../packages/shared/dist/index.js";
 
@@ -43,12 +43,29 @@ const context = await browser.newContext({ viewport: { width: 1440, height: 1000
 const page = await context.newPage();
 page.setDefaultTimeout(20_000);
 const apiRequests = [];
+const pendingBodies = new Map();
 page.on("request", (request) => {
   const url = new URL(request.url());
   if (url.pathname.startsWith("/v1/private/")) apiRequests.push({
-    origin: url.origin, path: url.pathname, method: request.method(), body: request.postData(), headers: request.headers(),
+    origin: url.origin, path: url.pathname, method: request.method(), body: request.postData(), headers: request.allHeaders(),
   });
 });
+async function captureResponse(path) {
+  const captured = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { pendingBodies.delete(path); reject(new Error("Browser response capture timed out")); }, 20_000);
+    timer.unref();
+    pendingBodies.set(path, (entry) => {
+      clearTimeout(timer); pendingBodies.delete(path);
+      if (entry.captureFailed) reject(new Error("Browser response could not be captured within strict bounds"));
+      else resolve(entry);
+    });
+  });
+  const [response, entry] = await Promise.all([
+    page.waitForResponse((response) => new URL(response.url()).pathname === path && response.request().method() === "POST"), captured,
+  ]);
+  assert.ok(entry.url === response.url() && entry.status === response.status(), "Captured fetch response must match the network response");
+  return { response, body: entry.body };
+}
 const passphrase = `disposable-gateway-staging-${randomUUID()}`;
 const bundleCard = (bundle) => page.locator("article").filter({
   has: page.getByRole("heading", { name: `Imported bundle ${bundle.bundleId}`, exact: true }),
@@ -67,6 +84,44 @@ async function resultFor(bundle) {
 }
 
 try {
+  await page.exposeBinding("__openarcSmokeResponse", (_source, entry) => {
+    const url = new URL(entry.url);
+    assert.equal(url.origin, origin, "Response capture must remain same-origin");
+    pendingBodies.get(url.pathname)?.(entry);
+  });
+  await page.addInitScript(({ paths, maxBytes }) => {
+    const originalFetch = globalThis.fetch;
+    // Test-only observation in this disposable browser. Return the original
+    // promise/response untouched; never intercept, replay or change request options.
+    // Reading a bounded clone avoids Chromium's flaky CDP getResponseBody cache.
+    globalThis.fetch = function (...args) {
+      const pending = Reflect.apply(originalFetch, this, args);
+      void pending.then(async (response) => {
+        if (!paths.includes(new URL(response.url).pathname)) return;
+        const entry = { url: response.url, status: response.status };
+        let reader;
+        try {
+          reader = response.clone().body?.getReader();
+          if (!reader) throw new Error("Missing response body");
+          const chunks = []; let size = 0;
+          while (true) {
+            const next = await reader.read();
+            if (next.done) break;
+            size += next.value.byteLength;
+            if (size > maxBytes) throw new Error("Response cap exceeded");
+            chunks.push(next.value);
+          }
+          const bytes = new Uint8Array(size); let offset = 0;
+          for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+          const body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+          await globalThis.__openarcSmokeResponse({ ...entry, body });
+        } catch {
+          await globalThis.__openarcSmokeResponse({ ...entry, captureFailed: true });
+        } finally { void reader?.cancel().catch(() => undefined); }
+      }, () => undefined).catch(() => undefined);
+      return pending;
+    };
+  }, { paths: [GATEWAY_TRANSFER_PATH, ARC_TRANSACTION_EVIDENCE_PATH], maxBytes: API_MAX_RESPONSE_BYTES });
   await page.goto(`${origin}/workspace?view=payments`);
   assert.equal(await page.locator('meta[name="openarc-build-sha"]').getAttribute("content"), expectedSha);
   await page.getByLabel("Workspace passphrase", { exact: false }).fill(passphrase);
@@ -86,16 +141,14 @@ try {
   assert.equal(apiRequests.length, 0, "Local imports must not contact the API");
 
   await page.getByLabel("Gateway transfer UUID", { exact: true }).fill(complete.responseMetadata.transferId);
-  await page.getByLabel("Local metadata association", { exact: true }).selectOption({ label: complete.bundleId });
+  await page.getByLabel("Local metadata association").selectOption({ label: complete.bundleId });
   await page.getByRole("checkbox", { name: /I associate this report with this local bundle/u }).check();
   await page.getByRole("button", { name: "Review Gateway permission", exact: true }).click();
   assert.equal(apiRequests.length, 0, "Review alone must not send identifiers");
   await page.getByRole("dialog", { name: "Allow this Gateway read?" }).getByRole("button", { name: "Cancel", exact: true }).click();
   assert.equal(apiRequests.length, 0, "Cancelling permission must not contact the API");
   await page.getByRole("button", { name: "Review Gateway permission", exact: true }).click();
-  // Read immediately: click auto-waiting must not outlive Chromium's response body.
-  const pending = page.waitForResponse((response) => new URL(response.url()).pathname === GATEWAY_TRANSFER_PATH && response.request().method() === "POST")
-    .then(async (response) => ({ response, body: await response.json() }));
+  const pending = captureResponse(GATEWAY_TRANSFER_PATH);
   const [{ response, body }] = await Promise.all([
     pending, page.getByRole("button", { name: "Approve and read Gateway", exact: true }).click(),
   ]);
@@ -117,7 +170,8 @@ try {
   catch { throw new Error("The outgoing request is not JSON"); }
   assert.ok(JSON.stringify(payload) === JSON.stringify({ network: ARC_TESTNET.caip2, transferId: complete.responseMetadata.transferId }),
     "Only network and transfer UUID may be released");
-  for (const header of ["cookie", "authorization", "referer"]) assert.ok(sent.headers[header] === undefined, "Credentials and referrers must be omitted");
+  const sentHeaders = await sent.headers;
+  for (const header of ["cookie", "authorization", "referer"]) assert.ok(sentHeaders[header] === undefined, `${header} must be omitted`);
   await page.getByRole("heading", { name: `Gateway reports ${envelope.data.transfer.status}`, exact: true }).waitFor();
   await expect(bundleCard(complete)).toContainText(`Gateway: reports ${envelope.data.transfer.status}`);
   let completeResult = await resultFor(complete);
@@ -143,8 +197,7 @@ try {
     await page.getByLabel("Public Arc Testnet transaction hash", { exact: false }).fill(batchHash);
     await page.getByRole("button", { name: "Review permission", exact: true }).click();
     assert.equal(apiRequests.length, 1, "Preparing the batch comparison must not make a request");
-    const pendingBatch = page.waitForResponse((response) => new URL(response.url()).pathname === ARC_TRANSACTION_EVIDENCE_PATH && response.request().method() === "POST")
-      .then(async (response) => ({ response, body: await response.json() }));
+    const pendingBatch = captureResponse(ARC_TRANSACTION_EVIDENCE_PATH);
     const [{ response: batchResponse, body: batchBody }] = await Promise.all([
       pendingBatch, page.getByRole("button", { name: "Approve and observe", exact: true }).click(),
     ]);
@@ -167,7 +220,8 @@ try {
     catch { throw new Error("The batch request is not JSON"); }
     assert.ok(JSON.stringify(batchPayload) === JSON.stringify({ network: ARC_TESTNET.caip2, transactionHash: batchHash }),
       "Only network and exact batch transaction hash may be released");
-    for (const header of ["cookie", "authorization", "referer"]) assert.ok(batchRequest.headers[header] === undefined);
+    const batchHeaders = await batchRequest.headers;
+    for (const header of ["cookie", "authorization", "referer"]) assert.ok(batchHeaders[header] === undefined, `${header} must be omitted`);
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await page.getByRole("button", { name: /09 Payments/u }).click();
     await bundleCard(complete).getByLabel("Compare a saved batch transaction (local only)").selectOption({ label: batchHash });
