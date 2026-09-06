@@ -1,6 +1,6 @@
 # M09 — investigation operations
 
-Status: **active implementation**.
+Status: **implementation and staging QA complete; final hosted browser gate pending**.
 Branch: `codex/09-investigation-operations`, from M08-complete main
 `8da23ba0350c932e7d5f68aba1169aea99117d1c`.
 M08 RC: `rc/08-local-agent-connector/1` at `16cd6f5cf557512cc373c2c5d1fb57dc89c0d63f`.
@@ -86,13 +86,13 @@ completed without observation. These states do not infer a successful lookup res
 
 ## Required verification
 
-- [ ] Bounded shared projection, reference integrity and mixed-provenance tests.
-- [ ] Exact graph/list filtering and pagination parity; no heuristic joins.
-- [ ] Strict export allowlist and adversarial private-field canaries.
-- [ ] Desktop/mobile/keyboard/reduced-motion/axe browser journeys.
-- [ ] Zero source calls, export cancellation, lock/revision invalidation.
-- [ ] Large bounded dataset responsiveness and explicit overflow failures.
-- [ ] Independent review; no unresolved P0/P1 findings.
+- [x] Bounded shared projection, reference integrity and mixed-provenance tests.
+- [x] Exact graph/list filtering and pagination parity; no heuristic joins.
+- [x] Strict export allowlist and adversarial private-field canaries.
+- [x] Desktop/mobile/keyboard/reduced-motion/axe browser journeys.
+- [x] Zero source calls, export cancellation, lock/revision invalidation.
+- [x] Large bounded dataset responsiveness and explicit overflow failures.
+- [x] Independent review; no unresolved P0/P1 findings.
 - [ ] Full Node 22 gate, exact CI/scans/SBOM, exact staging build and live proof.
 - [ ] Immutable RC and main closure before M10.
 
@@ -122,3 +122,56 @@ present independently of the optional graph; graph and list use the same nodes
 and edges. Source history starts collapsed, and selecting a result focuses the
 detail heading. Final full-gate evidence is pending; these development checks do
 not yet establish release completion or deployment.
+
+## Exact-candidate verification
+
+Application candidate: `fd449e62bbf05b7ee3438d4bfbd94757d0509a2b`.
+The complete Node 22 Docker gate passed 520 unit/integration tests (221 shared,
+185 API, 114 web) and 110 cumulative development browser checks, with zero retries.
+Audit found no known production vulnerabilities; licenses (four groups), lint,
+types, builds and structural release checks passed. The gate image manifest is
+`sha256:0a820e401ac6a4cff75de162a8888b65aaad4d511fe13775005ffe0e2ca02f1b`;
+manifest list `sha256:e0ec8b463aba8cec27b00d227bf2ef83a8aa51a29b549e3abe63b929970a3167`.
+The existing bundle-size advisory remains visible; no warning threshold was raised.
+
+Hosted [CI run 34007821582](https://github.com/OpenArcHQ/OpenArc/actions/runs/34007821582)
+has passed verification and all ten blocking HIGH/CRITICAL image scans. Ten
+CycloneDX SBOMs are retained in exact-SHA artifact `9981592826`, 975,941 bytes,
+digest `sha256:7a210a92793e82d210fda5b045b2949a815d75e6dc1e6215141f7eba21054d8d`,
+expiry `2026-12-05T02:58:38Z`. The browser job subsequently failed during the M08
+reader-compatibility restore: its broad Agent reports locator matched both the
+sidebar and compact navigation. Before this failure, 110 development and 36
+production browser checks passed without retries (16 intentional fixture-only
+production skips); compatibility seed and M07 rejection/rescue passed with
+unchanged ciphertext and no source queries. M09's eight production checks were
+not reached. The harness now scopes navigation to the named Workspace navigation
+sidebar in both seed and restore; no product assertion or older-reader check is
+removed. A fresh complete hosted run is required before RC and main closure.
+
+### Existing Railway staging
+
+Only the existing staging API and web were deployed after the full local gate,
+hosted code checks and scans passed. Live QA ran alongside remaining hosted browser
+checks. Redis, production, service count and the hosting plan were unchanged.
+
+- API deployment `<deployment-id>`, successful;
+  image `sha256:4c6a177e93f815f84280869ac39c843fef79b005ef77693d2b65933c0c759ba3`.
+- Web deployment `<deployment-id>`, successful;
+  image `sha256:e3b893302384f01154926ccbaafa08fd4b6d33cd8f0e1d676e3a9afa81aace5e`.
+- Both web HTML and API readiness expose the exact candidate SHA with HTTP 200 and
+  normal TLS validation. Redis, source routes and configuration remain ready.
+- All eight M09 live journeys passed in Chromium/WebKit without retries (19.9s):
+  local filtering, graph/list parity, exact policy comparison, redacted and opt-in
+  plaintext downloads, cancellation/lock/unmount, keyboard, mobile and axe checks.
+- All 14 M08 live regression journeys passed on the same build without retries
+  (32.8s), including encrypted backup/recovery/restore and own-creation polling.
+- Eight supplemental live Chromium/WebKit checks passed without retries (29.9s):
+  cross-tab coordination, held post-save metadata readback, polling without
+  BroadcastChannel, and exact inactivity locking. Total live checks: 30 passed.
+- Live tests used isolated synthetic workspaces, not the user's vault. M09 asserts
+  zero fetch/XHR source requests; no payment, signing, new provider, TLS bypass or
+  synthetic proxy header was used on the public staging origin.
+
+M09 adds no persisted record kind. Hiding Investigations does not remove evidence,
+and the M08 reader remains the minimum reader for M08 agent-report records. The
+downloaded plaintext report is not a backup and is never automatically uploaded.

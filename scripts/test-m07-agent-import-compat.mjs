@@ -14,6 +14,8 @@ const directory = path.resolve("tmp/m08-reader-compat");
 await mkdir(directory, { recursive: true });
 const context = await chromium.launchPersistentContext(path.join(directory, "profile"), { headless: true, ignoreHTTPSErrors: true });
 const page = context.pages()[0] ?? await context.newPage();
+// Both sidebar and compact navigation may be rendered; select the named sidebar.
+const workspaceNavigation = page.getByRole("complementary", { name: "Workspace navigation", exact: true });
 page.setDefaultTimeout(20_000);
 const passphrase = "synthetic M08 older reader compatibility passphrase";
 const network = [];
@@ -41,11 +43,11 @@ try {
     await page.getByRole("checkbox", { name: /I saved it somewhere private/u }).check();
     await page.getByRole("button", { name: "Continue to workspace" }).click();
     await page.getByRole("button", { name: "Skip", exact: true }).click();
-    await page.getByRole("navigation").getByRole("button", { name: /^\d+ Agents\b/u }).click();
+    await workspaceNavigation.getByRole("button", { name: /^\d+ Agents\b/u }).click();
     await page.getByRole("button", { name: "Add agent profile", exact: true }).click();
     await page.getByLabel("Display name", { exact: true }).fill("Synthetic compatibility agent");
     await page.getByRole("button", { name: "Encrypt and save", exact: true }).click();
-    await page.getByRole("navigation").getByRole("button", { name: /Agent reports/u }).click();
+    await workspaceNavigation.getByRole("button", { name: /Agent reports/u }).click();
     await page.getByRole("button", { name: "Load example report", exact: true }).click();
     await page.getByRole("button", { name: "Preview report", exact: true }).click();
     await page.getByLabel("Local agent association", { exact: true }).selectOption({ label: "Synthetic compatibility agent" });
@@ -64,7 +66,7 @@ try {
     await page.getByRole("button", { name: "Unlock workspace", exact: true }).click();
     if (mode === "restore") {
       await expect(page.getByText("UNLOCKED LOCALLY", { exact: true })).toBeVisible();
-      await page.getByRole("navigation").getByRole("button", { name: /Agent reports/u }).click();
+      await workspaceNavigation.getByRole("button", { name: /Agent reports/u }).click();
       await expect(page.getByRole("heading", { name: /Imported agent report/u })).toBeVisible();
       await expect(page.getByRole("heading", { name: "Synthetic compatibility policy", exact: true })).toBeVisible();
     } else {
