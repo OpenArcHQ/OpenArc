@@ -1,6 +1,8 @@
 # M09 — investigation operations
 
-Status: **implementation and unlock-boundary regression verification complete; fresh full gates pending**.
+Status: **complete on controlled Testnet staging; not a public-launch or mainnet approval**.
+RC: `rc/09-investigation-operations/1` at
+`3fecd6bb44dd71931e1e239b8e9e8b6d30cb19f8`.
 Branch: `codex/09-investigation-operations`, from M08-complete main
 `8da23ba0350c932e7d5f68aba1169aea99117d1c`.
 M08 RC: `rc/08-local-agent-connector/1` at `16cd6f5cf557512cc373c2c5d1fb57dc89c0d63f`.
@@ -93,8 +95,8 @@ completed without observation. These states do not infer a successful lookup res
 - [x] Zero source calls, export cancellation, lock/revision invalidation.
 - [x] Large bounded dataset responsiveness and explicit overflow failures.
 - [x] Independent review; reproduced unlock-boundary P1 fixed and regression verified.
-- [ ] Full Node 22 gate, exact CI/scans/SBOM, exact staging build and live proof.
-- [ ] Immutable RC and main closure before M10.
+- [x] Full Node 22 gate, exact CI/scans/SBOM, exact staging build and live proof.
+- [x] Immutable RC and main closure before M10.
 
 ## Development evidence
 
@@ -214,7 +216,7 @@ plus live staging regression verification before RC/main closure.
 
 ### Corrected candidate verification
 
-Final application candidate: `5fe1bc47d1870c541d64bf042c0a9cec98c3307f`.
+Intermediate unlock-fix candidate: `5fe1bc47d1870c541d64bf042c0a9cec98c3307f`.
 The complete Node 22 Docker gate passed 524 unit/integration tests (221 shared,
 185 API, 118 web) and 112 development browser tests with no retries, including
 both browsers' permanent unlock-boundary regression. Production audit, four-group
@@ -265,3 +267,58 @@ test retries; reduced-motion/mobile coverage remains separate.
 The normal-motion journey passed six focused runs (three per browser, 27.8s), each
 with three uncheck/check cycles. Typecheck, lint and independent focused review
 passed; the final full gate remains required rather than inferred from stress QA.
+
+### Final lock-and-focus candidate
+
+Application SHA: `3fecd6bb44dd71931e1e239b8e9e8b6d30cb19f8`.
+The full Node 22 Docker gate passed 524 unit/integration and 112 development
+browser checks with no retries, plus production audit, license policy, lint,
+typecheck, builds and release checks. Image manifest:
+`sha256:40d8d99e852a4bb83c85b69d821a85dca714b497ff917031ca3c3b945d8e717e`;
+manifest list `sha256:65d01720915dd48b869d299589b1df2d8ce60c02cc16a13dd7a52300361aff28`.
+Hosted [CI 34010030123](https://github.com/OpenArcHQ/OpenArc/actions/runs/34010030123)
+has passed verification and all ten image scans. Hosted browser completion is
+recorded below; prior failed candidates are not treated as completed CI proof.
+The ten CycloneDX SBOMs are retained in exact-SHA artifact `9982244019`,
+975,901 bytes, digest
+`sha256:6f916e9cd1105024f9bc4e08a0a5ef96f6c6bec931e224cdb10c0ca0dccdee6f`,
+expiry `2026-12-05T03:51:14Z`.
+
+Only the existing staging API/web services were updated after those gates passed:
+
+- API deployment `<deployment-id>`, successful, image
+  `sha256:69aad7a5d343580eab3f4f99bdc15be7d0a27abf72b6ca010f9e35e9d55488a0`.
+- Web deployment `<deployment-id>`, successful, image
+  `sha256:6b77d45f16b6d8906128a75be0bf5e4e62d28d75309f4b32fbfd6cc2e7d7a0c8`.
+- API readiness and web HTML expose exact `3fecd6bb…`, HTTP 200, normal TLS;
+  configuration, source routes and Redis are ready.
+- Eight live investigation checks passed first try (13.5s), including normal-motion
+  repeated graph toggles, focus, graph/list parity, private export canaries and
+  real downloaded bytes. Fourteen import/recovery regressions passed (35.3s).
+  Both suites assert the exact build SHA.
+- Ten supplemental cross-tab/inactivity checks passed first try (30.9s), including
+  the stale-decrypted-session regression in Chromium and WebKit. Total live: 32.
+  As above, supplemental SHA binding is by public markers verified immediately
+  before the suite sequence, not an internal supplemental-suite assertion.
+- Fresh synthetic contexts only, zero source fetch/XHR queries, no real vault,
+  no payments/signing, no public-origin TLS bypass or synthetic proxy headers.
+  Redis, production, service count and plan were not changed.
+
+Final hosted CI completed successfully on the exact application SHA. All 112
+development browser cases passed first try (50 baseline, 2 workspace flag-off,
+12 API boundary, 4 Arc, 4 registry, 8 jobs, 8 Gateway, 14 imports, 8 investigations,
+2 investigation flag-off). All 44 production cases passed first try (2 workspace,
+12 API boundary, 2 Arc, 2 registry, 2 jobs, 2 Gateway, 14 imports, 8 investigations),
+with 16 intentional fixture-only production skips and no retries/flaky results.
+Compatibility seed at `3fecd6bb…`, immutable M07 reader rejection/rescue at
+`2edbc9d2c4c9eec309603a4347e69fbe15974470`, and restore at `3fecd6bb…` all passed,
+each with zero source requests and preserved encrypted bytes.
+Exact-SHA browser diagnostics artifact `9982437619` is 6,490,522 bytes, digest
+`sha256:ca643fb3c28f0630c1530a43953dc41493b58c23d590fd17b828f7b19e8c8f43`,
+expiry `2026-09-09T04:14:16Z`.
+
+Independent final review found no unresolved P0/P1 in M09 or its corrected unlock
+path. M09 adds no live source route; its live proof is the exact staging local
+workflow and regression suite. The already-recorded M07 controlled Testnet payment
+proof remains unchanged and was not repeated. Public Testnet hardening is M10;
+mainnet remains separately gated on official parameters and external approvals.

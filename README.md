@@ -1,7 +1,7 @@
 # OpenArc marketing and technical product package
 
-Status: **M08 complete; M09 staged, with final release verification in progress**
-Prepared: **2026-08-15; Arc and Gateway sources reviewed 2026-09-05**
+Status: **M09 complete on controlled staging; M10 public Testnet hardening next**
+Prepared: **2026-08-15; Arc and Gateway sources reviewed 2026-09-06**
 
 OpenArc is the proposed private intelligence, policy, and investigation layer for
 autonomous finance on Arc. It is designed to bring an agent's permissions,
@@ -34,10 +34,11 @@ parity, and a separately reviewed mainnet release exist.
 
 ## Current implementation
 
-Milestones 00–08 are complete: foundation, evidence engine, encrypted local
+Milestones 00–09 are complete: foundation, evidence engine, encrypted local
 workspace, consent-first API boundary, Arc account/transaction observations,
 ERC-8004 registry evidence, fixed-reference ERC-8183 job evidence, and private
-x402/Gateway metadata comparison, and local agent-report/policy comparison.
+x402/Gateway metadata comparison, local agent-report/policy comparison, and local
+investigation operations.
 Gateway controls are behind the default-off
 `GATEWAY_EVIDENCE_ENABLED` / `VITE_GATEWAY_EVIDENCE_ENABLED` flags.
 The completed release gates and controlled live Testnet evidence are recorded in
@@ -54,7 +55,11 @@ Its completed scope and verification evidence are recorded in
 M09 adds local search, exception views, graph/list evidence inspection, saved source
 history and explicit redacted JSON reports. Its active contract and verification
 ledger are in [`docs/releases/09-investigation-operations.md`](docs/releases/09-investigation-operations.md).
-M09 is on staging but is not release-complete yet; no new API or execution path is added.
+M09 is complete on controlled staging; no new API or execution path is added.
+Its final gate includes 524 unit/integration tests, 112 development and 44 production
+browser checks, ten image scans, historical-reader compatibility and 32 live staging
+checks. Public Testnet hardening and external launch decisions remain M10; this is
+not public-launch or mainnet approval.
 
 - `packages/shared` owns the fail-closed Arc Testnet registry and primitive
   schemas, versioned evidence records, append-only action states, deterministic
