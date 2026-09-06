@@ -1,0 +1,530 @@
+# Archived pre-publication workflow. Requires private historical RC objects.
+# Not an executable public workflow; use source-checks.yml for this snapshot.
+name: Release gates
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      redis:
+        image: redis:8-alpine@sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.5.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm release:check
+      - name: Audit production dependencies
+        shell: bash
+        run: |
+          audit_log=$(mktemp)
+          trap 'rm -f "${audit_log}"' EXIT
+          set +e
+          pnpm audit:prod 2>&1 | tee "${audit_log}"
+          audit_status=${PIPESTATUS[0]}
+          set -e
+          if [ "${audit_status}" -eq 0 ]; then exit 0; fi
+          if grep -Fq '[23] The operation was aborted due to timeout' "${audit_log}" && \
+             grep -Fq 'TimeoutError: The operation was aborted due to timeout' "${audit_log}"; then
+            echo '::warning::npm advisory transport timed out; the mandatory pinned Trivy production-image scans remain authoritative for HIGH/CRITICAL findings.'
+            exit 0
+          fi
+          exit "${audit_status}"
+      - run: pnpm licenses:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+        env:
+          OPENARC_TEST_REDIS_URL: redis://127.0.0.1:6379
+          OPENARC_TEST_REDIS_DISPOSABLE: "true"
+      - run: pnpm build
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.5.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @openarc/shared build
+      - run: pnpm exec playwright install --with-deps chromium webkit
+      - run: pnpm e2e
+      - name: Build exact feature-on M02 production image
+        run: docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m02:ci .
+      - name: Browser-test exact feature-on M02 production image
+        run: |
+          docker run -d --rm --name openarc-web-m02 -p 8081:8080 openarc-web-m02:ci
+          web_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8081/ | grep -Fq "${GITHUB_SHA}"; then web_ready=1; break; fi
+            sleep 1
+          done
+          test "${web_ready}" = "1"
+          PLAYWRIGHT_PRODUCTION_BASE_URL=http://127.0.0.1:8081 EXPECTED_BUILD_SHA=${GITHUB_SHA} pnpm e2e:production
+      - name: Stop M02 production browser image
+        if: always()
+        run: docker stop openarc-web-m02 || true
+      - name: Build exact M03 API and web images
+        run: |
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} -f apps/api/Dockerfile -t openarc-api-m03:ci .
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true --build-arg VITE_API_BOUNDARY_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m03:ci .
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true --build-arg VITE_API_BOUNDARY_ENABLED=true --build-arg VITE_ARC_OBSERVATION_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m04:ci .
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true --build-arg VITE_API_BOUNDARY_ENABLED=true --build-arg VITE_ARC_OBSERVATION_ENABLED=true --build-arg VITE_AGENT_REGISTRY_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m05:ci .
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true --build-arg VITE_API_BOUNDARY_ENABLED=true --build-arg VITE_ARC_OBSERVATION_ENABLED=true --build-arg VITE_AGENT_REGISTRY_ENABLED=true --build-arg VITE_AGENT_JOBS_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m06:ci .
+          docker run --rm --entrypoint sh openarc-web-m03:ci -c 'test -f /etc/nginx/templates/default.conf.template && test -f /etc/nginx/proxy_params && test ! -e /etc/nginx/conf.d/default.conf && test ! -e /docker-entrypoint.d/05-openarc-m04-env.sh'
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true --build-arg VITE_API_BOUNDARY_ENABLED=true --build-arg VITE_ARC_OBSERVATION_ENABLED=true --build-arg VITE_AGENT_REGISTRY_ENABLED=true --build-arg VITE_AGENT_JOBS_ENABLED=true --build-arg VITE_GATEWAY_EVIDENCE_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m07:ci .
+          docker run --rm --entrypoint sh openarc-web-m07:ci -c 'test -x /docker-entrypoint.d/05-openarc-m04-env.sh && grep -Fq gateway/transfer /etc/nginx/templates/default.conf.template'
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true --build-arg VITE_API_BOUNDARY_ENABLED=true --build-arg VITE_ARC_OBSERVATION_ENABLED=true --build-arg VITE_AGENT_REGISTRY_ENABLED=true --build-arg VITE_AGENT_JOBS_ENABLED=true --build-arg VITE_GATEWAY_EVIDENCE_ENABLED=true --build-arg VITE_GENERIC_AGENT_IMPORT_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m08:ci .
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true --build-arg VITE_API_BOUNDARY_ENABLED=true --build-arg VITE_ARC_OBSERVATION_ENABLED=true --build-arg VITE_AGENT_REGISTRY_ENABLED=true --build-arg VITE_AGENT_JOBS_ENABLED=true --build-arg VITE_GATEWAY_EVIDENCE_ENABLED=true --build-arg VITE_GENERIC_AGENT_IMPORT_ENABLED=true --build-arg VITE_INVESTIGATIONS_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m09:ci .
+          docker run --rm --entrypoint sh openarc-web-m04:ci -c 'test -x /docker-entrypoint.d/05-openarc-m04-env.sh && grep -Fq X-OpenArc-Proxy-Client-IP /etc/nginx/templates/default.conf.template'
+          docker run --rm --entrypoint sh openarc-web-m05:ci -c 'test -x /docker-entrypoint.d/05-openarc-m04-env.sh && grep -Fq agent-registry-evidence /etc/nginx/templates/default.conf.template'
+          test "$(git rev-parse rc/07-x402-gateway-evidence/1^{commit})" = "2edbc9d2c4c9eec309603a4347e69fbe15974470"
+          git worktree add --detach tmp/m07-reader rc/07-x402-gateway-evidence/1
+          docker build --build-arg COMMIT_SHA=2edbc9d2c4c9eec309603a4347e69fbe15974470 --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true -f tmp/m07-reader/apps/web/Dockerfile -t openarc-web-m07-reader:ci tmp/m07-reader
+          git worktree remove tmp/m07-reader
+          test "$(git rev-parse rc/02-encrypted-workspace/1^{commit})" = "298c695ae615ea090b02b0410b7ae37125c625b1"
+          git worktree add --detach tmp/m02-reader rc/02-encrypted-workspace/1
+          # Preserve the immutable M02 application source while refreshing only
+          # runtime packages that the mutable Alpine index no longer serves.
+          sed -i 's/^    curl=8\.20\.0-r0/    curl=8.22.0-r0/; s/^    libcurl=8\.20\.0-r0/    libcurl=8.22.0-r0/' tmp/m02-reader/apps/web/Dockerfile
+          grep -Fq 'curl=8.22.0-r0' tmp/m02-reader/apps/web/Dockerfile
+          grep -Fq 'libcurl=8.22.0-r0' tmp/m02-reader/apps/web/Dockerfile
+          if grep -Fq '8.20.0-r0' tmp/m02-reader/apps/web/Dockerfile; then exit 1; fi
+          docker build --build-arg COMMIT_SHA=298c695ae615ea090b02b0410b7ae37125c625b1 --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true -f tmp/m02-reader/apps/web/Dockerfile -t openarc-web-m02-reader:ci tmp/m02-reader
+          git worktree remove --force tmp/m02-reader
+      - name: Browser-test exact M03 images through verified TLS
+        run: |
+          mkdir -p tmp/m03-tls
+          openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 -subj /CN=api.openarc.test -addext subjectAltName=DNS:api.openarc.test -keyout tmp/m03-tls/api.key -out tmp/m03-tls/api.crt >/dev/null 2>&1
+          openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 -subj /CN=127.0.0.1 -addext subjectAltName=IP:127.0.0.1 -keyout tmp/m03-tls/web.key -out tmp/m03-tls/web.crt >/dev/null 2>&1
+          docker network create openarc-m03-ci
+          docker run -d --rm --name openarc-api-m03 --network openarc-m03-ci \
+            -e APP_ORIGIN=https://127.0.0.1:8443 \
+            -e API_BOUNDARY_ENABLED=true \
+            -e METRICS_TOKEN=synthetic_metrics_token_for_ci_only_0002 \
+            openarc-api-m03:ci
+          docker run -d --rm --name openarc-api-tls-m03 --network openarc-m03-ci \
+            --entrypoint nginx \
+            -v "${PWD}/scripts/nginx-test-tls-forwarder.conf:/tmp/tls-forwarder.conf:ro" \
+            -v "${PWD}/tmp/m03-tls/api.key:/tmp/api.key:ro" \
+            -v "${PWD}/tmp/m03-tls/api.crt:/tmp/api.crt:ro" \
+            openarc-web-m03:ci -c /tmp/tls-forwarder.conf -g 'daemon off;'
+          api_tls_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' openarc-api-tls-m03)
+          test -n "${api_tls_ip}"
+          docker run -d --rm --name openarc-web-m03 -p 8082:8080 \
+            --network openarc-m03-ci \
+            -e API_UPSTREAM_HOST="${api_tls_ip}:9443" \
+            -e API_UPSTREAM_SNI=api.openarc.test \
+            -e API_TRUST_BUNDLE=/tmp/openarc-api.crt \
+            -v "${PWD}/tmp/m03-tls/api.crt:/tmp/openarc-api.crt:ro" \
+            openarc-web-m03:ci
+          web_container_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8082/ | grep -Fq "${GITHUB_SHA}"; then web_container_ready=1; break; fi
+            sleep 1
+          done
+          if [ "${web_container_ready}" != "1" ]; then
+            docker ps -a --filter name=openarc-web-m03
+            docker logs --tail 100 openarc-web-m03 || true
+            docker exec openarc-web-m03 cat /etc/nginx/conf.d/default.conf || true
+            exit 1
+          fi
+          node scripts/tls-forwarder.mjs 8443 8082 tmp/m03-tls/web.key tmp/m03-tls/web.crt > tmp/m03-tls/web-forwarder.log &
+          web_tls_pid=$!
+          cleanup() { kill "${web_tls_pid}" 2>/dev/null || true; docker stop openarc-web-m02-reader openarc-web-m03-wrong-sni openarc-web-m03 openarc-api-tls-m03 openarc-api-m03 2>/dev/null || true; docker network rm openarc-m03-ci 2>/dev/null || true; }
+          trap cleanup EXIT
+          web_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -kfsS https://127.0.0.1:8443/ | grep -Fq "${GITHUB_SHA}"; then web_ready=1; break; fi
+            sleep 1
+          done
+          if [ "${web_ready}" != "1" ]; then
+            cat tmp/m03-tls/web-forwarder.log || true
+            curl -fsS http://127.0.0.1:8082/ | grep -F "${GITHUB_SHA}" || true
+            exit 1
+          fi
+          curl -kfsS -D tmp/m03-tls/shell.headers -o /dev/null https://127.0.0.1:8443/
+          tr -d '\r' < tmp/m03-tls/shell.headers | grep -Fqi 'Strict-Transport-Security: max-age=31536000; includeSubDomains'
+          api_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -kfsS https://127.0.0.1:8443/readyz | grep -Fq "${GITHUB_SHA}"; then api_ready=1; break; fi
+            sleep 1
+          done
+          if [ "${api_ready}" != "1" ]; then
+            docker exec openarc-web-m03 cat /etc/nginx/conf.d/default.conf || true
+            docker exec openarc-web-m03 curl -fsS --cacert /tmp/openarc-api.crt --resolve "api.openarc.test:9443:${api_tls_ip}" https://api.openarc.test:9443/readyz || true
+            docker logs --tail 100 openarc-web-m03 || true
+            docker logs --tail 100 openarc-api-tls-m03 || true
+            docker logs --tail 100 openarc-api-m03 || true
+            exit 1
+          fi
+          curl -kfsS -D tmp/m03-tls/proxy.headers -o /dev/null https://127.0.0.1:8443/readyz
+          tr -d '\r' < tmp/m03-tls/proxy.headers | grep -Fqi 'Strict-Transport-Security: max-age=31536000; includeSubDomains'
+          metrics_status=$(curl -ksS -D tmp/m03-tls/web-metrics.headers -o /dev/null -w '%{http_code}' https://127.0.0.1:8443/metrics)
+          test "${metrics_status}" = "404"
+          tr -d '\r' < tmp/m03-tls/web-metrics.headers | grep -Fqi 'Strict-Transport-Security: max-age=31536000; includeSubDomains'
+          PLAYWRIGHT_PRODUCTION_BASE_URL=https://127.0.0.1:8443 pnpm e2e:api-boundary:production
+          OPENARC_M02_COMPAT_BASE_URL=https://127.0.0.1:8443 node scripts/test-m02-receipt-compat.mjs seed
+          docker stop openarc-web-m03
+          docker run -d --rm --name openarc-web-m02-reader -p 8082:8080 openarc-web-m02-reader:ci
+          m02_reader_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -kfsS https://127.0.0.1:8443/ | grep -Fq "298c695ae615ea090b02b0410b7ae37125c625b1"; then m02_reader_ready=1; break; fi
+            sleep 1
+          done
+          test "${m02_reader_ready}" = "1"
+          OPENARC_M02_COMPAT_BASE_URL=https://127.0.0.1:8443 node scripts/test-m02-receipt-compat.mjs verify
+          docker stop openarc-web-m02-reader
+          docker run -d --rm --name openarc-web-m03-wrong-sni -p 8083:8080 \
+            --network openarc-m03-ci \
+            -e API_UPSTREAM_HOST="${api_tls_ip}:9443" \
+            -e API_UPSTREAM_SNI=wrong.openarc.test \
+            -e API_TRUST_BUNDLE=/tmp/openarc-api.crt \
+            -v "${PWD}/tmp/m03-tls/api.crt:/tmp/openarc-api.crt:ro" \
+            openarc-web-m03:ci
+          status=000
+          for attempt in $(seq 1 30); do
+            status=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Origin: https://127.0.0.1:8443' -H 'X-OpenArc-Client: browser-v1' http://127.0.0.1:8083/v1/private/capabilities || true)
+            if [ "${status}" != "000" ]; then break; fi
+            sleep 1
+          done
+          test "${status}" = "502"
+          curl -sS -D tmp/m03-tls/proxy-502.headers -o /dev/null -H 'Origin: https://127.0.0.1:8443' -H 'X-OpenArc-Client: browser-v1' http://127.0.0.1:8083/v1/private/capabilities || true
+          tr -d '\r' < tmp/m03-tls/proxy-502.headers | grep -Fqi 'Strict-Transport-Security: max-age=31536000; includeSubDomains'
+          docker stop openarc-web-m03-wrong-sni
+      - name: Browser-test exact M04 images against a TLS fixture source and real Redis
+        run: |
+          mkdir -p tmp/m04-tls
+          openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 -subj /CN=OpenArc-M04-Fixture-CA -addext basicConstraints=critical,CA:TRUE -keyout tmp/m04-tls/rpc-ca.key -out tmp/m04-tls/rpc-ca.crt >/dev/null 2>&1
+          openssl req -newkey rsa:2048 -nodes -sha256 -subj /CN=rpc.testnet.arc.io -addext subjectAltName=DNS:rpc.testnet.arc.io -keyout tmp/m04-tls/rpc.key -out tmp/m04-tls/rpc.csr >/dev/null 2>&1
+          openssl x509 -req -sha256 -days 1 -in tmp/m04-tls/rpc.csr -CA tmp/m04-tls/rpc-ca.crt -CAkey tmp/m04-tls/rpc-ca.key -CAcreateserial -copy_extensions copy -out tmp/m04-tls/rpc.crt >/dev/null 2>&1
+          openssl req -newkey rsa:2048 -nodes -sha256 -subj /CN=gateway-api-testnet.circle.com -addext subjectAltName=DNS:gateway-api-testnet.circle.com -keyout tmp/m04-tls/gateway.key -out tmp/m04-tls/gateway.csr >/dev/null 2>&1
+          openssl x509 -req -sha256 -days 1 -in tmp/m04-tls/gateway.csr -CA tmp/m04-tls/rpc-ca.crt -CAkey tmp/m04-tls/rpc-ca.key -CAcreateserial -copy_extensions copy -out tmp/m04-tls/gateway.crt >/dev/null 2>&1
+          openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 -subj /CN=api.openarc.test -addext subjectAltName=DNS:api.openarc.test -keyout tmp/m04-tls/api.key -out tmp/m04-tls/api.crt >/dev/null 2>&1
+          openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 -subj /CN=127.0.0.1 -addext subjectAltName=IP:127.0.0.1 -keyout tmp/m04-tls/web.key -out tmp/m04-tls/web.crt >/dev/null 2>&1
+          docker network create openarc-m04-ci
+          docker run -d --rm --name openarc-redis-m04 --network openarc-m04-ci \
+            redis:8-alpine@sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576 \
+            redis-server --save '' --appendonly no
+          docker run -d --rm --name openarc-rpc-fixture-m04 --network openarc-m04-ci --user 0 \
+            --entrypoint node \
+            -e OPENARC_FIXTURE_TLS_KEY=/tmp/rpc.key \
+            -e OPENARC_FIXTURE_TLS_CERT=/tmp/rpc.crt \
+            -v "${PWD}/scripts/arc-rpc-fixture.mjs:/tmp/arc-rpc-fixture.mjs:ro" \
+            -v "${PWD}/tmp/m04-tls/rpc.key:/tmp/rpc.key:ro" \
+            -v "${PWD}/tmp/m04-tls/rpc.crt:/tmp/rpc.crt:ro" \
+            openarc-api-m03:ci /tmp/arc-rpc-fixture.mjs
+          docker run -d --rm --name openarc-gateway-fixture-m07 --network openarc-m04-ci --user 0 \
+            --entrypoint node \
+            -e OPENARC_FIXTURE_TLS_KEY=/tmp/gateway.key \
+            -e OPENARC_FIXTURE_TLS_CERT=/tmp/gateway.crt \
+            -v "${PWD}/scripts/gateway-transfer-fixture.mjs:/tmp/gateway-transfer-fixture.mjs:ro" \
+            -v "${PWD}/tmp/m04-tls/gateway.key:/tmp/gateway.key:ro" \
+            -v "${PWD}/tmp/m04-tls/gateway.crt:/tmp/gateway.crt:ro" \
+            openarc-api-m03:ci /tmp/gateway-transfer-fixture.mjs
+          redis_ready=0
+          fixture_ready=0
+          gateway_fixture_ready=0
+          for attempt in $(seq 1 30); do
+            if docker exec openarc-redis-m04 redis-cli ping | grep -Fq PONG; then redis_ready=1; fi
+            if docker logs openarc-rpc-fixture-m04 2>&1 | grep -Fq fixture_ready; then fixture_ready=1; fi
+            if docker logs openarc-gateway-fixture-m07 2>&1 | grep -Fq gateway_fixture_ready; then gateway_fixture_ready=1; fi
+            if [ "${redis_ready}" = "1" ] && [ "${fixture_ready}" = "1" ] && [ "${gateway_fixture_ready}" = "1" ]; then break; fi
+            sleep 1
+          done
+          test "${redis_ready}" = "1"
+          test "${fixture_ready}" = "1"
+          test "${gateway_fixture_ready}" = "1"
+          gateway_fixture_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' openarc-gateway-fixture-m07)
+          test -n "${gateway_fixture_ip}"
+          rpc_fixture_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' openarc-rpc-fixture-m04)
+          test -n "${rpc_fixture_ip}"
+          docker run -d --rm --name openarc-api-m04 --network openarc-m04-ci --network-alias openarc-api-m03 \
+            --add-host "rpc.testnet.arc.io:${rpc_fixture_ip}" \
+            --add-host "gateway-api-testnet.circle.com:${gateway_fixture_ip}" \
+            -e NODE_EXTRA_CA_CERTS=/tmp/rpc-ca.crt \
+            -e APP_ORIGIN=https://127.0.0.1:8444 \
+            -e API_BOUNDARY_ENABLED=true \
+            -e ARC_OBSERVATION_ENABLED=true \
+            -e AGENT_REGISTRY_ENABLED=true \
+            -e AGENT_JOBS_ENABLED=true \
+            -e GATEWAY_EVIDENCE_ENABLED=true \
+            -e REDIS_URL=redis://openarc-redis-m04:6379 \
+            -e ABUSE_LIMIT_SECRET=synthetic_abuse_limit_secret_for_ci_0004 \
+            -e SOURCE_PROXY_SECRET=synthetic_source_proxy_secret_for_ci_0004 \
+            -e REQUESTS_PER_IP_HOUR=3 \
+            -e SOURCE_MAX_SUBCALLS=11 \
+            -e METRICS_TOKEN=synthetic_metrics_token_for_ci_only_0004 \
+            -v "${PWD}/tmp/m04-tls/rpc-ca.crt:/tmp/rpc-ca.crt:ro" \
+            openarc-api-m03:ci
+          docker run -d --rm --name openarc-api-tls-m04 --network openarc-m04-ci \
+            --entrypoint nginx \
+            -v "${PWD}/scripts/nginx-test-tls-forwarder.conf:/tmp/tls-forwarder.conf:ro" \
+            -v "${PWD}/tmp/m04-tls/api.key:/tmp/api.key:ro" \
+            -v "${PWD}/tmp/m04-tls/api.crt:/tmp/api.crt:ro" \
+            openarc-web-m04:ci -c /tmp/tls-forwarder.conf -g 'daemon off;'
+          api_tls_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' openarc-api-tls-m04)
+          test -n "${api_tls_ip}"
+          docker run -d --rm --name openarc-web-m04 -p 8084:8080 --network openarc-m04-ci \
+            -e API_UPSTREAM_HOST="${api_tls_ip}:9443" \
+            -e API_UPSTREAM_SNI=api.openarc.test \
+            -e API_TRUST_BUNDLE=/tmp/openarc-api.crt \
+            -e SOURCE_PROXY_SECRET=synthetic_source_proxy_secret_for_ci_0004 \
+            -v "${PWD}/tmp/m04-tls/api.crt:/tmp/openarc-api.crt:ro" \
+            openarc-web-m04:ci
+          node scripts/tls-forwarder.mjs 8444 8084 tmp/m04-tls/web.key tmp/m04-tls/web.crt > tmp/m04-tls/web-forwarder.log &
+          web_tls_pid=$!
+          cleanup() { kill "${web_tls_pid}" 2>/dev/null || true; docker stop openarc-web-m09 openarc-web-m08-compat-restore openarc-web-m07-compat-reader openarc-web-m08 openarc-web-m07 openarc-web-m06 openarc-web-m05 openarc-web-m04 openarc-api-tls-m04 openarc-api-m04 openarc-rpc-fixture-m04 openarc-gateway-fixture-m07 openarc-redis-m04 2>/dev/null || true; docker network rm openarc-m04-ci 2>/dev/null || true; }
+          trap cleanup EXIT
+          api_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -kfsS https://127.0.0.1:8444/readyz | grep -Fq '"sourceRoutes":"enabled"'; then api_ready=1; break; fi
+            sleep 1
+          done
+          if [ "${api_ready}" != "1" ]; then
+            cat tmp/m04-tls/web-forwarder.log || true
+            docker logs --tail 100 openarc-web-m04 || true
+            docker logs --tail 100 openarc-api-tls-m04 || true
+            docker logs --tail 100 openarc-api-m04 || true
+            docker logs --tail 100 openarc-rpc-fixture-m04 || true
+            exit 1
+          fi
+          curl -kfsS https://127.0.0.1:8444/v1/private/capabilities \
+            -H 'Origin: https://127.0.0.1:8444' -H 'X-OpenArc-Client: browser-v1' | grep -Fq '"arcObservation":true'
+          PLAYWRIGHT_PRODUCTION_BASE_URL=https://127.0.0.1:8444 pnpm e2e:arc-observation:production
+          account_payload='{"network":"eip155:5042002","address":"0x1111111111111111111111111111111111111111"}'
+          for attempt in 1 2 3; do
+            response_code=$(curl -ksS -o /dev/null -w '%{http_code}' https://127.0.0.1:8444/v1/private/arc/account-snapshot \
+              -H 'Origin: https://127.0.0.1:8444' -H 'X-OpenArc-Client: browser-v1' \
+              -H 'Content-Type: application/json' -H 'X-Real-IP: 192.0.2.20' \
+              -H 'X-OpenArc-Proxy-Secret: attacker-controlled' -H 'X-OpenArc-Proxy-Client-IP: 198.51.100.99' \
+              --data "${account_payload}")
+            test "${response_code}" = "200"
+          done
+          exhausted_status=$(curl -ksS -o /dev/null -w '%{http_code}' https://127.0.0.1:8444/v1/private/arc/account-snapshot \
+            -H 'Origin: https://127.0.0.1:8444' -H 'X-OpenArc-Client: browser-v1' \
+            -H 'Content-Type: application/json' -H 'X-Real-IP: 192.0.2.20' --data "${account_payload}")
+          independent_status=$(curl -ksS -o /dev/null -w '%{http_code}' https://127.0.0.1:8444/v1/private/arc/account-snapshot \
+            -H 'Origin: https://127.0.0.1:8444' -H 'X-OpenArc-Client: browser-v1' \
+            -H 'Content-Type: application/json' -H 'X-Real-IP: 192.0.2.21' --data "${account_payload}")
+          test "${exhausted_status}" = "429"
+          test "${independent_status}" = "200"
+          direct_status=$(docker exec openarc-web-m04 curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' \
+            --cacert /tmp/openarc-api.crt --resolve "api.openarc.test:9443:${api_tls_ip}" \
+            https://api.openarc.test:9443/v1/private/arc/account-snapshot \
+            -H 'Origin: https://127.0.0.1:8444' -H 'X-OpenArc-Client: browser-v1' \
+            -H 'Content-Type: application/json' --data "${account_payload}")
+          test "${direct_status}" = "403"
+          docker stop openarc-web-m04
+          docker run -d --rm --name openarc-web-m05 -p 8084:8080 --network openarc-m04-ci \
+            -e API_UPSTREAM_HOST="${api_tls_ip}:9443" \
+            -e API_UPSTREAM_SNI=api.openarc.test \
+            -e API_TRUST_BUNDLE=/tmp/openarc-api.crt \
+            -e SOURCE_PROXY_SECRET=synthetic_source_proxy_secret_for_ci_0004 \
+            -v "${PWD}/tmp/m04-tls/api.crt:/tmp/openarc-api.crt:ro" \
+            openarc-web-m05:ci
+          m05_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -kfsS https://127.0.0.1:8444/ | grep -Fq "${GITHUB_SHA}"; then m05_ready=1; break; fi
+            sleep 1
+          done
+          test "${m05_ready}" = "1"
+          curl -kfsS https://127.0.0.1:8444/v1/private/capabilities \
+            -H 'Origin: https://127.0.0.1:8444' -H 'X-OpenArc-Client: browser-v1' | grep -Fq '"agentRegistry":true'
+          PLAYWRIGHT_PRODUCTION_BASE_URL=https://127.0.0.1:8444 pnpm e2e:agent-registry:production
+          docker stop openarc-web-m05
+          docker run -d --rm --name openarc-web-m06 -p 8084:8080 --network openarc-m04-ci \
+            -e API_UPSTREAM_HOST="${api_tls_ip}:9443" \
+            -e API_UPSTREAM_SNI=api.openarc.test \
+            -e API_TRUST_BUNDLE=/tmp/openarc-api.crt \
+            -e SOURCE_PROXY_SECRET=synthetic_source_proxy_secret_for_ci_0004 \
+            -v "${PWD}/tmp/m04-tls/api.crt:/tmp/openarc-api.crt:ro" \
+            openarc-web-m06:ci
+          m06_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -kfsS https://127.0.0.1:8444/ | grep -Fq "${GITHUB_SHA}"; then m06_ready=1; break; fi
+            sleep 1
+          done
+          test "${m06_ready}" = "1"
+          curl -kfsS https://127.0.0.1:8444/v1/private/capabilities \
+            -H 'Origin: https://127.0.0.1:8444' -H 'X-OpenArc-Client: browser-v1' | grep -Fq '"agentJobs":true'
+          PLAYWRIGHT_PRODUCTION_BASE_URL=https://127.0.0.1:8444 pnpm e2e:job-evidence:production
+          docker stop openarc-web-m06
+          docker run -d --rm --name openarc-web-m07 -p 8084:8080 --network openarc-m04-ci \
+            -e API_UPSTREAM_HOST="${api_tls_ip}:9443" \
+            -e API_UPSTREAM_SNI=api.openarc.test \
+            -e API_TRUST_BUNDLE=/tmp/openarc-api.crt \
+            -e SOURCE_PROXY_SECRET=synthetic_source_proxy_secret_for_ci_0004 \
+            -v "${PWD}/tmp/m04-tls/api.crt:/tmp/openarc-api.crt:ro" \
+            openarc-web-m07:ci
+          m07_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -kfsS https://127.0.0.1:8444/ | grep -Fq "${GITHUB_SHA}"; then m07_ready=1; break; fi
+            sleep 1
+          done
+          test "${m07_ready}" = "1"
+          curl -kfsS https://127.0.0.1:8444/v1/private/capabilities \
+            -H 'Origin: https://127.0.0.1:8444' -H 'X-OpenArc-Client: browser-v1' | grep -Fq '"gatewayEvidence":true'
+          PLAYWRIGHT_PRODUCTION_BASE_URL=https://127.0.0.1:8444 EXPECTED_BUILD_SHA=${GITHUB_SHA} pnpm e2e:gateway-evidence:production
+          docker stop openarc-web-m07
+          docker run -d --rm --name openarc-web-m08 -p 8084:8080 --network openarc-m04-ci \
+            -e API_UPSTREAM_HOST="${api_tls_ip}:9443" \
+            -e API_UPSTREAM_SNI=api.openarc.test \
+            -e API_TRUST_BUNDLE=/tmp/openarc-api.crt \
+            -e SOURCE_PROXY_SECRET=synthetic_source_proxy_secret_for_ci_0004 \
+            -v "${PWD}/tmp/m04-tls/api.crt:/tmp/openarc-api.crt:ro" \
+            openarc-web-m08:ci
+          m08_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -kfsS https://127.0.0.1:8444/ | grep -Fq "${GITHUB_SHA}"; then m08_ready=1; break; fi
+            sleep 1
+          done
+          test "${m08_ready}" = "1"
+          PLAYWRIGHT_PRODUCTION_BASE_URL=https://127.0.0.1:8444 EXPECTED_BUILD_SHA=${GITHUB_SHA} pnpm e2e:local-agent-import:production
+          EXPECTED_BUILD_SHA=${GITHUB_SHA} node scripts/test-m07-agent-import-compat.mjs seed
+          docker stop openarc-web-m08
+          docker run -d --rm --name openarc-web-m07-compat-reader -p 8084:8080 openarc-web-m07-reader:ci
+          m07_reader_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -kfsS https://127.0.0.1:8444/ | grep -Fq '2edbc9d2c4c9eec309603a4347e69fbe15974470'; then m07_reader_ready=1; break; fi
+            sleep 1
+          done
+          test "${m07_reader_ready}" = "1"
+          node scripts/test-m07-agent-import-compat.mjs verify
+          docker stop openarc-web-m07-compat-reader
+          docker run -d --rm --name openarc-web-m08-compat-restore -p 8084:8080 --network openarc-m04-ci \
+            -e API_UPSTREAM_HOST="${api_tls_ip}:9443" \
+            -e API_UPSTREAM_SNI=api.openarc.test \
+            -e API_TRUST_BUNDLE=/tmp/openarc-api.crt \
+            -e SOURCE_PROXY_SECRET=synthetic_source_proxy_secret_for_ci_0004 \
+            -v "${PWD}/tmp/m04-tls/api.crt:/tmp/openarc-api.crt:ro" \
+            openarc-web-m08:ci
+          m08_restore_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -kfsS https://127.0.0.1:8444/ | grep -Fq "${GITHUB_SHA}"; then m08_restore_ready=1; break; fi
+            sleep 1
+          done
+          test "${m08_restore_ready}" = "1"
+          EXPECTED_BUILD_SHA=${GITHUB_SHA} node scripts/test-m07-agent-import-compat.mjs restore
+          docker stop openarc-web-m08-compat-restore
+          docker run -d --rm --name openarc-web-m09 -p 8084:8080 --network openarc-m04-ci \
+            -e API_UPSTREAM_HOST="${api_tls_ip}:9443" \
+            -e API_UPSTREAM_SNI=api.openarc.test \
+            -e API_TRUST_BUNDLE=/tmp/openarc-api.crt \
+            -e SOURCE_PROXY_SECRET=synthetic_source_proxy_secret_for_ci_0004 \
+            -v "${PWD}/tmp/m04-tls/api.crt:/tmp/openarc-api.crt:ro" \
+            openarc-web-m09:ci
+          m09_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -kfsS https://127.0.0.1:8444/ | grep -Fq "${GITHUB_SHA}"; then m09_ready=1; break; fi
+            sleep 1
+          done
+          test "${m09_ready}" = "1"
+          PLAYWRIGHT_PRODUCTION_BASE_URL=https://127.0.0.1:8444 EXPECTED_BUILD_SHA=${GITHUB_SHA} pnpm e2e:investigations:production
+          docker stop openarc-web-m09
+      - name: Retain synthetic browser failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openarc-browser-failure-diagnostics
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 3
+
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build production images
+        run: |
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} -f apps/api/Dockerfile -t openarc-api:ci .
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} -f apps/web/Dockerfile -t openarc-web:ci .
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m02:ci .
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true --build-arg VITE_API_BOUNDARY_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m03:ci .
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true --build-arg VITE_API_BOUNDARY_ENABLED=true --build-arg VITE_ARC_OBSERVATION_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m04:ci .
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true --build-arg VITE_API_BOUNDARY_ENABLED=true --build-arg VITE_ARC_OBSERVATION_ENABLED=true --build-arg VITE_AGENT_REGISTRY_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m05:ci .
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true --build-arg VITE_API_BOUNDARY_ENABLED=true --build-arg VITE_ARC_OBSERVATION_ENABLED=true --build-arg VITE_AGENT_REGISTRY_ENABLED=true --build-arg VITE_AGENT_JOBS_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m06:ci .
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true --build-arg VITE_API_BOUNDARY_ENABLED=true --build-arg VITE_ARC_OBSERVATION_ENABLED=true --build-arg VITE_AGENT_REGISTRY_ENABLED=true --build-arg VITE_AGENT_JOBS_ENABLED=true --build-arg VITE_GATEWAY_EVIDENCE_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m07:ci .
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true --build-arg VITE_API_BOUNDARY_ENABLED=true --build-arg VITE_ARC_OBSERVATION_ENABLED=true --build-arg VITE_AGENT_REGISTRY_ENABLED=true --build-arg VITE_AGENT_JOBS_ENABLED=true --build-arg VITE_GATEWAY_EVIDENCE_ENABLED=true --build-arg VITE_GENERIC_AGENT_IMPORT_ENABLED=true --build-arg VITE_INVESTIGATIONS_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m09:ci .
+      - name: Smoke exact build markers
+        run: |
+          docker build --build-arg COMMIT_SHA=${GITHUB_SHA} --build-arg VITE_ENCRYPTED_WORKSPACE_ENABLED=true --build-arg VITE_API_BOUNDARY_ENABLED=true --build-arg VITE_ARC_OBSERVATION_ENABLED=true --build-arg VITE_AGENT_REGISTRY_ENABLED=true --build-arg VITE_AGENT_JOBS_ENABLED=true --build-arg VITE_GATEWAY_EVIDENCE_ENABLED=true --build-arg VITE_GENERIC_AGENT_IMPORT_ENABLED=true -f apps/web/Dockerfile -t openarc-web-m08:ci .
+          docker run -d --rm --name openarc-api -p 3000:3000 \
+            -e APP_ORIGIN=https://app.example.test \
+            -e METRICS_TOKEN=synthetic_metrics_token_for_ci_only_0001 \
+            openarc-api:ci
+          docker run -d --rm --name openarc-web -p 8080:8080 openarc-web:ci
+          api_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/readyz >/dev/null 2>&1; then api_ready=1; break; fi
+            sleep 1
+          done
+          test "${api_ready}" = "1"
+          curl -fsS http://127.0.0.1:3000/healthz | grep "${GITHUB_SHA}"
+          web_ready=0
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/ | grep -Fq "${GITHUB_SHA}"; then web_ready=1; break; fi
+            sleep 1
+          done
+          test "${web_ready}" = "1"
+      - name: Scan images
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c image --exit-code 1 --severity HIGH,CRITICAL openarc-api:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c image --exit-code 1 --severity HIGH,CRITICAL openarc-web:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m02:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m03:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m04:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m05:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m06:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m07:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m08:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m09:ci
+      - name: Generate CycloneDX SBOMs
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/syft:v1.51.0@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 openarc-api:ci -o cyclonedx-json > sbom-api.cdx.json
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/syft:v1.51.0@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 openarc-web:ci -o cyclonedx-json > sbom-web.cdx.json
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/syft:v1.51.0@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 openarc-web-m02:ci -o cyclonedx-json > sbom-web-m02.cdx.json
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/syft:v1.51.0@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 openarc-web-m03:ci -o cyclonedx-json > sbom-web-m03.cdx.json
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/syft:v1.51.0@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 openarc-web-m04:ci -o cyclonedx-json > sbom-web-m04.cdx.json
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/syft:v1.51.0@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 openarc-web-m05:ci -o cyclonedx-json > sbom-web-m05.cdx.json
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/syft:v1.51.0@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 openarc-web-m06:ci -o cyclonedx-json > sbom-web-m06.cdx.json
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/syft:v1.51.0@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 openarc-web-m07:ci -o cyclonedx-json > sbom-web-m07.cdx.json
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/syft:v1.51.0@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 openarc-web-m08:ci -o cyclonedx-json > sbom-web-m08.cdx.json
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/syft:v1.51.0@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 openarc-web-m09:ci -o cyclonedx-json > sbom-web-m09.cdx.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openarc-sboms
+          path: sbom-*.cdx.json

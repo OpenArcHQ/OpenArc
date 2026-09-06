@@ -1,0 +1,19 @@
+FROM redis:8-bookworm@sha256:c22af04bb576503bf16b3e34a1fd2fd82de0f765afd866d2e380145e0af30d78 AS redis-test
+
+FROM node:22-bookworm@sha256:8a34c4ab3ea2c5cd194f07e317b2a8f09461d3c8b05c4e34c8ccd56d56024c4d
+
+RUN corepack enable && corepack prepare pnpm@11.5.1 --activate
+COPY --from=redis-test /usr/local/bin/redis-server /usr/local/bin/redis-server
+ENV OPENARC_TEST_REDIS_SERVER=/usr/local/bin/redis-server
+WORKDIR /workspace
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs playwright.config.ts ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/shared/package.json packages/shared/package.json
+COPY packages/config/package.json packages/config/package.json
+RUN pnpm install --frozen-lockfile
+RUN pnpm exec playwright install --with-deps chromium webkit
+
+COPY . .
+RUN pnpm release:gate

@@ -1,0 +1,10 @@
+{
+  "name": "@openarc/config",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "exports": {
+    "./tsconfig": "./tsconfig/base.json",
+    "./eslint": "./eslint/base.mjs"
+  }
+}

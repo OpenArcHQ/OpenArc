@@ -1,0 +1,29 @@
+name: Public source checks
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-source-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check public commit identities
+        run: node scripts/check-public-history.mjs
+      - name: Verify source, units and development browser journeys
+        run: docker build -f scripts/Dockerfile.node22-gate -t openarc-public-source-gate .
+      - name: Record verification boundary
+        run: |
+          echo 'Source gate passed. This is not a production deployment or full historical release gate.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Private pre-publication RC objects are intentionally absent. See docs/public-source-publication.md.' >> "$GITHUB_STEP_SUMMARY"
