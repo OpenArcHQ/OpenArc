@@ -1,6 +1,6 @@
 # M08 — local agent import and policy comparison
 
-Status: **implementation complete; staging QA passed; CI compatibility harness repair in verification**.
+Status: **complete on staging; exact candidate verified for immutable RC and main closure**.
 Branch: `codex/08-local-agent-connector`, from M07-complete main `2788de0`.
 
 ## Frozen scope
@@ -91,10 +91,10 @@ capacity limits, and atomic integrity validation still apply.
 - [x] Accessible preview/import/policy/comparison UI with zero outbound requests.
 - [x] Unsigned, unsupported signed, expired, duplicate, replay, oversized,
   future-version and conflicting browser fixtures.
-- [ ] Lock/replacement cancellation, backup/recovery and incompatible-reader proof.
+- [x] Lock/replacement cancellation, backup/recovery and incompatible-reader proof.
 - [x] Independent review without unresolved P0/P1 findings.
-- [ ] Full Node 22 gate, exact-SHA CI, production scans/SBOM and staging journey.
-- [ ] Immutable RC and main closure before M09 begins.
+- [x] Full Node 22 gate, exact-SHA CI, production scans/SBOM and staging journey.
+- [x] Immutable RC and main closure before M09 begins (closure identifiers below).
 
 M08's live proof is a local-only staging browser import/comparison/backup journey
 using synthetic agent reports clearly labeled as such. A new onchain transaction
@@ -235,9 +235,63 @@ agent-report interface; no provider or paid path was added.
   `b18dede373ca371cce440e0921807540c88833f3`: two Settings locators use semantic
   navigation names because all-flags staging inserts Activity before Settings.
   The initial supplemental run expected the default configuration's item 05;
-  staging correctly rendered item 06. No product change was made. The deployed,
-  scanned and eventual RC application remains `8ddef64fc982ad3542369eea0f2abb33e110524e`.
+  staging correctly rendered item 06. No product change was made. That staging
+  pass used `8ddef64fc982ad3542369eea0f2abb33e110524e`; it is superseded by the
+  final verification candidate below, not the RC target.
 
 The staging deployment followed the complete local gate, verified image scans
 and CI code checks; live QA ran in parallel with the remaining CI browser checks.
-The immutable RC and main closure remain held until all final gates pass.
+At that point the immutable RC and main closure were held until the final gates
+below passed.
+
+### Final verification candidate
+
+Candidate `16cd6f5cf557512cc373c2c5d1fb57dc89c0d63f` includes the semantic
+navigation locators and distinct CI compatibility container names. Its complete
+Node 22 Docker gate passed 466 unit/integration tests and 100 development browser
+checks with zero retries, plus audit, licenses, lint, types, build and release checks.
+Gate image manifest: `sha256:d80a69037bfbef21c0f64978e3eb8432f9ab5794aeaa20ba6e3aef31a4be9df2`.
+
+The final candidate was deployed only to the existing staging services:
+
+- API: `<deployment-id>`, successful;
+  image `sha256:5b3506681b926dbcf214510def66ebc4db263cc7924bf30a0d7f31df40f84985`.
+- Web: `<deployment-id>`, successful;
+  image `sha256:ff1bb257a5f05995cde6a44327ed3cdaeff62eda4ed66223bb4aadc9d06aa23e`.
+- API readiness and web HTML returned HTTP 200 with exact candidate markers and
+  normal TLS validation. Redis and configured source routes remained ready.
+- All 14 production-mode M08 journeys passed again on this exact build in
+  Chromium and WebKit, zero retries (27.7 seconds), using only synthetic local
+  reports in isolated vaults, with zero source calls.
+- The eight supplemental cross-tab, held metadata-readback, no-BroadcastChannel
+  polling and inactivity checks passed again on this exact staging build with
+  normal TLS and zero retries (28.7 seconds).
+
+Final CI run: [34005884137](https://github.com/OpenArcHQ/OpenArc/actions/runs/34005884137).
+Its verification and image jobs passed, including nine blocking HIGH/CRITICAL
+image scans and nine CycloneDX SBOMs. Retained SBOM artifact `9980985243` has digest
+`sha256:332122e05e6fec0ed22ad504d14c21b9b3adc25bf46fd53ca7803e8638d17625`
+and expiry `2026-12-05T02:12:36Z`.
+
+The final CI completed successfully: 100 development and 36 production browser
+checks passed on their first attempt, with zero retries/flaky cases. Sixteen
+production-only fixture exclusions are intentional skips, not passed tests;
+the same failure cases run in the development suite. M02 compatibility also passed.
+The separate M08 compatibility round trip passed seed on `16cd6f5`, refusal/rescue
+on immutable M07 `2edbc9d2c4c9eec309603a4347e69fbe15974470`, and restore on
+`16cd6f5`. Each phase reports zero source requests and preserved ciphertext.
+Independent CI-log review confirmed the counts and absence of retry/failure
+markers. Always-retained synthetic browser diagnostics are artifact `9981167027`,
+digest `sha256:a1ef210cc39f7985e52c8bcad1b46ba01169165e8cf16a8bbdecf461c2ef58b6`,
+expiry `2026-09-09T02:32:06Z`; the artifact name is not a failure indication.
+
+The immutable RC is `rc/08-local-agent-connector/1`, targeting tested application
+SHA `16cd6f5cf557512cc373c2c5d1fb57dc89c0d63f`. Main includes a subsequent
+evidence-only closure commit; that documentation revision is not represented as
+the deployed application SHA. M09 begins only after this closure reaches main.
+
+Official Arc launch, RPC and contract references were rechecked on 2026-09-06
+at approximately 02:31 UTC: the [public launch announcement](https://www.arc.io/blog/arc-mainnet-goes-live-on-september-16-2026)
+still names September 16; [RPC parameters](https://docs.arc.io/arc/references/rpc-endpoints)
+remain Testnet-specific, and [mainnet contract addresses](https://docs.arc.io/arc/references/contract-addresses)
+are explicitly not yet available. No mainnet configuration was inferred or enabled.

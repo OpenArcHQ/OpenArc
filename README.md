@@ -1,6 +1,6 @@
 # OpenArc marketing and technical product package
 
-Status: **M07 complete on staging; M08 local agent import in verification**
+Status: **M08 complete on staging; M09 investigation operations next**
 Prepared: **2026-08-15; Arc and Gateway sources reviewed 2026-09-05**
 
 OpenArc is the proposed private intelligence, policy, and investigation layer for
@@ -34,10 +34,11 @@ parity, and a separately reviewed mainnet release exist.
 
 ## Current implementation
 
-Milestones 00–07 are complete: foundation, evidence engine, encrypted local
+Milestones 00–08 are complete: foundation, evidence engine, encrypted local
 workspace, consent-first API boundary, Arc account/transaction observations,
 ERC-8004 registry evidence, fixed-reference ERC-8183 job evidence, and private
-x402/Gateway metadata comparison. Gateway controls are behind the default-off
+x402/Gateway metadata comparison, and local agent-report/policy comparison.
+Gateway controls are behind the default-off
 `GATEWAY_EVIDENCE_ENABLED` / `VITE_GATEWAY_EVIDENCE_ENABLED` flags.
 The completed release gates and controlled live Testnet evidence are recorded in
 [`docs/releases/07-x402-gateway-evidence.md`](docs/releases/07-x402-gateway-evidence.md).
@@ -45,8 +46,9 @@ This is not a public-release or mainnet readiness claim.
 
 [M07 preflight](docs/engineering/m07-x402-preflight.md) records the refreshed
 Gateway contract and external live-payment proof boundary. M08 adds bounded local
-agent reports and monitoring-policy comparison; it introduces no execution path.
-Its active scope and gates are recorded in
+agent reports and monitoring-policy comparison behind the default-off
+`VITE_GENERIC_AGENT_IMPORT_ENABLED` flag; it introduces no execution path.
+Its completed scope and verification evidence are recorded in
 [`docs/releases/08-local-agent-connector.md`](docs/releases/08-local-agent-connector.md).
 
 - `packages/shared` owns the fail-closed Arc Testnet registry and primitive
