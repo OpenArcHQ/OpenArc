@@ -4,6 +4,12 @@ export function encryptedWorkspaceEnabled(
   return value === true || value === "true";
 }
 
+export function investigationsEnabled(
+  value: string | boolean | undefined = import.meta.env.VITE_INVESTIGATIONS_ENABLED,
+): boolean {
+  return value === true || value === "true";
+}
+
 export function genericAgentImportEnabled(
   value: string | boolean | undefined = import.meta.env.VITE_GENERIC_AGENT_IMPORT_ENABLED,
 ): boolean {

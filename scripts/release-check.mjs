@@ -593,9 +593,43 @@ for (const readinessGuard of ["api_ready=0", "test \"${api_ready}\" = \"1\"", "w
   }
 }
 
+const m09Files = [
+  "packages/shared/src/investigation-types.ts", "packages/shared/src/investigation.ts",
+  "packages/shared/src/investigation-export.ts", "packages/shared/src/investigation-source-history.ts",
+  "packages/shared/test/investigation.test.ts", "packages/shared/test/investigation-export.test.ts",
+  "packages/shared/test/investigation-source-history.test.ts", "apps/web/src/vault/InvestigationsPanel.tsx",
+  "docs/releases/09-investigation-operations.md", "e2e-investigations/investigations.spec.ts",
+];
+for (const file of m09Files) {
+  let source;
+  try { source = await readFile(path.join(root, file), "utf8"); }
+  catch { failures.push(`Missing M09 file: ${file}`); continue; }
+  if (file.includes("/src/")) for (const forbidden of ["fetch(", "XMLHttpRequest", "WebSocket", "sendBeacon",
+    "localStorage", "sessionStorage", "sendTransaction", "signTypedData", "window.ethereum", "privateKeyToAccount"]) {
+    if (source.includes(forbidden)) failures.push(`M09 local-only implementation contains ${forbidden}: ${file}`);
+  }
+}
+if (!envExample.includes("VITE_INVESTIGATIONS_ENABLED=false") ||
+  !webDockerfile.includes("ARG VITE_INVESTIGATIONS_ENABLED=false")) failures.push("M09 investigations must default off");
+for (const token of ["VITE_INVESTIGATIONS_ENABLED=true", "openarc-web-m09:ci", "pnpm e2e:investigations:production",
+  'test "${m09_ready}" = "1"', "docker stop openarc-web-m09\n",
+  "image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m09:ci",
+  "openarc-web-m09:ci -o cyclonedx-json > sbom-web-m09.cdx.json"]) {
+  if (!workflowSource.includes(token)) failures.push(`Hosted M09 gate is missing ${token}`);
+}
+for (const config of ["playwright.investigations.config.ts", "playwright.investigations.production.config.ts",
+  "playwright.investigations.flag-off.config.ts"]) {
+  if (!packageSource.includes(`playwright test -c ${config}`)) failures.push(`M09 browser gate is missing ${config}`);
+}
+const m09Scripts = JSON.parse(packageSource).scripts;
+if (!m09Scripts.e2e.includes("playwright test -c playwright.investigations.config.ts") ||
+  !m09Scripts.e2e.includes("playwright test -c playwright.investigations.flag-off.config.ts")) {
+  failures.push("M09 development and flag-off tests must be part of the full e2e gate");
+}
+
 if (failures.length > 0) {
   for (const failure of failures) console.error(`[release-check] ${failure}`);
   process.exit(1);
 }
 
-console.log("[release-check] M08 local agent import, M07 x402/Gateway evidence, M06 job evidence, M05 ERC-8004 agent evidence, M04 Arc observation, M03 API/privacy boundary, M02 workspace, M01 engine, and M00 foundation structural checks verified");
+console.log("[release-check] M09 investigations, M08 local agent import, M07 x402/Gateway evidence, M06 job evidence, M05 ERC-8004 agent evidence, M04 Arc observation, M03 API/privacy boundary, M02 workspace, M01 engine, and M00 foundation structural checks verified");

@@ -14,3 +14,6 @@ export * from "./x402-reconciliation.js";
 export * from "./agent-import.js";
 export * from "./agent-policy.js";
 export * from "./investigation-types.js";
+export * from "./investigation-export.js";
+export * from "./investigation-source-history.js";
+export * from "./investigation.js";

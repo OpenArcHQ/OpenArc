@@ -1,6 +1,6 @@
 # OpenArc marketing and technical product package
 
-Status: **M08 complete on staging; M09 investigation operations next**
+Status: **M08 complete on staging; M09 investigation operations in development**
 Prepared: **2026-08-15; Arc and Gateway sources reviewed 2026-09-05**
 
 OpenArc is the proposed private intelligence, policy, and investigation layer for
@@ -50,6 +50,11 @@ agent reports and monitoring-policy comparison behind the default-off
 `VITE_GENERIC_AGENT_IMPORT_ENABLED` flag; it introduces no execution path.
 Its completed scope and verification evidence are recorded in
 [`docs/releases/08-local-agent-connector.md`](docs/releases/08-local-agent-connector.md).
+
+M09 adds local search, exception views, graph/list evidence inspection, saved source
+history and explicit redacted JSON reports. Its active contract and verification
+ledger are in [`docs/releases/09-investigation-operations.md`](docs/releases/09-investigation-operations.md).
+It is not deployed or release-complete yet; no new API or execution path is added.
 
 - `packages/shared` owns the fail-closed Arc Testnet registry and primitive
   schemas, versioned evidence records, append-only action states, deterministic

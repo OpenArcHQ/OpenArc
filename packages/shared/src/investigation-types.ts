@@ -2,7 +2,7 @@ import type { WorkspaceRecord } from "./vault.js";
 
 /** M09 presentation contracts. These never widen the M01 evidence schema. */
 export const INVESTIGATION_LIMITS = Object.freeze({ records: 6_602, events: 512, entries: 7_114,
-  queryCharacters: 160, pageSize: 25, detailNodes: 64, detailEdges: 128, exportBytes: 1_048_576 });
+  queryCharacters: 160, pageSize: 25, detailNodes: 64, detailEdges: 128, factsPerNode: 2_048, exportBytes: 1_048_576 });
 export const INVESTIGATION_SOURCE_CLASSES = ["synthetic_fixture", "owner_supplied_unauthenticated",
   "named_testnet_observation", "local_policy_result", "explicit_local_association"] as const;
 export type InvestigationSourceClass = typeof INVESTIGATION_SOURCE_CLASSES[number];
@@ -32,7 +32,7 @@ export type InvestigationFilter = { query?: string; status?: InvestigationStatus
   sourceClass?: InvestigationSourceClass | "all"; exceptionsOnly?: boolean; page?: number };
 export type InvestigationPage = { entries: InvestigationEntry[]; total: number; page: number; pageCount: number };
 export type InvestigationSourceHistory = { connectorId: string; label: string; enabled: boolean;
-  status: "disabled" | "never_checked" | "unresolved_approval" | "last_saved_attempt_failed" | "saved_observation" | "aged_snapshot";
+  status: "disabled" | "never_checked" | "unresolved_approval" | "last_saved_attempt_failed" | "saved_observation" | "aged_snapshot" | "saved_check" | "completed_without_observation";
   lastAttemptAt: string | null; lastObservationAt: string | null; unresolvedApprovals: number; savedObservations: number;
   limitations: string[] };
 export const INVESTIGATION_SOURCE_LIMITATIONS: Record<InvestigationSourceClass, string> = {

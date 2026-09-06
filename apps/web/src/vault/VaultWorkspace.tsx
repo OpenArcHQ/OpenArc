@@ -37,11 +37,12 @@ import { createPortal } from "react-dom";
 
 import type { BuildInfo } from "@openarc/shared";
 
-import { genericAgentImportEnabled, agentRegistryEnabled, agentJobsEnabled, gatewayEvidenceEnabled, apiBoundaryEnabled, arcObservationEnabled, workspaceSectionUsesNetwork } from "../app/availability.js";
+import { investigationsEnabled, genericAgentImportEnabled, agentRegistryEnabled, agentJobsEnabled, gatewayEvidenceEnabled, apiBoundaryEnabled, arcObservationEnabled, workspaceSectionUsesNetwork } from "../app/availability.js";
 import { requestGatewayTransfer } from "../api/gateway-transfer.js";
 import { GatewayFinalizationError, runGatewayPermissionFlow } from "../api/gateway-permission-flow.js";
 import { PaymentsPanel } from "./PaymentsPanel.js";
 import { AgentReportsPanel } from "./AgentReportsPanel.js";
+import { InvestigationsPanel } from "./InvestigationsPanel.js";
 import { requestJobEvidence } from "../api/job-evidence.js";
 import { JobFinalizationError, runJobPermissionFlow } from "../api/job-permission-flow.js";
 import { requestAgentRegistryEvidence } from "../api/agent-registry.js";
@@ -96,7 +97,7 @@ import type {
   VaultStorageStatus,
 } from "./types.js";
 
-type WorkspaceView = "overview" | "agents" | "activity" | "policies" | "evidence" | "settings" | "sources" | "jobs" | "payments" | "agent-reports";
+type WorkspaceView = "overview" | "agents" | "activity" | "policies" | "evidence" | "settings" | "sources" | "jobs" | "payments" | "agent-reports" | "investigations";
 type Screen =
   | { phase: "probing" }
   | { phase: "unsupported" }
@@ -137,6 +138,7 @@ const VIEWS: readonly { id: WorkspaceView; label: string; note: string }[] = [
   ...(AGENT_JOBS_ENABLED ? [{ id: "jobs" as const, label: "Jobs", note: "Reference contract evidence" }] : []),
   ...(GATEWAY_EVIDENCE_ENABLED ? [{ id: "payments" as const, label: "Payments", note: "x402 metadata + Gateway reports" }] : []),
   ...(genericAgentImportEnabled() ? [{ id: "agent-reports" as const, label: "Agent reports", note: "Local imports + policy comparisons" }] : []),
+  ...(investigationsEnabled() ? [{ id: "investigations" as const, label: "Investigations", note: "Search saved evidence locally" }] : []),
 ];
 
 export function VaultWorkspace({ build }: { build: BuildInfo }) {
@@ -1474,6 +1476,7 @@ function WorkspaceViewPanel(props: {
   if (props.view === "jobs") return <JobsPanel {...props} />;
   if (props.view === "payments") return <PaymentsPanel {...props} />;
   if (props.view === "agent-reports") return <AgentReportsPanel {...props} />;
+  if (props.view === "investigations" && investigationsEnabled()) return <InvestigationsPanel key={props.workspace.meta.revision} {...props} />;
   return <SettingsPanel {...props} />;
 
   function navigateFromPanel(view: WorkspaceView) {
@@ -1505,6 +1508,7 @@ function Overview({ records, onNavigate, onOpenTour }: { records: readonly Works
         <article><span>03</span><h3>Inspect evidence</h3><p>Copy one of the six synthetic M01 cases into your encrypted workspace.</p><button type="button" onClick={() => onNavigate("evidence")}>Open Evidence →</button></article>
         {ARC_OBSERVATION_ENABLED ? <article><span>04</span><h3>Observe Arc explicitly</h3><p>Review exactly what is released, then read one public address or transaction at an exact final block.</p><button type="button" onClick={() => onNavigate("activity")}>Open Activity →</button></article> : null}
         {genericAgentImportEnabled() ? <article><span>05</span><h3>Compare an agent report</h3><p>Preview a local report and compare supplied attempts with monitoring rules. Authorship and enforcement remain unverified.</p><button type="button" onClick={() => onNavigate("agent-reports")}>Open Agent reports →</button></article> : null}
+        {investigationsEnabled() ? <article><span>LOCAL</span><h3>Investigate saved evidence</h3><p>Search actions, inspect exceptions and compare cited facts without contacting a source.</p><button type="button" onClick={() => onNavigate("investigations")}>Open Investigations →</button></article> : null}
       </div>
       <div className="privacy-strip"><strong>Nothing refreshes automatically.</strong><span>Only an explicitly approved source lookup may call the network. Agent-report imports and comparisons stay local. Reload starts locked.</span></div>
     </section>
