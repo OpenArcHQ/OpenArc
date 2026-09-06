@@ -1,7 +1,7 @@
 # OpenArc marketing and technical product package
 
-Status: **M06 complete on staging; M07 live-proof preflight next**
-Prepared: **2026-08-15; ERC-8183 reference reviewed 2026-09-04**
+Status: **M07 complete on staging; M08 local agent import next**
+Prepared: **2026-08-15; Arc and Gateway sources reviewed 2026-09-05**
 
 OpenArc is the proposed private intelligence, policy, and investigation layer for
 autonomous finance on Arc. It is designed to bring an agent's permissions,
@@ -34,16 +34,18 @@ parity, and a separately reviewed mainnet release exist.
 
 ## Current implementation
 
-Milestones 00–06 are complete: foundation, evidence engine, encrypted local
+Milestones 00–07 are complete: foundation, evidence engine, encrypted local
 workspace, consent-first API boundary, Arc account/transaction observations,
-ERC-8004 registry evidence, and fixed-reference ERC-8183 job evidence
-behind the default-off `AGENT_JOBS_ENABLED` / `VITE_AGENT_JOBS_ENABLED` flags.
-Its source review and completed release gates are recorded in
-[`docs/releases/06-erc8183-job-evidence.md`](docs/releases/06-erc8183-job-evidence.md).
+ERC-8004 registry evidence, fixed-reference ERC-8183 job evidence, and private
+x402/Gateway metadata comparison. Gateway controls are behind the default-off
+`GATEWAY_EVIDENCE_ENABLED` / `VITE_GATEWAY_EVIDENCE_ENABLED` flags.
+The completed release gates and controlled live Testnet evidence are recorded in
+[`docs/releases/07-x402-gateway-evidence.md`](docs/releases/07-x402-gateway-evidence.md).
 This is not a public-release or mainnet readiness claim.
 
 [M07 preflight](docs/engineering/m07-x402-preflight.md) records the refreshed
-Gateway contract and external live-payment proof boundary before the next build.
+Gateway contract and external live-payment proof boundary. M08 adds bounded local
+agent reports and monitoring-policy comparison; it introduces no execution path.
 
 - `packages/shared` owns the fail-closed Arc Testnet registry and primitive
   schemas, versioned evidence records, append-only action states, deterministic
