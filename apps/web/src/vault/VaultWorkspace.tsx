@@ -375,11 +375,25 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
         }).catch(() => undefined);
       } else {
         clearPrivateState(
-          { phase: "locked", meta: currentMeta },
+          { phase: "locking", meta: currentMeta },
           value.type === "changed"
             ? "Workspace changed in another tab. Unlock again to load the latest encrypted revision."
             : "Workspace locked from another tab.",
         );
+        // A coordination message is only a hint, not authoritative metadata.
+        // Do not expose a form against the old revision: the next poll could
+        // otherwise clear credentials entered into that stale form again.
+        const boundaryGeneration = generationRef.current;
+        void readVaultMeta().then((meta) => {
+          if (boundaryGeneration !== generationRef.current) return;
+          setScreen(meta
+            ? meta.deletionPending ? { phase: "deleting", meta } : { phase: "locked", meta }
+            : { phase: "empty" });
+        }).catch((cause) => {
+          if (boundaryGeneration !== generationRef.current) return;
+          setScreen({ phase: "fatal", message: vaultErrorMessage(cause) });
+          setNotice(null);
+        });
       }
     };
     return () => {

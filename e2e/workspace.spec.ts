@@ -189,8 +189,12 @@ test("coordinates revision changes and lock across tabs", async ({ context, page
   await page.getByRole("button", { name: "Create encrypted workspace" }).click();
   await page.getByRole("checkbox", { name: /I saved it somewhere private/u }).check();
   await page.getByRole("button", { name: "Continue to workspace" }).click();
+  // The peer must observe creation before we produce the separate tour-save
+  // revision, so an old creation notice cannot satisfy the change handshake.
+  await expect(second.getByRole("heading", { name: "Unlock your private workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Skip" }).click();
   await expect(page.getByText("Tour preference saved inside the encrypted workspace.")).toBeVisible();
+  await expect(second.getByText(/changed in another tab/u)).toBeVisible();
   await expect(second.getByRole("heading", { name: "Unlock your private workspace" })).toBeVisible();
   await unlock(second, localPassphrase);
 
@@ -228,6 +232,76 @@ test("coordinates revision changes and lock across tabs", async ({ context, page
   await expect(second.getByRole("heading", { name: "Create a private workspace" })).toBeVisible();
 });
 
+test("keeps peer access hidden until BroadcastChannel metadata readback completes", async ({ context, page }) => {
+  const sourceRequests: string[] = [];
+  context.on("request", request => {
+    if (["fetch", "xhr"].includes(request.resourceType())) sourceRequests.push(request.url());
+  });
+  await page.goto("/workspace");
+  await page.getByLabel("Workspace passphrase", { exact: false }).fill(localPassphrase);
+  await page.getByLabel("Confirm passphrase").fill(localPassphrase);
+  await page.getByRole("button", { name: "Create encrypted workspace" }).click();
+  await page.getByRole("checkbox", { name: /I saved it somewhere private/u }).check();
+  await page.getByRole("button", { name: "Continue to workspace" }).click();
+  await page.getByRole("button", { name: "Skip", exact: true }).click();
+  await expect(page.getByText("Tour preference saved inside the encrypted workspace.")).toBeVisible();
+  const second = await context.newPage();
+  await second.goto("/workspace");
+  await unlock(second, localPassphrase);
+  await second.evaluate(() => {
+    const descriptor = Object.getOwnPropertyDescriptor(IDBTransaction.prototype, "oncomplete")!;
+    const waiting: (() => void)[] = [];
+    let completedReads = 0;
+    let hold = true;
+    Object.defineProperty(IDBTransaction.prototype, "oncomplete", { ...descriptor,
+      set(this: IDBTransaction, callback: ((this: IDBTransaction, event: Event) => unknown) | null) {
+        if (callback && this.db.name === "openarc-vault" && this.mode === "readonly" &&
+          this.objectStoreNames.contains("vaultMeta") && this.objectStoreNames.contains("records")) {
+          descriptor.set!.call(this, (event: Event) => {
+            const complete = () => { completedReads++; callback.call(this, event); };
+            if (hold) waiting.push(complete);
+            else complete();
+          });
+        } else descriptor.set!.call(this, callback);
+      },
+    });
+    Object.assign(globalThis, {
+      __openArcPendingPeerReadbacks: () => waiting.length,
+      __openArcCompletedPeerReadbacks: () => completedReads,
+      __openArcReleasePeerReadbacks: () => {
+        hold = false;
+        for (const release of waiting.splice(0)) release();
+      },
+    });
+  });
+  // A changed notification follows the durable save. Peer-lock notifications
+  // have a separate ordering contract and are not covered by this regression.
+  await page.getByRole("button", { name: /^\d+ Agents\b/u }).click();
+  await page.getByRole("button", { name: "Add agent profile", exact: true }).click();
+  await page.getByLabel("Display name", { exact: true }).fill("Delayed peer readback agent");
+  await page.getByRole("button", { name: "Encrypt and save", exact: true }).click();
+  await expect.poll(() => second.evaluate(() =>
+    (globalThis as typeof globalThis & { __openArcPendingPeerReadbacks?: () => number }).__openArcPendingPeerReadbacks?.() ?? 0)).toBeGreaterThan(0);
+  await expect(second.getByRole("status")).toHaveText("Locking every active local view…");
+  await expect(second.getByRole("button", { name: "Unlock workspace", exact: true })).toHaveCount(0);
+  await expect(second.getByLabel("Workspace passphrase", { exact: false })).toHaveCount(0);
+  await expect(second.getByText("UNLOCKED LOCALLY", { exact: true })).toHaveCount(0);
+  await second.evaluate(() =>
+    (globalThis as typeof globalThis & { __openArcReleasePeerReadbacks?: () => void }).__openArcReleasePeerReadbacks?.());
+  await expect(second.getByRole("heading", { name: "Unlock your private workspace", exact: true })).toBeVisible();
+  const completed = () => second.evaluate(() =>
+    (globalThis as typeof globalThis & { __openArcCompletedPeerReadbacks?: () => number }).__openArcCompletedPeerReadbacks?.() ?? 0);
+  const beforePoll = await completed();
+  await second.getByLabel("Workspace passphrase", { exact: false }).fill(localPassphrase);
+  // Observe an actual subsequent revision read, without a sleep or a retry.
+  await expect.poll(completed, { timeout: 4_500 }).toBeGreaterThan(beforePoll);
+  await expect(second.getByLabel("Workspace passphrase", { exact: false })).toHaveValue(localPassphrase);
+  await unlock(second, localPassphrase);
+  await second.getByRole("button", { name: /^\d+ Agents\b/u }).click();
+  await expect(second.getByRole("heading", { name: "Delayed peer readback agent", exact: true })).toBeVisible();
+  expect(sourceRequests).toEqual([]);
+});
+
 test("uses revision polling when BroadcastChannel is unavailable", async ({ context, page }) => {
   // This path intentionally performs seven production-strength PBKDF2
   // derivations (one create plus six unlocks).
@@ -246,7 +320,14 @@ test("uses revision polling when BroadcastChannel is unavailable", async ({ cont
   await page.getByRole("button", { name: "Create encrypted workspace" }).click();
   await page.getByRole("checkbox", { name: /I saved it somewhere private/u }).check();
   await page.getByRole("button", { name: "Continue to workspace" }).click();
+  await expect(second.getByRole("heading", { name: "Unlock your private workspace" })).toBeVisible({
+    timeout: 4_500,
+  });
   await page.getByRole("button", { name: "Skip" }).click();
+  await expect(page.getByText("Tour preference saved inside the encrypted workspace.")).toBeVisible();
+  await expect(second.getByText("Workspace changed or locked in another tab. Unlock again to load the latest encrypted revision.", { exact: true })).toBeVisible({
+    timeout: 4_500,
+  });
   await expect(second.getByRole("heading", { name: "Unlock your private workspace" })).toBeVisible({
     timeout: 4_500,
   });

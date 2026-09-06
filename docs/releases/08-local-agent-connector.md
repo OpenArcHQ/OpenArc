@@ -124,10 +124,12 @@ transaction's completion notification after its real commit with BroadcastChanne
 disabled; both browsers retain the recovery workflow. Overview counts now include
 report monitoring policies and distinguish report records from individual events.
 
-An earlier clean-room run was cancelled after these source changes superseded its
-snapshot and concurrent local browser work caused severe test timing contention.
-It is not release evidence. The final clean-room gate runs alone against the fixed
-source before any M08 staging deployment.
+Earlier clean-room runs were superseded or failed and are not passing release
+evidence. Unbounded worker discovery launched nine browsers in a 7.75 GiB Docker
+VM; the baseline runner now uses two workers. ARM Linux WebKit still exhausted
+the aggregate budget of several long scenarios. Verification therefore includes
+the full native macOS Node 22 gate and independently built Linux CI images;
+the ARM Docker run is not described as passing.
 
 The clean-room gate also exposed an inherited Redis deadline gap: the client
 library stops listening for cancellation after writing a command, so a stalled
@@ -137,3 +139,28 @@ refunds a potentially executed reservation. The Redis fault fixture holds its
 pause until rejection and drains the connection before inspecting counters;
 deterministic pending-reply and caller-cancellation cases cover the same boundary.
 The failed run is not release evidence; all gates must pass on the corrected SHA.
+
+Saved WebKit traces isolated two inherited fixture issues: a crypto fault hook
+could intercept the startup capability probe before its intended create operation,
+and the combined backup/restore/recovery journey completed its successful steps
+but exhausted a 30-second aggregate budget near the final unlock. The hook now
+waits for the initial access form. Only the combined journey has a 60-second
+total budget, with individual actions explicitly capped at 30 seconds and all
+semantic assertions retained. Targeted runs completed in 3.1 and 33.3 seconds.
+
+Cross-tab tests now acknowledge initial creation and the later tour-save revision
+separately before entering credentials. Traces showed a pending change notification
+correctly clearing drafts entered before that boundary. They also exposed an
+actual stale-form usability issue: the BroadcastChannel handler could re-expose
+unlock using old metadata, then polling would clear the draft a second time.
+Changed/lock hints now immediately clear private state into a noninteractive
+locking phase, read authoritative metadata, and only then expose the fresh access
+form. Generation guards discard stale completions; missing, deleted, replaced,
+and unreadable vault states remain fail-closed. No new write or network request
+is introduced by this readback.
+
+The deterministic regression covers a `changed` notification sent after a save.
+An inherited lock-timing limitation remains for M10 hardening: the immediate lock
+hint can precede its durable coordination write, so this readback alone does not
+promise that every lock-related revision race is eliminated. Immediate private
+state invalidation and conservative re-locking are preserved.
