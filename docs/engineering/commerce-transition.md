@@ -44,6 +44,12 @@ two commerce contract suites to 45 tests. Retry flags remain conservatively fals
 there is no automatic write retry. Legacy API v1 remains unchanged. This does not
 activate any API route or complete the field-level domain DTO registry.
 
+P01-01c adds strict, organization-protected organization, access-view, agent and
+provider DTOs, canonical prefixed identifiers and frozen field-class maps. Its 15
+tests bring the commerce suites to 60 tests. Invalid dates return validation errors
+without throwing; timestamp ordering preserves sub-millisecond precision. These
+are presentation/data contracts, not login, tenant isolation or spending authority.
+
 1. Complete field-level shared DTOs, identifiers, exact money and digest contracts.
 2. Add PostgreSQL tenant/auth/session storage and transactional outbox/worker foundations.
 3. Add provider/catalog models and public/protected frontend shells.
