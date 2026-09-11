@@ -1,7 +1,7 @@
 # OpenArc engineering source of truth
 
 Status: **normative build specification**  
-Specification version: **0.3.0-draft**  
+Specification version: **0.3.1-draft**  
 Prepared: **2026-08-16**  
 Amended: **2026-09-11 — human access and account-retention boundary**
 Initial target: **Arc Testnet marketplace alpha, non-custodial**
@@ -77,12 +77,13 @@ Wallet sign-in, linking a payment wallet, and granting an agent spending permiss
 are separate actions; none silently implies another. A team member need not control
 the organization's payment wallet merely to view its protected records.
 
-Passkeys are the proposed access method for non-payment account users, without a
+Passkeys are the accepted access method for non-payment account users, without a
 required real name, email address or wallet. Passkey accounts still require a
 public verification key, credential identifier and minimal account/security state.
 They must never be advertised as anonymous or as having zero account-data retention.
-The owner must resolve acceptance of that minimum before live non-payment enrollment;
-the implementation must not silently weaken the requested retention boundary.
+The owner accepted this minimum on September 11, alongside an account-free guest
+path. Enrollment still requires the auth/security gate and a reviewed relying-party
+origin; acceptance of retention is not a claim that login is already deployed.
 
 Public browsing remains account-free. That path creates no server account record
 or account credential and does not grant protected team access, shared persistence

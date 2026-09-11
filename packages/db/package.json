@@ -1,0 +1,29 @@
+{
+  "name": "@openarc/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    "types": "./src/index.ts",
+    "import": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "migrations"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run test/migrations.test.ts test/client.test.ts test/migrate-mocks.test.ts",
+    "test:postgres": "vitest run --no-file-parallelism test/postgres.test.ts test/postgres-boundaries.test.ts"
+  },
+  "dependencies": {
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1",
+    "tsx": "4.23.13",
+    "vitest": "4.1.11"
+  }
+}
