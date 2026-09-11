@@ -18,9 +18,12 @@ onchain observations into an inspectable evidence trail. Distinguish what was
 reported, what was observed and what remains unresolved—without treating a
 successful transfer as proof of authorization or service delivery.
 
-**Current status:** controlled Testnet staging. M00–M09 are complete; M10 hardening
-has passed local and hosted technical checks. Public-launch reviews and operational
-signoffs remain open. OpenArc does not support mainnet.
+**Current status:** the legacy investigation app is on controlled Testnet staging.
+The new marketplace/control/proof/privacy specification is adopted; its first
+shared contract slice is implemented, while database/auth and frontend integration
+remain ahead. Legacy milestone checks do not mean the commerce product is done.
+OpenArc does not support mainnet. See the
+[commerce transition and build order](docs/engineering/commerce-transition.md).
 
 ## Capabilities
 

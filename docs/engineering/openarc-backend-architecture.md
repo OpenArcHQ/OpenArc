@@ -1,176 +1,297 @@
 # OpenArc backend architecture
 
-M09 investigation operations introduce no backend route, provider or persistence.
-Search, evidence projection and report export use already-saved local records;
-existing consent and source budgets remain unchanged.
-
-M08 local agent import and policy comparison add no API route, source adapter,
-server persistence or provider. All imported fields remain inside the encrypted
-browser workspace; see [M08 scope](../releases/08-local-agent-connector.md).
-
 Status: **normative backend specification**  
-Specification version: **0.2.1-draft**
+Specification version: **0.2.0-draft**  
 Parent: `docs/engineering/openarc-engineering-source-of-truth.md`  
-Runtime target: **Node.js 22, TypeScript, Fastify**
+Runtime target: **Node.js 22, TypeScript, Fastify, PostgreSQL, Redis**
 
-This document defines the OpenArc API implementation. It is subordinate to the
-engineering source of truth and owns backend-specific behavior only.
+This document defines the OpenArc API, worker, persistence, payment
+coordination, and source-adapter implementation. It is subordinate to the
+engineering source of truth.
 
 ## 1. Backend mission
 
-The API is a narrow read-only normalization and safety boundary between the
-browser and approved Arc/Circle sources.
+The backend is the shared market and commerce control plane for OpenArc.
 
 It:
 
-- validates a single bounded public identifier;
-- enforces feature, privacy, rate, budget, and provider boundaries;
-- queries a fixed approved source;
-- validates and normalizes the result;
-- returns a versioned, source-linked DTO with no raw provider payload.
+- serves the public catalog and public profile views;
+- authenticates human, provider, and agent clients;
+- stores server-owned marketplace and commerce records;
+- enforces tenant, role, session, policy, budget, expiry, and idempotency rules;
+- issues scoped authorization grants for OpenArc-mediated actions;
+- coordinates x402 payment verification without owning wallet keys;
+- prepares allowlisted ERC-8183 transaction requests for external signing;
+- observes Arc, Gateway, facilitator, provider, and evaluator evidence;
+- issues and revokes entitlements;
+- reconciles actions into source-labeled states;
+- projects inspectable reputation from attributable outcomes;
+- returns versioned DTOs with explicit privacy class and limitations.
 
 It does not:
 
-- store the private OpenArc workspace;
-- correlate local policies, labels, notes, and evidence relationships;
-- sign, simulate for execution, or broadcast transactions;
+- custody funds or store wallet private keys;
+- sign a user payment or contract transaction;
+- persist raw x402 payment signatures after the request completes;
+- persist prompts, private tool inputs, raw outputs, private job artifacts, or
+  operator notes in normal server tables;
+- proxy arbitrary provider data by default;
 - accept arbitrary RPC URLs, provider URLs, contracts, methods, or calldata;
-- expose a generic proxy, GraphQL explorer, search API, or bulk wallet API;
-- accept private keys, seed phrases, Circle entity secrets, OTPs, or reusable
-  payment signatures from the browser.
+- claim to control wallet actions that bypass OpenArc-mediated authorization;
+- turn provider claims into objective facts without source labels.
 
-## 2. Backend package layout
-
-```text
-apps/api/
-  src/
-    app.ts
-    server.ts
-    config/
-      env.ts
-      network.ts
-    http/
-      errors.ts
-      origin.ts
-      no-store.ts
-      request-id.ts
-      schemas.ts
-    routes/
-      health.ts
-      capabilities.ts
-      arc-account.ts
-      arc-transaction.ts
-      arc-agent.ts
-      arc-job.ts
-      gateway-transfer.ts
-    arc/
-      rpc-client.ts
-      anchor.ts
-      account-service.ts
-      transaction-service.ts
-      usdc.ts
-      events.ts
-      constants.ts
-    agents/
-      erc8004-service.ts
-      schemas.ts
-    jobs/
-      erc8183-service.ts
-      schemas.ts
-    gateway/
-      client.ts
-      transfer-service.ts
-      schemas.ts
-    budgets/
-      abuse-limiter.ts
-      provider-budget.ts
-      redis-scripts.ts
-    ops/
-      health.ts
-      readiness.ts
-      metrics.ts
-      logging.ts
-  test/
-    fixtures/
-    contract/
-    integration/
-  Dockerfile
-  railway.json
-```
-
-Provider modules may import `packages/shared`; shared code cannot import provider
-modules.
-
-## 3. Boot sequence
-
-The production process starts in this order:
-
-1. Parse and validate all environment variables.
-2. Load the immutable Arc Testnet configuration from `packages/shared`.
-3. Verify every configured provider URL is HTTPS and exactly matches the approved
-   origin and path contract.
-4. Create Redis client when any enabled route requires Redis.
-5. Ping Redis and initialize atomic scripts.
-6. Create provider clients with fixed deadlines, response caps, and zero implicit
-   retries.
-7. Register global no-store, request-ID, logging, error, and security hooks.
-8. Register health/readiness routes.
-9. Register feature routes only when their server flag is true.
-10. Start listening.
-
-Startup fails in production when:
-
-- the public app origin is missing or not an exact HTTPS origin;
-- a required provider origin differs from the reviewed source;
-- an enabled route lacks its required Redis or provider configuration;
-- testnet and mainnet values are mixed;
-- a secret is shorter than its documented minimum or reuses another secret;
-- an unknown environment mode is supplied.
-
-## 4. Environment contract
-
-The concrete Zod schema lives in `apps/api/src/config.ts`.
+## 2. Service and package layout
 
 ```text
-NODE_ENV                         development | test | production
-PORT                             positive integer
-APP_ORIGIN                       exact HTTPS origin in production
-COMMIT_SHA                       exact deployed commit marker (existing M00 name)
-LOG_LEVEL                        bounded enum
+apps/
+  api/
+    src/
+      app.ts
+      server.ts
+      config/
+        env.ts
+        network.ts
+        features.ts
+      http/
+        auth.ts
+        errors.ts
+        origin.ts
+        no-store.ts
+        request-id.ts
+        schemas.ts
+      routes/
+        health.ts
+        public.ts
+        auth.ts
+        operator.ts
+        agent.ts
+        provider.ts
+        payments.ts
+        jobs.ts
+        evidence.ts
+      auth/
+        human-session.ts
+        agent-credentials.ts
+        provider-credentials.ts
+        authorization.ts
+      marketplace/
+        listings.ts
+        manifests.ts
+        profiles.ts
+        moderation.ts
+      control/
+        budgets.ts
+        reservations.ts
+        grants.ts
+        approvals.ts
+      payments/
+        x402.ts
+        gateway.ts
+        entitlements.ts
+        receipts.ts
+      jobs/
+        erc8183.ts
+        transaction-preparation.ts
+        mirrors.ts
+      identity/
+        erc8004.ts
+        linking.ts
+      evidence/
+        records.ts
+        reconciliation.ts
+        reputation.ts
+      arc/
+        rpc-client.ts
+        anchors.ts
+        events.ts
+        usdc.ts
+      ops/
+        logging.ts
+        metrics.ts
+        health.ts
+        readiness.ts
+  worker/
+    src/
+      main.ts
+      queue.ts
+      outbox.ts
+      arc-indexer.ts
+      settlement-observer.ts
+      reconciliation-worker.ts
+      entitlement-expiry.ts
+      reputation-projector.ts
 
-API_BOUNDARY_ENABLED             false by default; M03 capabilities only
-ARC_OBSERVATION_ENABLED          false by default
-AGENT_REGISTRY_ENABLED           false by default
-AGENT_JOBS_ENABLED               false by default
-GATEWAY_EVIDENCE_ENABLED         false by default
-
-ARC_TESTNET_RPC_URL              exact https://rpc.testnet.arc.io
-ARC_TESTNET_EXPLORER_URL         exact https://testnet.arcscan.app
-
-REDIS_URL                        required for any enabled source route
-ABUSE_LIMIT_SECRET               32+ chars, unique
-SOURCE_PROXY_SECRET              32+ chars, unique; shared only by web proxy and API
-REQUESTS_PER_IP_HOUR             bounded positive integer
-GLOBAL_SOURCE_UNITS_PER_DAY      bounded positive integer
-
-SOURCE_TIMEOUT_MS                bounded, recommended 5000
-SOURCE_MAX_RESPONSE_BYTES        bounded per adapter
-SOURCE_MAX_SUBCALLS              bounded per route
-
-GATEWAY_API_URL                  fixed official environment when enabled
-GATEWAY_API_KEY                  server-only when required
-
-METRICS_TOKEN                    32+ chars, unique, production required
+packages/
+  shared/
+  db/
+  chain/
+  x402/
+  contracts/
 ```
 
-Do not expose provider credentials through `VITE_` variables, response payloads,
-logs, readiness detail, or metrics labels.
+Provider and chain modules may import shared packages. Shared packages cannot
+import application modules.
 
-## 5. HTTP application contract
+## 3. Runtime topology
 
-### Common response headers
+Initial services:
 
-Every success and error response includes:
+```text
+web        browser application and static assets
+api        request/response control plane
+worker     queued and chain-observation work
+postgres   durable marketplace and commerce state
+redis      rate limits, idempotency, reservations, and queue coordination
+```
+
+Normal capability content flows directly between agent and provider whenever
+possible:
+
+```text
+agent -> OpenArc: request scoped authorization
+OpenArc -> agent: one-use opaque grant
+agent -> provider: grant + provider request + external payment payload
+provider -> OpenArc: introspect grant and submit minimal receipt
+provider/facilitator -> Arc: settlement
+worker -> sources: observe settlement and normalize evidence
+OpenArc -> operator/agent: action, entitlement, and reputation state
+```
+
+OpenArc is the control plane, not the default prompt/output data plane. A future
+OpenArc-hosted provider adapter is a separate capability with explicit retention
+and privacy terms.
+
+## 4. Boot sequence
+
+The API starts in this order:
+
+1. Parse and validate environment variables.
+2. Load immutable Arc Testnet and contract configuration.
+3. Validate every external origin and path allowlist.
+4. Connect to PostgreSQL and verify the migration version.
+5. Connect to Redis and load atomic scripts.
+6. Initialize credential hashing, session, and grant-key material.
+7. Create Arc, facilitator, Gateway, and registry clients for enabled features.
+8. Register no-store, request ID, security, logging, auth, error, and rate hooks.
+9. Register health and readiness routes.
+10. Register feature routes only when their dependencies and flags are ready.
+11. Start listening.
+
+The worker starts only after database, Redis, queue, and enabled source adapters
+are ready. A worker with stale migrations must refuse work.
+
+Production startup fails when:
+
+- the public app origin is not one exact HTTPS origin;
+- database migrations are missing, ahead, or partially applied;
+- Redis is unavailable for a feature that requires atomic reservation;
+- Arc chain ID or reviewed RPC origin differs from configuration;
+- an enabled provider or facilitator origin is not allowlisted;
+- a required secret is missing, too short, or reused;
+- Testnet and mainnet configuration are mixed;
+- a feature is enabled without its required dependency.
+
+## 5. Environment contract
+
+The concrete schema lives in `apps/api/src/config/env.ts`.
+
+```text
+NODE_ENV                          development | test | production
+PORT                              positive integer
+APP_ORIGIN                        exact HTTPS origin in production
+API_PUBLIC_ORIGIN                 exact HTTPS origin
+BUILD_SHA                         full deployed commit marker
+LOG_LEVEL                         bounded enum
+
+DATABASE_URL                      required
+REDIS_URL                         required
+SESSION_SECRET                    32+ bytes
+AGENT_CREDENTIAL_PEPPER           32+ bytes, unique
+GRANT_TOKEN_PEPPER                32+ bytes, unique
+METRICS_TOKEN                     32+ bytes, unique
+
+ARC_TESTNET_RPC_URL               exact https://rpc.testnet.arc.io
+ARC_TESTNET_EXPLORER_URL          reviewed explorer origin
+ARC_EXPECTED_CHAIN_ID             5042002
+
+MARKETPLACE_ENABLED               false by default
+AGENT_SESSIONS_ENABLED            false by default
+BUDGET_AUTHORIZATIONS_ENABLED     false by default
+X402_PURCHASES_ENABLED            false by default
+GATEWAY_NANOPAYMENTS_ENABLED      false by default
+ERC8004_IDENTITY_ENABLED          false by default
+ERC8183_JOBS_ENABLED              false by default
+EVIDENCE_REPUTATION_ENABLED       false by default
+
+X402_FACILITATOR_ORIGIN           fixed approved origin when enabled
+X402_FACILITATOR_CREDENTIAL       server-only when required
+GATEWAY_API_ORIGIN                fixed approved origin when enabled
+GATEWAY_API_KEY                   server-only when required
+
+SOURCE_TIMEOUT_MS                 bounded
+SOURCE_MAX_RESPONSE_BYTES         bounded per adapter
+SOURCE_MAX_SUBCALLS               bounded per route
+REQUESTS_PER_PRINCIPAL_HOUR       bounded positive integer
+GLOBAL_SOURCE_UNITS_PER_DAY       bounded positive integer
+```
+
+No server credential may be exposed through `VITE_` variables, DTOs, logs,
+metrics, traces, health detail, or error messages.
+
+## 6. Authentication and authorization
+
+### 6.1 Human sessions
+
+- Use one reviewed authentication provider or a first-party passwordless flow.
+- The API stores a server session identifier in a `Secure`, `HttpOnly`,
+  `SameSite=Lax` cookie.
+- State-changing browser routes require exact Origin and CSRF validation.
+- Session rotation occurs after login, privilege change, and recovery.
+- Organization membership and role are resolved server-side on every protected
+  request.
+
+Human roles:
+
+```text
+owner
+operator
+provider_admin
+provider_developer
+viewer
+```
+
+### 6.2 Agent credentials
+
+- Long-lived agent API credentials are shown once.
+- PostgreSQL stores only a versioned password hash plus a non-secret key prefix.
+- Credentials have organization, agent, environment, and maximum-scope bindings.
+- A credential exchanges for a short-lived session token.
+- Session tokens contain no secret budget policy text and can be revoked.
+- Every agent request is tenant-scoped and rate-limited.
+
+### 6.3 Provider credentials
+
+Provider credentials are separate from agent credentials and can only manage or
+service listings owned by that provider. A provider credential cannot approve an
+operator budget or read another provider's private receipts.
+
+### 6.4 Authorization grants
+
+An approved purchase creates a one-use opaque grant token:
+
+- the raw token is returned once and never logged;
+- PostgreSQL stores only its hash;
+- the grant binds session, action, listing version, provider, asset, atomic
+  amount, expiry, nonce, policy revision, and idempotency key;
+- provider introspection returns only the minimum fields needed to service the
+  action;
+- revocation and expiry fail closed;
+- successful commit consumes the grant exactly once.
+
+## 7. HTTP contract
+
+Every authenticated, mutation, payment, job, evidence, and control response
+includes:
 
 ```text
 Cache-Control: no-store
@@ -180,462 +301,501 @@ Referrer-Policy: no-referrer
 X-OpenArc-Request-Id: <opaque UUID>
 ```
 
-Security headers at the reverse proxy include a restrictive CSP, HSTS in
-production, frame denial, permissions policy, and no MIME sniffing.
+Public catalog GET responses may replace the no-store headers with bounded public
+caching only after an explicit privacy review. All other responses remain
+no-store.
 
-### Origin and CORS
-
-- Product routes are same-origin browser routes.
-- Production accepts one exact `APP_ORIGIN`.
-- No wildcard CORS.
-- No `Access-Control-Allow-Credentials` for credentialless source calls.
-- Disallowed Origin is rejected before route logic but still receives no-store.
-- Automatic `OPTIONS` behavior is tested for every protected route.
-- A future server-to-server API requires a separate prefix, auth scheme, quota,
-  terms, and source-of-truth update.
-
-### Content type and body parsing
-
-- Mutation routes accept `application/json` including a standards-valid charset.
-- Unknown keys are rejected.
-- Body limit is set before parsing.
-- JSON arrays at the root are rejected.
-- Parser errors use a bounded public error without echoing source input.
-- Credentials such as `Cookie` or `Authorization` are rejected on explicitly
-  credentialless source routes after the route's abuse limiter has counted the
-  attempt.
-
-### Success envelope
+Success envelope:
 
 ```json
 {
   "ok": true,
   "data": {},
   "meta": {
-    "schemaVersion": "openarc.api.v1",
+    "schemaVersion": "openarc.api.v2",
     "requestId": "opaque-uuid",
     "buildSha": "full-commit-sha"
   }
 }
 ```
 
-### Error envelope
+Error envelope:
 
 ```json
 {
   "ok": false,
   "error": {
-    "code": "SOURCE_UNAVAILABLE",
-    "message": "The approved source is temporarily unavailable.",
-    "retryable": true,
-    "retryAfterSeconds": 30
+    "code": "BUDGET_LIMIT_EXCEEDED",
+    "message": "This action exceeds the active OpenArc budget policy.",
+    "retryable": false
   },
   "meta": {
-    "schemaVersion": "openarc.api.v1",
+    "schemaVersion": "openarc.api.v2",
     "requestId": "opaque-uuid",
     "buildSha": "full-commit-sha"
   }
 }
 ```
 
-Error messages never contain a request address, transaction hash, agent ID, job
-ID, provider URL with query, response body, API credential, or stack trace.
+Errors never echo raw credential, payment payload, provider body, prompt,
+deliverable, private URL, cookie, wallet signature, or stack trace.
 
-### Error taxonomy
-
-```text
-FEATURE_DISABLED               503
-INVALID_ORIGIN                 403
-CREDENTIALS_NOT_ALLOWED        400
-UNSUPPORTED_MEDIA_TYPE         415
-REQUEST_TOO_LARGE              413
-INVALID_REQUEST                400
-RATE_LIMITED                   429
-GLOBAL_BUDGET_EXHAUSTED        503
-BUDGET_STORE_UNAVAILABLE       503
-SOURCE_UNAVAILABLE             503
-SOURCE_RATE_LIMITED            503
-SOURCE_RESPONSE_TOO_LARGE      503
-SOURCE_MALFORMED               502
-SOURCE_WRONG_NETWORK           502
-SOURCE_CONFLICT                502
-SOURCE_NOT_FOUND               404
-UNSUPPORTED_EVIDENCE           422
-INTERNAL_ERROR                 500
-```
-
-## 6. Route matrix
-
-### `GET /healthz`
-
-Purpose: process liveness only.
-
-Response:
-
-```json
-{
-  "ok": true,
-  "service": "openarc-api",
-  "buildSha": "full-commit-sha"
-}
-```
-
-No provider or Redis call.
-
-### `GET /readyz`
-
-Purpose: deployment readiness.
-
-Checks:
-
-- environment loaded;
-- required Redis reachable for enabled routes;
-- provider configuration identity valid;
-- source budget scripts loaded;
-- no known fatal adapter initialization error.
-
-Readiness does not call a metered provider on every probe.
-
-### `GET /v1/private/capabilities`
-
-Returns enabled connector manifests, network configuration summary, limits, and
-source revisions. It returns no secrets and performs no upstream call.
-
-### `POST /v1/private/arc/account-snapshot`
-
-Request:
-
-```json
-{
-  "network": "eip155:5042002",
-  "address": "0x1111111111111111111111111111111111111111"
-}
-```
-
-Returns:
-
-- exact final anchor number/hash/time;
-- native USDC balance as 18-decimal base-unit string and canonical decimal;
-- exact ERC-20 six-decimal view with the same-underlying-balance and truncation
-  limitation;
-- source origin, observation time, and explorer link;
-- no full transaction history.
-
-The adapter performs exactly five bounded subcalls: chain ID, latest block,
-native balance at that exact block tag, fixed-contract `balanceOf` at that tag,
-and the same block by number. It requires the two anchor reads to agree and
-requires `nativeBaseUnits / 10^12 == erc20BaseUnits`. A conflict returns no
-partial observation.
-
-### `POST /v1/private/arc/transaction-evidence`
-
-Request:
-
-```json
-{
-  "network": "eip155:5042002",
-  "transactionHash": "0x<64 hex>"
-}
-```
-
-Returns:
-
-- exact transaction envelope;
-- exact receipt and final block anchor;
-- success or failure;
-- sender, recipient, native value, fee, and bounded decoded USDC movements;
-- emitter-specific movement class;
-- coverage and truncation fields;
-- limitations.
-
-The adapter performs exactly five bounded subcalls: chain ID, transaction by
-hash, receipt by hash, block by hash, and that block by number. It cross-checks
-the requested/returned transaction hash, transaction and receipt block hash,
-block number, transaction index, sender, recipient, both anchor reads, receipt
-status, every log's transaction/block/index ownership, and uint256 fee bounds.
-Pending/missing facts, removed logs, impossible fee products, malformed values,
-or disagreements return a bounded failure and no partial evidence.
-
-For USDC, only `0xfffffffffffffffffffffffffffffffffffffffe` plus the exact
-standard `Transfer` topic is canonical. Its amount is interpreted at 18
-decimals. A matching event from fixed ERC-20 interface
-`0x3600000000000000000000000000000000000000` is a 6-decimal corroboration only
-when sender, recipient, order, and `erc20Amount * 10^12` match one unconsumed
-canonical event. It never becomes a second movement. Gas fee is
-`gasUsed * effectiveGasPrice`, never inferred from a Transfer event.
-
-### `POST /v1/private/arc/agent-registry-evidence`
-
-Request contains network plus one base-10 agent ID. Contracts are fixed in the
-adapter. The browser cannot select a registry address or ABI.
-
-Returns identity owner and metadata URI plus bounded reputation and validation
-facts only when requested by route version and within fixed caps.
-
-### `POST /v1/private/arc/job-evidence`
-
-Request contains network, one positive canonical uint256 decimal job ID, and
-optional `submissionTransactionHash`. The Testnet reference contract and reviewed
-EIP-1967 implementation are fixed. Seven bounded calls read the job; at most
-eleven also verify the exact submission receipt and its historical implementation.
-The payment token must be the fixed six-decimal USDC contract. Zero budget is
-valid; `jobHasBudget` distinguishes default from explicitly assigned zero.
-Response includes exact job fields and the explicit reference-contract limitation.
-`getJob` does not return a deliverable digest: without an exact matching
-`JobSubmitted` receipt event the response says `not_observed`. Deadline timing
-is not a synthesized status transition. See the M06 release source review.
-
-### `POST /v1/private/gateway/transfer`
-
-Optional, default disabled. Request contains one UUID transfer ID plus expected
-network. It cannot search arbitrary wallet history in MVP.
-
-Response includes only:
+Core error codes:
 
 ```text
-transfer ID
+FEATURE_DISABLED
+UNAUTHENTICATED
+FORBIDDEN
+TENANT_MISMATCH
+INVALID_ORIGIN
+CSRF_REJECTED
+INVALID_REQUEST
+UNSUPPORTED_MEDIA_TYPE
+REQUEST_TOO_LARGE
+RATE_LIMITED
+IDEMPOTENCY_CONFLICT
+LISTING_NOT_ACTIVE
+LISTING_VERSION_MISMATCH
+POLICY_DENIED
+APPROVAL_REQUIRED
+BUDGET_LIMIT_EXCEEDED
+BUDGET_RESERVATION_CONFLICT
+GRANT_EXPIRED
+GRANT_REVOKED
+GRANT_ALREADY_USED
+PAYMENT_REQUIRED
+PAYMENT_INVALID
+PAYMENT_UNVERIFIED
+SETTLEMENT_PENDING
+SOURCE_UNAVAILABLE
+SOURCE_WRONG_NETWORK
+SOURCE_CONFLICT
+RECEIPT_MALFORMED
+DELIVERY_UNVERIFIED
+JOB_STATE_CONFLICT
+INTERNAL_ERROR
+```
+
+## 8. Route families
+
+### Health and capabilities
+
+```text
+GET /healthz
+GET /readyz
+GET /v1/public/capabilities
+```
+
+`/healthz` is process liveness. `/readyz` checks required database, Redis,
+migration, queue, and enabled-adapter readiness without consuming metered source
+budget on every probe.
+
+### Public marketplace
+
+```text
+GET /v1/public/listings
+GET /v1/public/listings/:listingId
+GET /v1/public/providers/:providerId
+GET /v1/public/agents/:agentId
+GET /v1/public/reputation/:subjectType/:subjectId
+```
+
+Responses contain public fields only, identify the exact listing/profile version,
+and never include private pricing overrides, organization policy, internal notes,
+raw receipts, or non-public wallet relationships.
+
+### Operator control
+
+```text
+GET    /v1/operator/overview
+GET    /v1/operator/agents
+POST   /v1/operator/agents
+GET    /v1/operator/budgets
+POST   /v1/operator/budgets
+PATCH  /v1/operator/budgets/:policyId
+POST   /v1/operator/sessions
+POST   /v1/operator/sessions/:sessionId/revoke
+GET    /v1/operator/approvals
+POST   /v1/operator/approvals/:approvalId/decision
+GET    /v1/operator/actions
+GET    /v1/operator/actions/:actionId
+```
+
+### Agent commerce
+
+```text
+GET  /v1/agent/catalog
+GET  /v1/agent/listings/:listingId
+POST /v1/agent/authorizations
+GET  /v1/agent/actions/:actionId
+POST /v1/agent/actions/:actionId/cancel
+GET  /v1/agent/entitlements
+GET  /v1/agent/entitlements/:entitlementId
+```
+
+### Provider operations
+
+```text
+GET    /v1/provider/listings
+POST   /v1/provider/listings
+POST   /v1/provider/listings/:listingId/versions
+POST   /v1/provider/listings/:listingId/publish
+POST   /v1/provider/listings/:listingId/pause
+POST   /v1/provider/grants/introspect
+POST   /v1/provider/actions/:actionId/receipts
+POST   /v1/provider/actions/:actionId/delivery
+POST   /v1/provider/entitlements/:entitlementId/revoke
+```
+
+### Payment and job coordination
+
+```text
+POST /v1/payments/x402/requirements
+POST /v1/payments/x402/observe
+GET  /v1/payments/:paymentId
+
+POST /v1/jobs/prepare-create
+POST /v1/jobs/prepare-fund
+POST /v1/jobs/prepare-accept
+POST /v1/jobs/prepare-deliver
+POST /v1/jobs/prepare-evaluate
+POST /v1/jobs/prepare-settle
+POST /v1/jobs/observe
+GET  /v1/jobs/:jobId
+```
+
+Prepare routes return allowlisted typed transaction requests. They do not sign or
+broadcast.
+
+## 9. Marketplace model
+
+Listings are immutable by version. A purchase binds one exact version.
+
+Required listing fields:
+
+```text
+listing ID and version
+provider ID
+kind: api | mcp_tool | data | model | workflow | agent
+public title and bounded description
+capability manifest and input/output schema digest
+pricing model and exact USDC amount
+provider endpoint origin and reviewed path contract
+supported payment lane
+receipt contract and delivery fields
+availability and rate limits
+terms revision and privacy summary
+status and publication timestamps
+```
+
+Provider endpoint origins are reviewed and stored server-side. Agents cannot make
+OpenArc introspect or proxy an arbitrary URL from a listing payload.
+
+Publishing requires:
+
+- provider ownership;
+- complete public and machine-readable metadata;
+- compatible pricing and receipt schema;
+- endpoint-origin review;
+- terms and privacy revision;
+- passing capability validation;
+- moderator approval when enabled.
+
+## 10. Budget and authorization engine
+
+Budget enforcement uses a PostgreSQL transaction and, where required, a Redis
+reservation script.
+
+Authorization flow:
+
+1. Authenticate the agent session.
+2. Load the exact listing version and provider.
+3. Lock the active policy and rolling counter rows.
+4. Validate agent, listing, provider, asset, amount, time, and approval rules.
+5. Reject or create a pending human approval.
+6. Atomically reserve the exact amount.
+7. Create the commerce action and authorization grant.
+8. Return the one-use raw grant token.
+9. Commit reservation after accepted settlement evidence.
+10. Release reservation on explicit cancel, verified failure, or expiry.
+
+Concurrent requests must not overspend. Every mutation is idempotent under an
+organization-scoped idempotency key and immutable request digest.
+
+The API reports the enforcement boundary:
+
+```text
+openarc_mediated_enforced
+onchain_policy_proven
+observed_only
+outside_openarc
+```
+
+## 11. x402 purchase lane
+
+The x402 lane preserves the protocol distinction between requirement,
+authorization, payment, provider response, entitlement, and settlement.
+
+Preferred direct flow:
+
+1. Agent reads an active OpenArc listing.
+2. Provider or capability returns a bounded x402 requirement.
+3. Agent requests an OpenArc authorization grant for that exact requirement.
+4. OpenArc reserves budget and returns a one-use grant.
+5. Agent creates the payment payload with its external wallet or signer.
+6. Agent calls the provider directly with grant and payment payload.
+7. Provider introspects the grant and verifies/settles payment through the
+   approved facilitator.
+8. Provider returns content directly to the agent.
+9. Provider submits a minimal delivery/payment receipt to OpenArc.
+10. The worker observes facilitator, Gateway, or Arc settlement.
+11. Reconciliation commits budget and issues or confirms the entitlement.
+
+Raw payment headers are `secret_ephemeral`:
+
+- never written to PostgreSQL, Redis, logs, traces, analytics, or error text;
+- held only for the duration of the verification request;
+- never returned through an evidence DTO;
+- replaced by a digest and bounded normalized fields.
+
+Provider content is not routed through OpenArc unless the listing explicitly uses
+an OpenArc-hosted adapter with a separate privacy contract.
+
+## 12. Entitlements
+
+An entitlement binds:
+
+```text
+entitlement ID
+organization and agent
+listing version and provider
+source action and payment
+scope
+issued, starts, expires, and revoked times
 status
-token
-sending network
-recipient network
-from and to address
-amount in atomic USDC units
-EIP-3009 nonce
-nullable batch settlement transaction hash (not individual payment proof)
-created and updated times
-fixed source identity and observation time
+receipt IDs
 ```
 
-Evidence limitations are fixed local UI/reconciliation copy, not provider-supplied
-text. The adapter accepts only the flat current REST fields; no arbitrary nested
-metadata, resource content, credentials, or raw authorization payload is returned.
+Entitlement tokens are opaque, shown only to the authorized agent, stored as
+hashes, scoped, expiring, and revocable. A payment may settle without an
+entitlement being issued; that remains a visible exception.
 
-Authentication, account association, terms, retention, and rate behavior must be
-approved before this route can be enabled outside isolated staging.
+## 13. ERC-8004 identity and reputation
 
-## 7. Route hook order
+The adapter uses reviewed Arc Testnet contracts and exact ABIs from
+`packages/contracts`.
 
-Enabled source requests pass through this exact order:
+It may normalize:
 
-1. assign request ID;
-2. attach no-store/security headers;
-3. verify feature flag;
-4. consume HMAC per-IP and global budget reservation;
-5. validate Origin and reject credentials where required;
-6. validate content type and body size;
-7. parse and validate shared request schema;
-8. execute adapter with timeout and AbortSignal;
-9. validate normalized result schema;
-10. emit bounded metrics and structured completion log;
-11. return result.
+- identity ownership and metadata URI;
+- observer-specific reputation records;
+- validation requests and responses;
+- exact contract, block, log, and observation context.
 
-Rejected traffic must not bypass the dedicated abuse ceiling. Budget accounting
-distinguishes attempted route units from actual provider subcalls.
+Rules:
 
-## 8. Provider HTTP client
+- remote metadata is untrusted and not fetched by default;
+- linking an OpenArc agent to ERC-8004 requires wallet proof or another named
+  source;
+- observer feedback retains observer, tag, value representation, and evidence
+  reference;
+- validation does not become regulatory, identity, or quality certification;
+- OpenArc projections keep their rule version and contributing evidence IDs.
 
-One shared client enforces:
+## 14. ERC-8183 job lane
+
+The launch adapter integrates only reviewed Arc Testnet contracts.
+
+Prepare routes validate and return exact transaction requests for:
+
+- job creation;
+- funding;
+- provider acceptance;
+- deliverable submission or digest anchoring;
+- evaluator decision;
+- settlement or refund when supported.
+
+The externally signed transaction is submitted by a user wallet or agent signer.
+The worker observes chain state and maps it into the OpenArc job mirror.
+
+Job facts remain distinct:
+
+```text
+terms prepared
+transaction submitted
+job created
+funded
+accepted
+delivered
+evaluated
+settled
+refunded
+expired
+disputed
+```
+
+A deliverable hash proves a byte commitment, not quality, retrievability, or safe
+content. Raw deliverables stay direct between parties or in a separately approved
+end-to-end encrypted storage design.
+
+## 15. Evidence and receipt model
+
+Accepted receipt types:
+
+```text
+authorization_decision
+x402_requirement
+payment_submission
+facilitator_result
+gateway_transfer
+arc_transaction
+provider_delivery
+entitlement_issue
+entitlement_revoke
+job_state
+evaluator_result
+refund
+dispute
+```
+
+The API and worker use the canonical shared commerce states. In particular,
+`AUTHORIZED`, `PAID`, `DELIVERED`, `ACCEPTED`, and `SETTLED` remain
+separate values in storage, events, DTOs, and projections.
+
+Every receipt includes:
+
+- receipt ID and action ID;
+- source class and source identifier;
+- subject canonical ID;
+- occurred and observed times;
+- normalized bounded fields;
+- digest of any external artifact;
+- data class;
+- limitations;
+- signature or chain reference when available.
+
+Provider-submitted receipts require provider authentication, listing ownership,
+action match, schema validation, size caps, idempotency, and replay protection.
+
+Reconciliation is deterministic, versioned, and idempotent. A derived state does
+not overwrite source evidence.
+
+## 16. PostgreSQL model
+
+Initial schemas or tables:
+
+```text
+auth_accounts
+auth_sessions
+organizations
+memberships
+agents
+agent_credentials
+agent_sessions
+providers
+provider_credentials
+listings
+listing_versions
+budget_policies
+budget_counters
+budget_reservations
+approvals
+authorization_grants
+commerce_actions
+payment_sessions
+provider_receipts
+entitlements
+job_mirrors
+evidence_records
+reputation_signals
+reputation_projections
+disputes
+audit_events
+outbox_events
+source_cursors
+```
+
+Rules:
+
+- every protected row carries organization or provider ownership;
+- repositories require explicit tenant context;
+- foreign keys and unique constraints encode idempotency and ownership where
+  possible;
+- completed actions retain listing, policy, schema, and rule versions;
+- audit rows contain bounded event metadata, not request or provider bodies;
+- migrations are forward-reviewed and rollback-tested;
+- deletion and retention rules are defined per table before public alpha.
+
+## 17. Worker architecture
+
+The worker processes durable outbox events and idempotent jobs:
+
+- Arc transaction and log observation;
+- x402/facilitator/Gateway settlement observation;
+- ERC-8004 identity refresh;
+- ERC-8183 job refresh;
+- grant, reservation, entitlement, and session expiry;
+- action reconciliation;
+- reputation projection;
+- bounded notification events;
+- source cursor and health updates.
+
+Worker rules:
+
+- one job has a stable idempotency key;
+- retries are capped and consume source budget;
+- poison jobs enter a visible dead-letter state;
+- no job payload contains raw secret or private capability content;
+- state changes use compare-and-set or row locks;
+- outbox publication and business mutation commit atomically.
+
+## 18. Arc and provider clients
+
+Shared client controls:
 
 - HTTPS only;
-- exact origin and allowed path prefix;
-- no embedded credentials;
-- no redirects, or exact revalidation if a route explicitly permits one;
+- exact origin and path allowlists;
+- no embedded URL credentials;
+- no redirects unless the adapter explicitly revalidates the target;
 - fixed method and content type;
-- request timeout with AbortSignal;
-- compressed and decompressed response-size caps;
-- status allowlist;
-- bounded JSON depth and collection sizes after parsing;
-- zero automatic retries in MVP;
-- request and response body exclusion from logs;
-- source-specific error mapping.
+- timeout and AbortSignal;
+- compressed and decompressed size caps;
+- bounded JSON depth and collection sizes;
+- response schema validation;
+- no automatic unbudgeted retry;
+- request and response bodies excluded from logs.
 
-If retries are introduced later, every attempt consumes provider and global
-budget units independently.
+Arc reads require:
 
-The Arc JSON-RPC client additionally:
+1. `eth_chainId` equals decimal `5042002`.
+2. Reads use an exact committed block anchor.
+3. Transaction, receipt, log, and block identities agree.
+4. Native USDC and ERC-20 interface values retain their precision and emitter.
+5. Multi-read snapshots recheck the anchor before returning.
 
-- pins JSON-RPC version `2.0`;
-- generates opaque request IDs unrelated to user identifiers;
-- permits only adapter-owned method enums;
-- rejects extra response objects, batch cardinality mismatch, and wrong IDs;
-- counts every batch element as a subcall;
-- rejects a body that includes an unexpected chain result.
-
-## 9. Arc anchor algorithm
-
-For any multi-read snapshot:
-
-1. Call `eth_chainId`; require `0x4cef52` / decimal `5042002`.
-2. Read the current committed block by number and capture number/hash/timestamp.
-3. Use that exact block number for every state read.
-4. Fetch required transactions, receipts, logs, or contract calls within the
-   route's fixed cap.
-5. Re-read the anchor block by hash or number.
-6. Require the same number and hash.
-7. Normalize and validate all facts.
-8. Return one source envelope or fail the whole route as `SOURCE_CONFLICT`.
-
-Although Arc documents deterministic finality, the same-anchor check prevents a
-misconfigured or inconsistent provider response from becoming a mixed snapshot.
-
-## 10. USDC normalization
-
-Shared constants define:
+Arc USDC normalization uses the reviewed network registry:
 
 ```text
 native internal decimals    18
 display decimals             6
 ERC-20 interface decimals    6
-ERC-20 address               0x3600000000000000000000000000000000000000
-EIP-7708 system emitter      0xfffffffffffffffffffffffffffffffffffffffe
-Transfer topic0              0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef
+ERC-20 interface address     0x3600000000000000000000000000000000000000
 ```
 
-Rules:
+All quantities are parsed to `bigint` and serialized as base-10 strings. Native
+and ERC-20 interface views retain their precision and emitter and are never added
+or compared before explicit conversion. Truncation below six display decimals is
+disclosed.
 
-- parse hex quantities to `bigint`;
-- serialize base units to base-10 strings;
-- use shared exact formatting; never `Number`;
-- retain the source interface and precision;
-- disclose ERC-20 truncation;
-- do not add native and ERC-20 views;
-- classify EIP-7708 and ERC-20 events by exact emitter;
-- emit one canonical movement for each valid EIP-7708 system event;
-- treat an ERC-20 event only as corroboration after an exact sender, recipient,
-  and `6-decimal amount * 10^12` match to one earlier unmatched system event;
-- require every ERC-20 USDC `Transfer` to have exactly one system-event match;
-- never dedupe by token symbol, amount alone, timestamp, or adjacency;
-- reject negative, non-canonical, overflow, and exponent values.
+## 19. Logging, metrics, and audit
 
-## 11. Transaction normalization
-
-The transaction service requires:
-
-- a valid direct transaction hash;
-- matching `receipt.transactionHash`;
-- matching transaction and receipt block hash/number;
-- receipt status exactly success or failure;
-- logs present as a bounded array;
-- every log has valid address, topics, data, transaction hash, and log index;
-- anchor identity agrees with the receipt block.
-
-Movement decoding is allowlisted:
-
-- Arc EIP-7708 system emitter at
-  `0xfffffffffffffffffffffffffffffffffffffffe`, 18 decimals, as the canonical
-  movement stream for every native and ERC-20-initiated balance change;
-- exact USDC ERC-20 interface at
-  `0x3600000000000000000000000000000000000000`, 6 decimals, as a corroborating
-  event stream that is never returned as an additional movement;
-- no arbitrary ABI decoding in MVP.
-
-A failed transaction has no successful native or token movement conclusion. Fees
-can still be reported from receipt gas usage and effective gas price.
-
-Coverage fields distinguish complete decoded coverage from unsupported logs or
-UI truncation.
-
-## 12. ERC-8004 adapter
-
-The adapter owns exact ABIs and fixed Testnet addresses.
-
-Identity read:
-
-- validate uint256 agent ID string;
-- read `ownerOf` and `tokenURI` at one anchor;
-- return metadata URI as untrusted text only;
-- do not fetch remote JSON or images in MVP.
-
-Reputation read:
-
-- fixed bounded query path;
-- retain observer address, tag, value/score representation, and evidence URI;
-- label each record observer-supplied;
-- never aggregate into a universal OpenArc score.
-
-Validation read:
-
-- require exact request hash;
-- retain validator, agent ID, response, response hash, tag, and update time;
-- never translate a response into regulatory or identity certification.
-
-## 13. ERC-8183 adapter
-
-The adapter reads only the documented Arc Testnet reference contract.
-
-It validates:
-
-- uint256 job ID;
-- client, provider, evaluator, and hook addresses;
-- USDC budget as a base-unit integer string;
-- expiry as a bounded timestamp;
-- exact supported status enum;
-- contract and anchor identity.
-
-Deliverable hashes are bytes32 claims emitted in a matching submission event,
-not proof that the underlying content exists, has a particular quality, or is
-retrievable. Local action linking occurs in the browser, not server.
-
-## 14. Gateway adapter
-
-The adapter remains compile-time and runtime disabled until approved.
-
-Source refresh (2026-09-05): use the exact
-`GET https://gateway-api-testnet.circle.com/v1/x402/transfers/{id}` REST contract,
-not generic Gateway transfer endpoints or outdated SDK response examples. The
-July 10 API update added nonce and nullable batch transaction hash; the August 26
-search restriction does not require broad search because OpenArc accepts one UUID.
-See the technical specification's dated primary-source links. This clarification
-does not enable M07 or satisfy its account, privacy, cost, and live-proof gates.
-
-When enabled it:
-
-- uses the exact official Testnet API origin;
-- authenticates server-side if required;
-- accepts one UUID transfer ID, not broad address search;
-- validates status as `received`, `batched`, `confirmed`, `completed`, or
-  `failed`;
-- validates token `USDC` and exact network identifiers;
-- validates exact addresses, amount string, and timestamps;
-- returns no authorization payload or reusable signature;
-- never asserts that Gateway completion proves provider fulfillment.
-- never treats a batch transaction hash as a unique individual-payment match.
-
-## 15. Rate and budget controls
-
-Two atomic Redis controls apply to enabled source routes:
-
-### Abuse limit
-
-- key: HMAC(secret, trusted client IP bucket + route class);
-- no raw IP, wallet, transaction, agent, job, or transfer ID;
-- fixed hourly window for MVP;
-- `Retry-After` returned on 429;
-- session cookies cannot change or reset the identity.
-
-### Global source budget
-
-- counts route source units and actual JSON-RPC/provider subcalls;
-- one Lua transaction reserves units before network access;
-- date bucket uses UTC;
-- hard daily limit;
-- provider call cannot start when reservation fails;
-- Redis outage fails closed in production;
-- metrics expose only aggregate counts and failure reason.
-
-Tests must prove cross-process atomicity, multi-IP global exhaustion, reset/TTL,
-and raw-identifier absence.
-
-## 16. Logging, metrics, and readiness
-
-### Logs
-
-Allowed structured fields:
+Allowed structured log fields:
 
 ```text
 requestId
 route template
-method
+principal class
+organization/provider opaque ID
 status
 duration bucket
 feature ID
@@ -645,256 +805,97 @@ budget units
 build SHA
 ```
 
-Forbidden fields include request body, raw URL query, Origin beyond allowed/denied
-classification, Cookie, Authorization, provider payload, wallet address,
-transaction hash, agent/job/transfer ID, or private browser data.
+Raw wallet addresses, transaction hashes from request bodies, API keys, grant
+tokens, payment headers, prompts, provider content, deliverables, cookies,
+authorization headers, and private browser values are forbidden.
 
-### Metrics
+Metrics use aggregate, low-cardinality labels. Audit events describe who changed
+a policy, listing, session, approval, entitlement, or dispute without copying the
+full object or secret.
 
-Aggregate counters/histograms:
-
-- request total by route/status;
-- source request total by adapter/result;
-- source latency histogram;
-- rate-limit and global-budget exhaustion;
-- provider timeout, malformed, wrong-network, and conflict;
-- readiness status;
-- build info.
-
-No high-cardinality user or source identifier labels.
-
-### Readiness
-
-Railway or another deployment platform uses `/readyz`, not `/healthz`, as the
-promotion health check. A required Redis or adapter initialization failure keeps
-the deployment unready.
-
-## 17. Test architecture
+## 20. Test architecture
 
 ### Unit tests
 
-- env production guards;
-- exact constants and immutable network config;
-- canonical identifiers and exact arithmetic;
-- error mapping and redaction;
-- provider URL and redirect validation;
-- Arc quantity and event normalization;
-- ERC-8004 and ERC-8183 schema parsing;
-- Gateway status and network parsing.
+- exact money and decimal normalization;
+- listing, policy, grant, action, entitlement, job, and receipt state machines;
+- schema bounds and privacy classes;
+- credential hashing and token lifecycle;
+- reconciliation and reputation rules;
+- Arc, x402, Gateway, ERC-8004, and ERC-8183 normalization;
+- error redaction.
 
-### Contract tests
+### Database and concurrency tests
 
-- every request and response against shared Zod schemas;
-- unknown fields and future schema rejection;
-- success/error headers including no-store;
-- feature-disabled shape;
-- OpenAPI or generated contract parity if documentation is published.
+- tenant isolation;
+- migration and rollback;
+- double-spend and concurrent budget reservation;
+- idempotency conflict;
+- grant commit/release/expiry races;
+- outbox atomicity;
+- entitlement issue/revoke races;
+- reputation replay and rebuild.
 
 ### Integration tests
 
-- Fastify injection with mocked upstreams;
-- real disposable Redis for atomic limits and global budget;
-- wrong chain, inconsistent anchor, timeout, 429, redirect, oversized, malformed,
-  partial, and unavailable providers;
-- outbound-call canary proving disabled and invalid requests send nothing;
-- log sink canaries proving identifiers are absent.
+- Fastify injection with PostgreSQL and Redis;
+- human, agent, provider, and role authorization;
+- direct x402 flow with mocked provider and facilitator;
+- wrong chain, wrong asset, wrong amount, replay, timeout, redirect, oversized,
+  malformed, unavailable, and conflicting sources;
+- raw-secret canaries absent from storage, Redis, logs, metrics, and traces;
+- worker retries and dead-letter handling.
 
-### Live staging tests
+### Live Testnet tests
 
-- exact SHA in `/healthz` and web marker;
-- `/readyz` with required dependencies up;
-- one controlled public Arc Testnet address and transaction;
-- exact chain, block, USDC, ERC-8004/8183 evidence where milestone enabled;
-- source outage and budget/kill-switch drill;
-- no production funds or private test data.
+- exact deployed SHA across API, worker, and web;
+- one controlled x402 purchase with provider receipt;
+- one intentionally incomplete purchase;
+- one controlled ERC-8004 observation;
+- one controlled ERC-8183 job lifecycle when enabled;
+- outage, revocation, budget exhaustion, and kill-switch drill;
+- no production funds or mainnet claim.
 
-## 18. Deployment architecture
+## 21. Deployment architecture
 
-Initial services:
+- API and worker use separate non-root production images.
+- Database migrations run as an explicit one-shot job before promotion.
+- Web and API expose exact build SHA.
+- Readiness fails when required database, Redis, migration, queue, or source
+  initialization is unavailable.
+- Secrets come from the deployment secret manager, never the image or repository.
+- Network egress is restricted to approved Arc, facilitator, Gateway, auth, and
+  provider origins.
+- Backups, restore drills, retention, deletion, rollback, SBOM, vulnerability
+  scan, and incident runbooks are release requirements.
 
-```text
-web      static Vite build behind Nginx
-api      pruned Node production image
-redis    managed Redis for limits and budgets
-```
-
-Nginx proxies `/v1`, `/healthz`, and `/readyz` to the API so browser calls remain
-same-origin. Upstream TLS uses certificate verification and SNI.
-
-API runtime image:
-
-- build shared package and API;
-- materialize a production-only dependency closure;
-- contain no test runner, compiler, package manager cache, or dev server;
-- run as a non-root user;
-- expose no shell-dependent predeploy command;
-- include exact build SHA;
-- pass vulnerability scan and SBOM generation.
-
-## 19. Backend definition of done
+## 22. Backend definition of done
 
 A backend milestone is complete only when:
 
-- shared schemas landed first;
-- feature flag defaults false;
-- routes use the required hook order;
-- all outputs validate against shared schemas;
-- no raw provider payload escapes;
-- rate, budget, timeout, size, redirect, malformed, and outage states are tested;
-- logs and Redis pass privacy canaries;
-- build, typecheck, lint, unit, integration, image scan, and SBOM pass on Node 22;
-- exact staging SHA, readiness, and live controlled-source proof are recorded;
-- frontend capability truth matches the API.
+- shared schemas land first;
+- migrations, repositories, routes, worker jobs, and docs agree;
+- feature flags default false;
+- tenant and role isolation are tested;
+- money, budget, grant, and idempotency concurrency tests pass;
+- no raw provider payload or secret escapes;
+- logs, metrics, Redis, and database pass privacy canaries;
+- unit, contract, database, integration, image scan, and SBOM pass;
+- exact staging SHA and controlled Testnet proof are recorded;
+- frontend availability matches API capabilities.
 
-## 20. Backend prohibited shortcuts
+## 23. Prohibited shortcuts
 
-- Generic `fetch(url)` using browser input.
-- Provider-object spread into a response.
-- `Promise.all` fanout without a fixed cap and budget reservation.
-- Automatic provider retries not counted as new budget units.
+- Generic `fetch(url)` from browser-supplied input.
+- Generic contract call or calldata supplied by a browser.
+- Storing raw x402 payment headers for debugging.
+- Proxying prompts or outputs because it simplifies receipt collection.
+- Marking a budget spent without atomic reservation and idempotency.
+- Treating payment settlement as provider delivery.
+- Treating a provider receipt as independent proof.
+- Mutating a listing or policy version referenced by a completed action.
 - Floating-point token or fee math.
-- Source caching keyed by wallet or transaction identifier.
-- Raw body, provider response, or identifier logging.
-- Treating a public RPC response as trusted before schema and chain validation.
-- Treating Arc deterministic finality as permission to combine different anchors.
-- Adding server evidence persistence because it is convenient.
-- Enabling Gateway or Circle credentials without the documented review gate.
-
-## 21. M03 frozen boundary decisions
-
-### HTTP and capability bootstrap
-
-M03 enables only `GET /v1/private/capabilities`, behind the false-by-default
-`API_BOUNDARY_ENABLED` flag. Its `openarc.api.v1` envelope has a fresh UUID
-request ID, the existing `COMMIT_SHA` marker, and strict metadata: Testnet
-configuration/review revision, empty enabled connectors, false source-feature
-flags, and bounded operational limits. There are no provider URLs supplied by
-the browser, identifiers, user data, or upstream calls. Known later source
-routes return bounded `FEATURE_DISABLED`; unknown paths return `NOT_FOUND`.
-Setting any not-yet-implemented source flag true is a startup failure.
-
-Protected requests require `X-OpenArc-Client: browser-v1`. A supplied Origin must
-equal `APP_ORIGIN` byte-for-byte; `null`, arrays, multiple values, and mismatches
-fail. Same-origin browser GET normally omits Origin, so only the capabilities
-GET may omit it, and only with `Sec-Fetch-Site: same-origin` plus the custom
-header. Supplied Fetch-Metadata cannot be cross-site, same-site, or navigation.
-Source POST requires the exact Origin. Missing Fetch-Metadata may coexist with
-an exact Origin for clients whose browser omits it; it never authorizes a
-missing-Origin GET. This is a browser/CSRF boundary, not user authentication.
-
-Credentialless routes reject Cookie, Authorization, and Proxy-Authorization.
-They reject query strings, root arrays, unknown keys, and unexpected bodies.
-Allowed preflights require the exact Origin, the exact route method, and only
-`content-type` / `x-openarc-client` requested headers; they emit the exact
-allow-origin, no credentials, no-store, and no caching grant. Disabled routes
-stay disabled on OPTIONS; HEAD never bypasses a protected GET guard. Status
-405 uses `METHOD_NOT_ALLOWED`; metrics auth failure uses `METRICS_UNAUTHORIZED`.
-All application errors use fixed shared messages, never raw parser/provider
-errors. Fastify hooks run privacy/limit checks before parsing request bodies.
-
-The initial maximum request body is 16 KiB, response 64 KiB for capabilities,
-provider request 16 KiB, and provider response 256 KiB. Source timeout defaults
-to 5 seconds (bounded 100–10,000 ms); maximum route subcalls defaults to 8
-(bounded 1–16). The provider client accepts the exact approved HTTPS endpoint,
-fixed POST JSON, identity content encoding only, no redirects/retries, and
-bounded streamed bytes and JSON structure. Compressed bodies fail closed rather
-than being implicitly decompressed without a separate verified bound.
-
-The generic M03 transport also caps response headers at 8 KiB, JSON depth at
-16, visited JSON nodes at 8,192, each collection at 2,048 entries, and each
-string or key at 65,536 code units. UTF-8 is decoded strictly. Duplicate
-media-type headers, invalid Content-Length, and unsafe object keys fail closed.
-An early declared-size failure does not consume the body. The 64 KiB normalized
-API-response ceiling applies to the reusable source boundary as well. No M03
-production route instantiates a provider adapter; method, chain, and anchor
-validation are introduced only in M04.
-
-### Abuse identity and budget accounting
-
-`trustProxy` remains false and the API ignores ordinary `Forwarded`,
-`X-Forwarded-For`, and `X-Real-IP` request headers. Railway documents the
-`X-Real-IP` value delivered to the web service as the client's remote IP. The web nginx proxy removes
-ordinary forwarding headers and overwrites any caller-supplied internal proxy
-assertions with that edge value plus `SOURCE_PROXY_SECRET`. The API accepts the
-client address only when the internal secret matches in constant time and the
-address parses as exactly one IPv4 or IPv6 address. Missing, duplicate, forged,
-or malformed assertions fail before Redis or an upstream call. Direct calls to
-the public API cannot create a budget identity because they do not possess the
-web-to-API secret. The API never logs the address and Redis receives only its
-route-scoped HMAC digest.
-
-This trust boundary depends on Railway overwriting its edge-owned header, as
-documented in Railway's public-networking specification:
-<https://docs.railway.com/networking/public-networking/specs-and-limits>.
-Moving the web service to another edge requires re-verification or a new
-authenticated identity design before source routes may remain enabled.
-
-Standalone Redis Lua uses Redis server time and atomic fixed UTC hour/day
-windows. Keys contain only a versioned namespace, a fixed source/route class,
-or an HMAC digest; values contain only window numbers and bounded counters.
-Expiry is the window end plus a 60-second cleanup grace, and counters reset
-inside the same script when the window changes.
-
-Only a source POST that passes the exact Origin, credential, method, query,
-media, declared-size, authenticated proxy-identity, parser, and strict-schema
-checks consumes one per-peer/hour attempt and one daily route unit. Preflights,
-malformed requests, and boundary failures consume no shared capacity and never
-execute an adapter. An already exhausted hourly bucket is charged/clamped
-without consuming more daily units. Each prospective upstream subcall then
-reserves one further daily unit atomically, and a per-request lease caps
-subcalls. A reservation is never refunded, even if cancellation or transport
-failure prevents completion; this is conservative spend control, not a claim
-that every reservation reached a provider. Metrics distinguish reservations
-from dispatched calls. Missing Redis, script errors, disconnection, or timeout
-fail closed without outbound calls.
-There is no offline queue or implicit command retry that can perform a late
-operation. A dropped Redis transport reconnects with bounded 100–1,000 ms
-backoff so readiness can recover after the same private store returns; commands
-issued while the socket is unavailable still fail immediately and are never
-replayed.
-
-An already transmitted Redis command cannot be recalled: a timeout may consume
-one reservation after the caller has failed closed. It must never cause a retry
-or a provider dispatch. Exceeding a per-request subcall lease fails with the
-fixed `SOURCE_UNAVAILABLE` error. Dispatch metrics count transport invocations,
-not proof that the provider received a packet. The Redis command deadline is
-750 ms (internally bounded 25–2,000 ms), with a bounded connection-only
-reconnect strategy and at most 256 pending commands. The offline queue remains
-disabled. Lease closure and route cancellation prevent further calls.
-
-Defaults are 60 attempts/hour and 10,000 combined units/day, both bounded at
-configuration time. Capability metadata is not a source route and requires no
-Redis or provider budget. Its payload and request lifetime remain bounded.
-Disposable real Redis tests must cover concurrent independent clients, global
-exhaustion across peers, window reset/TTL, dropped-connection recovery, outage,
-and raw-canary absence.
-
-### Operational/privacy surface
-
-Production requires an exact HTTPS `APP_ORIGIN`, an exact commit SHA, and a
-unique 32–128-character `METRICS_TOKEN`. Any supplied abuse secret meets the
-same bound and cannot equal the metrics token; it becomes required with source
-routes. Values are never logged. Configuration errors emit a fixed startup
-failure, not the environment or a Zod/provider stack.
-
-`GET /metrics` is direct-API only, authenticated with a constant-time bearer
-comparison. It is never proxied into the browser shell. Labels come exclusively
-from bounded route/status/source/error enums; counts and duration buckets are
-aggregate. Automatic Fastify request/error logs and Nginx request logs are off;
-application completion logs are built from an allowlist. Nginx upstream/error
-logs must also be suppressed or proven not to contain URI/query/referrer
-canaries; access-log suppression alone is insufficient. Health/readiness keep
-the existing `commitSha` field. Readiness distinguishes Redis-not-required from
-verified Redis availability and never probes a metered source.
-
-The enabled web build proxies only the named `/v1/private` routes and health/
-readiness paths to one configured HTTPS API origin with SNI and certificate
-verification. No browser-supplied upstream, redirect, or general proxy exists.
-Only this build changes CSP from `connect-src 'none'` to `connect-src 'self'`.
-External browser sources remain blocked. The disabled web build retains its
-local-only configuration. Production proxy tests use an isolated trusted test
-CA/HTTPS fixture, never a live provider or a shipped test trust root.
-
-Design references reviewed 2026-09-03: [browser Origin behavior](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Origin),
-[Fastify hook lifecycle](https://fastify.dev/docs/latest/Reference/Hooks/), and
-[Redis atomic Lua execution](https://redis.io/docs/latest/develop/programmability/eval-intro/).
+- Logging request bodies, provider responses, or high-cardinality identifiers.
+- Running a worker retry without source-budget accounting.
+- Creating a universal OpenArc reputation score without inspectable inputs.
+- Enabling a roadmap privacy feature behind only a UI flag.
