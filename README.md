@@ -34,6 +34,12 @@ parity, and a separately reviewed mainnet release exist.
 
 ## Current implementation
 
+The supplied commerce specification is now the target. The first shared taxonomy
+and privacy-contract slice is implemented; the full marketplace, database/auth,
+financial controls and frontend transition remain in progress. Milestone results
+below describe the legacy investigation product, not supplied S-M00–S-M09.
+See [commerce transition and build order](docs/engineering/commerce-transition.md).
+
 Milestones 00–09 are complete: foundation, evidence engine, encrypted local
 workspace, consent-first API boundary, Arc account/transaction observations,
 ERC-8004 registry evidence, fixed-reference ERC-8183 job evidence, and private
