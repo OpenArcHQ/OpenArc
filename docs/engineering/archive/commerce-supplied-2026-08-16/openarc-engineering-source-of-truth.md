@@ -1,9 +1,8 @@
 # OpenArc engineering source of truth
 
 Status: **normative build specification**  
-Specification version: **0.3.0-draft**  
+Specification version: **0.2.0-draft**  
 Prepared: **2026-08-16**  
-Amended: **2026-09-11 — human access and account-retention boundary**
 Initial target: **Arc Testnet marketplace alpha, non-custodial**
 
 This is the controlling engineering document for OpenArc. It translates the
@@ -69,30 +68,6 @@ The first complete Testnet product:
   labels, and wallet keys out of normal server persistence;
 - provides an encrypted local Vault for private operator context;
 - runs on Arc Testnet only until the mainnet gate passes.
-
-### 2.1 Human access amendment — September 11, 2026
-
-Payment users have a first-class compatible external-wallet connection path.
-Wallet sign-in, linking a payment wallet, and granting an agent spending permission
-are separate actions; none silently implies another. A team member need not control
-the organization's payment wallet merely to view its protected records.
-
-Passkeys are the proposed access method for non-payment account users, without a
-required real name, email address or wallet. Passkey accounts still require a
-public verification key, credential identifier and minimal account/security state.
-They must never be advertised as anonymous or as having zero account-data retention.
-The owner must resolve acceptance of that minimum before live non-payment enrollment;
-the implementation must not silently weaken the requested retention boundary.
-
-Public browsing remains account-free. That path creates no server account record
-or account credential and does not grant protected team access, shared persistence
-or payment authority. This does not promise that hosting/network infrastructure
-retains no request logs. Account deletion and required commerce-record retention
-are separate, explicitly disclosed policies.
-
-The original supplied specifications remain byte-preserved under
-`archive/commerce-supplied-2026-08-16/`. This amendment changes build requirements,
-not the current deployment status.
 
 ## 3. What OpenArc does not do
 
