@@ -20,11 +20,11 @@ They document the legacy investigation product, not completion of the new target
 Legacy release reports retain their historical scope regardless of milestone number.
 Use **S-M00–S-M09** for supplied Testnet milestones and **PORT-*** for migration work.
 
-Canonical specifications are now version 0.3.0-draft. The September 11 amendment
+Canonical specifications are now version 0.3.1-draft. The September 11 amendment
 requires wallet connection for payment users, separates sign-in from spending
-authority, and records the proposed passkey path for non-payment accounts.
-Passkeys require minimal account records; acceptance of that retention remains
-open. Account-free public browsing is a separate path, not a zero-retention account.
+authority, and records the accepted passkey path for non-payment accounts.
+The owner accepted minimal credential/account/security records and a separate
+account-free guest path. This is not an anonymous or zero-retention account.
 These are build requirements, not deployed authentication or payment features.
 
 ## Accepted first contract slice
