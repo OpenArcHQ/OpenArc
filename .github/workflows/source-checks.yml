@@ -25,7 +25,40 @@ jobs:
         run: node --test scripts/check-public-history.test.mjs
       - name: Verify source, units and development browser journeys
         run: docker build -f scripts/Dockerfile.node22-gate -t openarc-public-source-gate .
+      - name: Run real PostgreSQL database tests
+        run: |
+          set -euo pipefail
+          DB_CONTAINER="openarc-db-test-${{ github.run_id }}-${{ github.run_attempt }}"
+          cleanup() {
+            docker rm -f "$DB_CONTAINER" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run -d \
+            --name "$DB_CONTAINER" \
+            --network none \
+            --tmpfs /var/lib/postgresql/data \
+            -e POSTGRES_DB=openarc_auth_test \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=openarc_disposable_test \
+            postgres@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+          ready=0
+          for i in $(seq 1 30); do
+            if docker exec "$DB_CONTAINER" pg_isready -U postgres -d openarc_auth_test >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo 'PostgreSQL did not become ready in time.' >&2
+            exit 1
+          fi
+          docker run --rm \
+            --network "container:$DB_CONTAINER" \
+            -e OPENARC_TEST_DATABASE_URL='postgres://postgres:openarc_disposable_test@127.0.0.1:5432/openarc_auth_test' \
+            openarc-public-source-gate \
+            pnpm --filter @openarc/db test:postgres
       - name: Record verification boundary
         run: |
-          echo 'Source gate passed. This is not a production deployment or full historical release gate.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Source gate passed, including real PostgreSQL database tests. This is not a production deployment or full historical release gate.' >> "$GITHUB_STEP_SUMMARY"
           echo 'Private pre-publication RC objects are intentionally absent. See docs/public-source-publication.md.' >> "$GITHUB_STEP_SUMMARY"
