@@ -37,6 +37,13 @@ evidence that the target commerce product is finished.
 
 ## Implementation order and boundaries
 
+P01-01b adds the strict `openarc.api.v2` response contract: exact build/request
+metadata, 31 fixed non-echoing error messages, canonical error construction and
+a typed success-envelope factory for reviewed DTOs. Its 16 new tests bring the
+two commerce contract suites to 45 tests. Retry flags remain conservatively false;
+there is no automatic write retry. Legacy API v1 remains unchanged. This does not
+activate any API route or complete the field-level domain DTO registry.
+
 1. Complete field-level shared DTOs, identifiers, exact money and digest contracts.
 2. Add PostgreSQL tenant/auth/session storage and transactional outbox/worker foundations.
 3. Add provider/catalog models and public/protected frontend shells.
