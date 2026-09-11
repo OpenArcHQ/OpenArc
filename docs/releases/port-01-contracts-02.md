@@ -35,8 +35,18 @@ vectors. Existing production schemas and assertions were not weakened.
 - Registry focused suite: 11 passed; strict test/source type checks and lint passed.
 - Money focused suite: 34 passed; strict test/source type checks and lint passed.
 - Combined commerce suites: 105 tests across the accepted batches.
-- Full release/source verification: pending on this candidate; do not infer a
-  completed application gate from these focused results.
+- Full private `pnpm release:gate` passed on source commit
+  `11a35e3b4124bfe334c24bd9a9ee10e3aec736a6`: 629 unit/integration tests
+  (326 shared, 185 API, 118 web), 112 browser tests, release structure,
+  production-dependency audit, license policy, lint, typecheck and build.
+- [Public source verification](https://github.com/OpenArcHQ/OpenArc/actions/runs/34625049283)
+  targets public source commit `23e66d004dbafc79f47df367431ca95b718a243a`.
+  Its recorded result is authoritative for that revision; publication requires a
+  successful result. The public baseline includes four additional API tests.
+- This evidence-only follow-up changes no implementation or test. Source-gate
+  results are tied to the exact revisions above, not claimed as fresh executions
+  on a later documentation commit. A source diff must confirm that distinction
+  before merging the follow-up.
 
 Verification applies to this candidate's code, not to unrelated development work
 or the currently deployed legacy Testnet application. Authentication integration,
