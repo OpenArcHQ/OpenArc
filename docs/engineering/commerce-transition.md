@@ -5,7 +5,9 @@ Updated September 11, 2026. Status: foundation in progress; not a commerce launc
 ## Authoritative target
 
 The three canonical engineering documents now describe the supplied marketplace,
-control, proof and privacy product. Their exact source bytes are preserved:
+control, proof and privacy product. Original supplied bytes are preserved under
+`archive/commerce-supplied-2026-08-16/`; these are the original-source hashes,
+not hashes of the subsequently amended canonical files:
 
 | Document | SHA-256 |
 | --- | --- |
@@ -17,6 +19,13 @@ Previous repository specifications are archived under `archive/pre-commerce/`.
 They document the legacy investigation product, not completion of the new target.
 Legacy release reports retain their historical scope regardless of milestone number.
 Use **S-M00–S-M09** for supplied Testnet milestones and **PORT-*** for migration work.
+
+Canonical specifications are now version 0.3.0-draft. The September 11 amendment
+requires wallet connection for payment users, separates sign-in from spending
+authority, and records the proposed passkey path for non-payment accounts.
+Passkeys require minimal account records; acceptance of that retention remains
+open. Account-free public browsing is a separate path, not a zero-retention account.
+These are build requirements, not deployed authentication or payment features.
 
 ## Accepted first contract slice
 
@@ -49,6 +58,22 @@ provider DTOs, canonical prefixed identifiers and frozen field-class maps. Its 1
 tests bring the commerce suites to 60 tests. Invalid dates return validation errors
 without throwing; timestamp ordering preserves sub-millisecond precision. These
 are presentation/data contracts, not login, tenant isolation or spending authority.
+
+P01-01d adds an executable, explicitly four-DTO identity registry, checked field
+maps and typed API v2 success envelopes; its 11 tests verify strict boundaries and
+preserved timestamp refinements. It does not accept arbitrary future DTOs.
+
+P01-02a adds strict Testnet USDC quantities, exact BigInt arithmetic, explicit
+native/ERC-20 conversion and lossless decimal formatting. Its 34 tests cover
+overflow, underflow, precision loss, wrong units, malformed inputs and deterministic
+round trips. The commerce suites now contain 105 tests. This is amount handling,
+not wallet execution, a balance aggregator, a budget lock or payment authorization.
+
+Arc's September 10 compatibility guidance confirms native and ERC-20 USDC are two
+precision views of one balance (18 versus 6 decimals), not separate deposits.
+Transfer-amount conversion rejects precision loss rather than silently imitating
+the truncated ERC-20 balance view. See [Arc's compatibility guide](https://www.arc.io/blog/arc-compatibility-guide-for-existing-evm-apps)
+and [stablecoin model](https://docs.arc.io/arc/concepts/stablecoin-native-model).
 
 1. Complete field-level shared DTOs, identifiers, exact money and digest contracts.
 2. Add PostgreSQL tenant/auth/session storage and transactional outbox/worker foundations.

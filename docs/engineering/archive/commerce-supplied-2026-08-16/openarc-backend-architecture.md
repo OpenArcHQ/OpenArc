@@ -1,7 +1,7 @@
 # OpenArc backend architecture
 
 Status: **normative backend specification**  
-Specification version: **0.3.0-draft**  
+Specification version: **0.2.0-draft**  
 Parent: `docs/engineering/openarc-engineering-source-of-truth.md`  
 Runtime target: **Node.js 22, TypeScript, Fastify, PostgreSQL, Redis**
 
@@ -241,27 +241,6 @@ metrics, traces, health detail, or error messages.
 ## 6. Authentication and authorization
 
 ### 6.1 Human sessions
-
-September 11 access decision:
-
-- Payment-user wallet login uses a reviewed, origin-bound, expiring, single-use
-  challenge. Verify ownership server-side. Wallet connection alone is not login;
-  successful login is never a payment signature or agent spending permission.
-- Login and payment wallets may be distinct; linking requires explicit proof.
-  Private keys, seed phrases and reusable wallet signatures remain unpersisted.
-- Non-payment passkey accounts, if their minimum retention is accepted, store only
-  the credential public key/ID, pseudonymous account binding and necessary security
-  state. No required legal name, email, social account or wallet. Recovery codes are
-  hash-only. Neither biometrics nor device PINs are received by the API.
-- Live non-payment enrollment remains blocked on the unresolved retention choice.
-  Passkeys cannot implement a server account with no retained account record.
-- Public guest access creates no account or authentication cookie. Protected
-  organization data still requires server-verified current membership.
-- Exact WebAuthn relying-party ID/origins and wallet challenge origin are frozen
-  before public enrollment. Temporary deployments use disposable test accounts.
-- Account deletion cannot promise to erase independently required commerce
-  evidence. Document table-specific retention before public alpha. Do not equate
-  account-free browsing with zero infrastructure logging.
 
 - Use one reviewed authentication provider or a first-party passwordless flow.
 - The API stores a server session identifier in a `Secure`, `HttpOnly`,
