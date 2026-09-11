@@ -1,7 +1,7 @@
 # OpenArc backend architecture
 
 Status: **normative backend specification**  
-Specification version: **0.3.0-draft**  
+Specification version: **0.3.1-draft**  
 Parent: `docs/engineering/openarc-engineering-source-of-truth.md`  
 Runtime target: **Node.js 22, TypeScript, Fastify, PostgreSQL, Redis**
 
@@ -249,12 +249,13 @@ September 11 access decision:
   successful login is never a payment signature or agent spending permission.
 - Login and payment wallets may be distinct; linking requires explicit proof.
   Private keys, seed phrases and reusable wallet signatures remain unpersisted.
-- Non-payment passkey accounts, if their minimum retention is accepted, store only
+- Non-payment passkey accounts, with owner-accepted minimum retention, store only
   the credential public key/ID, pseudonymous account binding and necessary security
   state. No required legal name, email, social account or wallet. Recovery codes are
   hash-only. Neither biometrics nor device PINs are received by the API.
-- Live non-payment enrollment remains blocked on the unresolved retention choice.
-  Passkeys cannot implement a server account with no retained account record.
+- The owner accepted these minimum records on September 11. Live enrollment remains
+  subject to auth/security and relying-party-origin gates, not another retention
+  approval. Passkeys are not a server account with no retained account record.
 - Public guest access creates no account or authentication cookie. Protected
   organization data still requires server-verified current membership.
 - Exact WebAuthn relying-party ID/origins and wallet challenge origin are frozen

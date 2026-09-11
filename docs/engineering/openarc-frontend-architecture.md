@@ -1,7 +1,7 @@
 # OpenArc frontend architecture
 
 Status: **normative frontend specification**  
-Specification version: **0.3.0-draft**  
+Specification version: **0.3.1-draft**  
 Parent: `docs/engineering/openarc-engineering-source-of-truth.md`  
 Runtime target: **React, Vite, TypeScript, WebCrypto, IndexedDB**
 
@@ -249,8 +249,8 @@ September 11 access decision:
 - Payment users see a first-class wallet connection/sign-in option. Label a login
   signature as login only; show payment-wallet linking and agent spending approval
   as distinct, explicit steps. Connecting a wallet must not enable spending.
-- Non-payment account users use passkeys once the minimum retention policy is
-  accepted. Explain the public credential/account record before enrollment; never
+- Non-payment account users use passkeys; the owner accepted minimum account
+  retention on September 11. Explain that record before enrollment; never
   label that flow "no account data retention" or "anonymous".
 - Offer account-free public browsing without mounting wallet, protected-account
   or Vault state. Account-free use does not include protected team synchronization
@@ -259,8 +259,8 @@ September 11 access decision:
   A passkey may later be added to a wallet-linked account only through a verified,
   explicit account-linking flow, never automatic identity merging.
 - Show the exact scope of logout, local Vault deletion and server-account deletion
-  separately. Minimal account retention is still an open enrollment requirement;
-  do not present these proposed flows as shipped by this specification amendment.
+  separately. Auth/security and relying-party-origin verification still gate live
+  enrollment; this specification amendment alone does not ship the login flows.
 
 - Browser auth uses secure server sessions, not tokens in localStorage.
 - State-changing requests include CSRF protection and exact same-origin behavior.
