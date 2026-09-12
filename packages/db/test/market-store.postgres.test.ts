@@ -255,6 +255,7 @@ describe('schema6 manifest and ACLs', () => {
       '0004_durable_tenant_mutations',
       '0005_machine_credentials',
       '0006_market',
+      '0007_market_lifecycle',
     ]);
     const helpers = await admin.query<{
       proname: string;

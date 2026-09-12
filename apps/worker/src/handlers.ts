@@ -48,7 +48,11 @@ export type NotificationEventKey =
   | 'provider_credential|tenant.provider.credential.created'
   | 'provider_credential|tenant.provider.credential.revoked'
   | 'listing|market.listing.created'
-  | 'listing_version|market.listing.version.created';
+  | 'listing_version|market.listing.version.created'
+  | 'listing_version|market.listing.origin_review.recorded'
+  | 'listing_version|market.listing.version.published'
+  | 'listing_version|market.listing.version.paused'
+  | 'listing_version|market.listing.version.retired';
 
 export type NotificationHandlerRegistry = Readonly<
   Record<NotificationEventKey, NotificationHandler>
@@ -67,6 +71,10 @@ export const NOTIFICATION_EVENT_KEYS: readonly NotificationEventKey[] = [
   'provider_credential|tenant.provider.credential.revoked',
   'listing|market.listing.created',
   'listing_version|market.listing.version.created',
+  'listing_version|market.listing.origin_review.recorded',
+  'listing_version|market.listing.version.published',
+  'listing_version|market.listing.version.paused',
+  'listing_version|market.listing.version.retired',
 ];
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -79,9 +87,19 @@ const LISTING_ID = /^openarc:listing:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[8
 // Internal version resource: canonical listing id + '@' + canonical version >= 2.
 const LISTING_VERSION_RESOURCE_MAX_LENGTH = 128;
 const LISTING_VERSION_RESOURCE = /^openarc:listing:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@(?!1$)[1-9][0-9]{0,8}$/;
+// Lifecycle version resource: version >= 1 (the first draft can be reviewed,
+// published, paused or retired), while the creation event still requires >= 2.
+const LIFECYCLE_LISTING_VERSION_RESOURCE = /^openarc:listing:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@[1-9][0-9]{0,8}$/;
 
 function isListingVersionResource(value: string): boolean {
   return value.length <= LISTING_VERSION_RESOURCE_MAX_LENGTH && LISTING_VERSION_RESOURCE.test(value);
+}
+
+function isLifecycleListingVersionResource(value: string): boolean {
+  return (
+    value.length <= LISTING_VERSION_RESOURCE_MAX_LENGTH &&
+    LIFECYCLE_LISTING_VERSION_RESOURCE.test(value)
+  );
 }
 const DECIMAL = /^(0|[1-9][0-9]*)$/;
 
@@ -189,6 +207,12 @@ export function validateNotification(raw: unknown): ClaimedOutboxEvent {
     case 'listing_version|market.listing.version.created':
       if (!isListingVersionResource(resourceId)) throw new InvalidEventError();
       break;
+    case 'listing_version|market.listing.origin_review.recorded':
+    case 'listing_version|market.listing.version.published':
+    case 'listing_version|market.listing.version.paused':
+    case 'listing_version|market.listing.version.retired':
+      if (!isLifecycleListingVersionResource(resourceId)) throw new InvalidEventError();
+      break;
     default:
       throw new InvalidEventError();
   }
@@ -213,6 +237,10 @@ const DEFAULT_HANDLERS: Record<NotificationEventKey, NotificationHandler> = {
   'provider_credential|tenant.provider.credential.revoked': consume,
   'listing|market.listing.created': consume,
   'listing_version|market.listing.version.created': consume,
+  'listing_version|market.listing.origin_review.recorded': consume,
+  'listing_version|market.listing.version.published': consume,
+  'listing_version|market.listing.version.paused': consume,
+  'listing_version|market.listing.version.retired': consume,
 };
 
 /**

@@ -104,6 +104,26 @@ const SIX_CASES: readonly EventCase[] = [
     eventType: 'market.listing.version.created',
     resourceId: 'openarc:listing:00000000-0000-4000-8000-000000000021@2',
   },
+  {
+    resourceType: 'listing_version',
+    eventType: 'market.listing.origin_review.recorded',
+    resourceId: 'openarc:listing:00000000-0000-4000-8000-000000000022@1',
+  },
+  {
+    resourceType: 'listing_version',
+    eventType: 'market.listing.version.published',
+    resourceId: 'openarc:listing:00000000-0000-4000-8000-000000000023@1',
+  },
+  {
+    resourceType: 'listing_version',
+    eventType: 'market.listing.version.paused',
+    resourceId: 'openarc:listing:00000000-0000-4000-8000-000000000024@1',
+  },
+  {
+    resourceType: 'listing_version',
+    eventType: 'market.listing.version.retired',
+    resourceId: 'openarc:listing:00000000-0000-4000-8000-000000000025@1',
+  },
 ];
 
 function eventFor(item: EventCase): ClaimedOutboxEvent {
@@ -311,6 +331,30 @@ describe('notification handler registry', () => {
     expect(ackIdentityOf(null)).toBeNull();
     expect(ackIdentityOf({ eventId: 'nope', leaseGeneration: '1' })).toBeNull();
     expect(await Promise.resolve(registry['agent|tenant.agent.created'])).toBeTypeOf('function');
+  });
+
+  it('accepts version 1 only for lifecycle events and denies created@1', () => {
+    const listingId = 'openarc:listing:00000000-0000-4000-8000-000000000030';
+    for (const eventType of [
+      'market.listing.origin_review.recorded',
+      'market.listing.version.published',
+      'market.listing.version.paused',
+      'market.listing.version.retired',
+    ]) {
+      const event = baseEvent({
+        resourceType: 'listing_version',
+        eventType,
+        resourceId: `${listingId}@1`,
+      });
+      expect(() => validateNotification(event)).not.toThrow();
+    }
+    // The legacy create event still requires version >= 2.
+    const created = baseEvent({
+      resourceType: 'listing_version',
+      eventType: 'market.listing.version.created',
+      resourceId: `${listingId}@1`,
+    });
+    expect(() => validateNotification(created)).toThrow(InvalidEventError);
   });
 
   it('derives an ack identity only for well-formed ids', () => {
