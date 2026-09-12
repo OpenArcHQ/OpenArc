@@ -97,6 +97,49 @@ function metadata(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * Issues one fresh `available_once` agent credential through the existing
+ * synthetic browser fixture. The raw value is a non-production fixture string;
+ * callers must never log it and must only derive safe booleans from it.
+ */
+async function issueFreshCredential(page: Page): Promise<void> {
+  await stubSession(page);
+  await stubReads(page);
+  await stubBootstrap(page);
+  await page.route("**/v1/operator/organizations/*/agents/*/credentials*", async (route: Route) => {
+    if (route.request().method() !== "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: envelope({ organizationId: ORG_A, kind: "agent", profileId: AGENT_A, items: [], nextCursor: null }),
+      });
+      return;
+    }
+    const parsed = JSON.parse(route.request().postData() ?? "{}") as { mutationId: string };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: envelope({
+        organizationId: ORG_A,
+        replayed: false,
+        receipt: {
+          mutationId: parsed.mutationId,
+          operation: "tenant.agent.credential.issue",
+          resourceType: "agent_credential",
+          credentialId: parsed.mutationId,
+          committedAt: CREATED,
+        },
+        delivery: { status: "available_once", credential: AGENT_CREDENTIAL, publicPrefix: AGENT_PREFIX },
+      }),
+    });
+  });
+  await openWorkspace(page);
+  await selectAgentCredentials(page);
+  await page.getByRole("button", { name: "Review issue" }).click();
+  await page.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(page.getByLabel("New machine credential")).toHaveValue(AGENT_CREDENTIAL);
+}
+
 async function stubSession(page: Page, signedIn = true, method = "passkey"): Promise<void> {
   const session = signedIn
     ? { signedIn: true, accountId: ACCOUNT_A, method, expiresAt: "2030-01-01T00:00:00.000Z" }
@@ -365,6 +408,55 @@ test("the one-time credential is hidden after Dismiss and cannot be re-revealed"
   await expect(page.getByLabel("New machine credential")).toHaveCount(0);
   // The warning explains that the secret is gone and how to recover safely.
   await expect(page.getByText(/cannot be shown again|no longer available/u)).toBeVisible();
+});
+
+test("machine lifecycle synchronously erases a fresh credential on pagehide", async ({ page }) => {
+  await issueFreshCredential(page);
+  // In THE SAME task: dispatch pagehide, then inspect DOM and raw absence.
+  const result = await page.evaluate((raw: string) => {
+    const input = (): HTMLTextAreaElement | null =>
+      document.querySelector<HTMLTextAreaElement>("#machine-secret-value");
+    const presentBefore = input()?.value === raw;
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: false }));
+    const after = input();
+    return {
+      presentBefore,
+      inputGone: after === null,
+      rawAbsentFromDom: !document.documentElement.outerHTML.includes(raw),
+      rawAbsentFromValue: after === null || after.value !== raw,
+    };
+  }, AGENT_CREDENTIAL);
+  expect(result.presentBefore).toBe(true);
+  expect(result.inputGone).toBe(true);
+  expect(result.rawAbsentFromDom).toBe(true);
+  expect(result.rawAbsentFromValue).toBe(true);
+});
+
+test("machine lifecycle synchronously erases a fresh credential on hidden visibility", async ({ page }) => {
+  await issueFreshCredential(page);
+  // In THE SAME task: flip visibilityState to hidden, dispatch
+  // visibilitychange, then inspect DOM and raw absence.
+  const result = await page.evaluate((raw: string) => {
+    const input = (): HTMLTextAreaElement | null =>
+      document.querySelector<HTMLTextAreaElement>("#machine-secret-value");
+    const presentBefore = input()?.value === raw;
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    const after = input();
+    return {
+      presentBefore,
+      inputGone: after === null,
+      rawAbsentFromDom: !document.documentElement.outerHTML.includes(raw),
+      rawAbsentFromValue: after === null || after.value !== raw,
+    };
+  }, AGENT_CREDENTIAL);
+  expect(result.presentBefore).toBe(true);
+  expect(result.inputGone).toBe(true);
+  expect(result.rawAbsentFromDom).toBe(true);
+  expect(result.rawAbsentFromValue).toBe(true);
 });
 
 test("a fresh secret is never auto-announced and blocks a second issue until Dismiss", async ({ page }) => {

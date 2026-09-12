@@ -1,0 +1,5 @@
+{
+  "name": "openarc-e2e-machine-production",
+  "private": true,
+  "type": "module"
+}

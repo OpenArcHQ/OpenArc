@@ -5,6 +5,7 @@ import {
   type CommerceHumanRole,
 } from "@openarc/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 import { accountAccessEnabled } from "../account/availability.js";
 import { AccountFlowController } from "../account/flow-controller.js";
@@ -176,16 +177,25 @@ export default function TenantApp() {
     machineControllerRef.current = machineController;
     const onVisibility = () => {
       if (document.visibilityState === "hidden") {
-        setDrawerOpen(false);
-        controller.onHidden();
-        writeController?.clear();
-        machineController?.clear();
+        // The hidden boundary is external and synchronous: a browser may
+        // discard the page (or snapshot it) the moment this handler returns, so
+        // clearing controller memory and committing the corresponding React
+        // state must both finish before returning. flushSync forces
+        // onState/onListState commits here instead of in a later render.
+        flushSync(() => {
+          setDrawerOpen(false);
+          controller.onHidden();
+          writeController?.clear();
+          machineController?.clear();
+        });
       }
     };
     const onPageHide = () => {
-      controller.onHidden();
-      writeController?.clear();
-      machineController?.clear();
+      flushSync(() => {
+        controller.onHidden();
+        writeController?.clear();
+        machineController?.clear();
+      });
     };
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("pagehide", onPageHide);
