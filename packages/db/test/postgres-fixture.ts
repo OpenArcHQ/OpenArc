@@ -12,6 +12,7 @@ const RAW_FIXTURE_URL = process.env['OPENARC_TEST_DATABASE_URL'];
 
 export const MIGRATOR_PASSWORD = 'openarc_migrator_test_pw';
 export const APP_PASSWORD = 'openarc_auth_app_test_pw';
+export const TENANT_PASSWORD = 'openarc_tenant_app_test_pw';
 
 export function assertFixtureUrl(raw: string | undefined): string {
   if (raw === undefined) {
@@ -61,11 +62,19 @@ export function appUrl(): string {
   );
 }
 
+export function tenantUrl(): string {
+  return fixtureUrl.replace(
+    'postgres:openarc_disposable_test',
+    `openarc_tenant_app:${TENANT_PASSWORD}`,
+  );
+}
+
 export async function resetSchema(admin: Pool): Promise<void> {
   const client = await admin.connect();
   try {
     await client.query('DROP SCHEMA IF EXISTS openarc_meta CASCADE');
     await client.query('DROP SCHEMA IF EXISTS openarc_auth CASCADE');
+    await client.query('DROP SCHEMA IF EXISTS openarc_tenant CASCADE');
   } finally {
     client.release();
   }
@@ -86,6 +95,11 @@ export async function ensureRoles(admin: Pool): Promise<void> {
         `CREATE ROLE openarc_auth_app LOGIN PASSWORD '${APP_PASSWORD}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`,
       );
     }
+    if (!names.has('openarc_tenant_app')) {
+      await client.query(
+        `CREATE ROLE openarc_tenant_app LOGIN PASSWORD '${TENANT_PASSWORD}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT`,
+      );
+    }
     // Pin the exact fixture role attributes even if a prior run created them
     // with different state, so both suites observe identical roles.
     await client.query(
@@ -94,9 +108,14 @@ export async function ensureRoles(admin: Pool): Promise<void> {
     await client.query(
       `ALTER ROLE openarc_auth_app WITH LOGIN PASSWORD '${APP_PASSWORD}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`,
     );
+    await client.query(
+      `ALTER ROLE openarc_tenant_app WITH LOGIN PASSWORD '${TENANT_PASSWORD}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT`,
+    );
     await client.query('GRANT CREATE, CONNECT ON DATABASE openarc_auth_test TO openarc_migrator');
     await client.query('GRANT CONNECT ON DATABASE openarc_auth_test TO openarc_auth_app');
+    await client.query('GRANT CONNECT ON DATABASE openarc_auth_test TO openarc_tenant_app');
     await client.query('GRANT USAGE ON SCHEMA public TO openarc_auth_app');
+    await client.query('GRANT USAGE ON SCHEMA public TO openarc_tenant_app');
   } finally {
     client.release();
   }

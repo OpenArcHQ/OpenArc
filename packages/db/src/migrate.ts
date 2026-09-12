@@ -91,6 +91,16 @@ async function ensureMetadata(client: PoolClient): Promise<void> {
   await client.query(
     'GRANT SELECT ON openarc_meta.schema_migrations TO openarc_auth_app',
   );
+  // Tenant readiness reads only the migration metadata. Production requires
+  // the tenant runtime role to be pre-provisioned, so guard on its existence
+  // rather than creating or assuming a role.
+  await client.query(
+    "DO $$ BEGIN " +
+      "IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'openarc_tenant_app') THEN " +
+      'GRANT USAGE ON SCHEMA openarc_meta TO openarc_tenant_app; ' +
+      'GRANT SELECT ON openarc_meta.schema_migrations TO openarc_tenant_app; ' +
+      'END IF; END $$',
+  );
 }
 
 async function loadApplied(client: PoolClient): Promise<AppliedMigration[]> {

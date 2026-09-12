@@ -19,3 +19,4 @@ export * from "./investigation-source-history.js";
 export * from "./investigation.js";
 export * from "./commerce/account.js";
 export * from "./commerce/api.js";
+export * from "./commerce/identity.js";
