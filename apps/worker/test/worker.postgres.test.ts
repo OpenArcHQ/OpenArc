@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  CredentialStore,
   OutboxStore,
   TenantStore,
   createDatabasePool,
@@ -64,6 +65,7 @@ let tenant: ReturnType<typeof createDatabasePool>;
 let worker: ReturnType<typeof createDatabasePool>;
 let workerPeer: ReturnType<typeof createDatabasePool>;
 let store: TenantStore;
+let credentials: CredentialStore;
 let outbox: OutboxStore;
 
 beforeAll(async () => {
@@ -91,6 +93,7 @@ beforeEach(async () => {
   await resetSchema(admin);
   await migrate(migrator);
   store = new TenantStore(tenant);
+  credentials = new CredentialStore(tenant);
   outbox = new OutboxStore(worker);
 });
 
@@ -338,5 +341,99 @@ describe('worker role consumes durable tenant notifications', () => {
     await expect(
       worker.query("UPDATE openarc_durable.outbox_events SET state = 'completed'"),
     ).rejects.toBeTruthy();
+  });
+
+  it('consumes all four notification-only credential events with only metadata', async () => {
+    const owner = await seedOwner(20);
+    const agent = 'openarc:agent:' + uuid(20);
+    const provider = 'openarc:provider:' + uuid(20);
+    await admin.query(
+      "INSERT INTO openarc_tenant.agents (organization_id, agent_id, display_name) VALUES ($1, $2, 'Worker Agent')",
+      [owner.org, agent],
+    );
+    await admin.query(
+      "INSERT INTO openarc_tenant.providers (organization_id, provider_id, display_name) VALUES ($1, $2, 'Worker Provider')",
+      [owner.org, provider],
+    );
+    const salt = Buffer.alloc(16, 5).toString('base64url');
+    const digest = Buffer.alloc(32, 6).toString('base64url');
+    const hash = {
+      algorithm: 'scrypt' as const,
+      hashVersion: 1 as const,
+      pepperVersion: 1,
+      N: 32768 as const,
+      r: 8 as const,
+      p: 1 as const,
+      salt,
+      digest,
+    };
+    await credentials.issueAgentCredentialDurably({
+      sessionHash: owner.hash,
+      organizationId: owner.org,
+      profileId: agent,
+      lookupId: uuid(500020),
+      hash,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      metadata: { idempotencyKey: base64Key(20), mutationId: mutationId(20) },
+    });
+    await credentials.revokeAgentCredentialDurably({
+      sessionHash: owner.hash,
+      organizationId: owner.org,
+      credentialId: mutationId(20),
+      metadata: { idempotencyKey: base64Key(21), mutationId: mutationId(21) },
+    });
+    await credentials.issueProviderCredentialDurably({
+      sessionHash: owner.hash,
+      organizationId: owner.org,
+      profileId: provider,
+      lookupId: uuid(500022),
+      hash,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      metadata: { idempotencyKey: base64Key(22), mutationId: mutationId(22) },
+    });
+    await credentials.revokeProviderCredentialDurably({
+      sessionHash: owner.hash,
+      organizationId: owner.org,
+      credentialId: mutationId(22),
+      metadata: { idempotencyKey: base64Key(23), mutationId: mutationId(23) },
+    });
+
+    await outbox.initialize();
+    let claimed = 0;
+    let completed = 0;
+    let failed = 0;
+    let stop: () => void = () => undefined;
+    const loop = new WorkerLoop({
+      store: outbox,
+      claimLimit: 50,
+      pollMs: 250,
+      idleMaxMs: 1000,
+      logger: {
+        log: (record: WorkerLogRecord) => {
+          if (record.status === 'claimed') claimed += record.count ?? 0;
+          if (record.status === 'completed') completed += 1;
+          if (record.status === 'failed' || record.status === 'stale' || record.status === 'outcome_unknown') {
+            failed += 1;
+          }
+          if (record.status === 'claim_empty') stop();
+        },
+      },
+    });
+    stop = () => loop.requestStop();
+    await loop.run();
+    expect(claimed).toBe(4);
+    expect(completed).toBe(4);
+    expect(failed).toBe(0);
+    const states = await admin.query<{ state: string; event_type: string }>(
+      'SELECT state, event_type FROM openarc_durable.outbox_events WHERE organization_id = $1 ORDER BY event_type',
+      [owner.org],
+    );
+    expect(states.rows.map((row) => row.event_type)).toEqual([
+      'tenant.agent.credential.created',
+      'tenant.agent.credential.revoked',
+      'tenant.provider.credential.created',
+      'tenant.provider.credential.revoked',
+    ]);
+    expect(states.rows.every((row) => row.state === 'completed')).toBe(true);
   });
 });

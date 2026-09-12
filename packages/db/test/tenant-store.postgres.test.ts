@@ -209,6 +209,7 @@ describe('tenant migration and schema2 boundary', () => {
       '0002_tenants',
       '0003_durability',
       '0004_durable_tenant_mutations',
+      '0005_machine_credentials',
     ]);
     expect(applied.rows[1]?.checksum).toBe(checksum);
   });

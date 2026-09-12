@@ -9,8 +9,9 @@ import type { ClaimedOutboxEvent } from '@openarc/db';
  * providers, sign or broadcast, reconcile evidence, or claim any commerce side
  * effect. Future projection handlers are a separate phase.
  *
- * The registry is a fixed, closed union of six resourceType+eventType pairs
- * already accepted by ClaimedOutboxEvent. There are no dynamic callbacks, user
+ * The registry is a fixed, closed union of ten resourceType+eventType pairs
+ * already accepted by ClaimedOutboxEvent (the original six plus four
+ * notification-only credential events). There are no dynamic callbacks, user
  * URLs or plugin handlers, and the original event is never JSON-logged.
  */
 
@@ -40,7 +41,11 @@ export type NotificationEventKey =
   | 'agent|tenant.agent.updated'
   | 'provider|tenant.provider.created'
   | 'provider|tenant.provider.updated'
-  | 'membership|tenant.membership.set';
+  | 'membership|tenant.membership.set'
+  | 'agent_credential|tenant.agent.credential.created'
+  | 'agent_credential|tenant.agent.credential.revoked'
+  | 'provider_credential|tenant.provider.credential.created'
+  | 'provider_credential|tenant.provider.credential.revoked';
 
 export type NotificationHandlerRegistry = Readonly<
   Record<NotificationEventKey, NotificationHandler>
@@ -53,6 +58,10 @@ export const NOTIFICATION_EVENT_KEYS: readonly NotificationEventKey[] = [
   'provider|tenant.provider.created',
   'provider|tenant.provider.updated',
   'membership|tenant.membership.set',
+  'agent_credential|tenant.agent.credential.created',
+  'agent_credential|tenant.agent.credential.revoked',
+  'provider_credential|tenant.provider.credential.created',
+  'provider_credential|tenant.provider.credential.revoked',
 ];
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -60,6 +69,7 @@ const ORG_ID = /^openarc:org:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9
 const AGENT_ID = /^openarc:agent:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const PROVIDER_ID = /^openarc:provider:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ACCOUNT_ID = /^openarc:account:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const CREDENTIAL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const DECIMAL = /^(0|[1-9][0-9]*)$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -154,6 +164,12 @@ export function validateNotification(raw: unknown): ClaimedOutboxEvent {
     case 'membership|tenant.membership.set':
       if (!ACCOUNT_ID.test(resourceId)) throw new InvalidEventError();
       break;
+    case 'agent_credential|tenant.agent.credential.created':
+    case 'agent_credential|tenant.agent.credential.revoked':
+    case 'provider_credential|tenant.provider.credential.created':
+    case 'provider_credential|tenant.provider.credential.revoked':
+      if (!CREDENTIAL_ID.test(resourceId)) throw new InvalidEventError();
+      break;
     default:
       throw new InvalidEventError();
   }
@@ -172,10 +188,14 @@ const DEFAULT_HANDLERS: Record<NotificationEventKey, NotificationHandler> = {
   'provider|tenant.provider.created': consume,
   'provider|tenant.provider.updated': consume,
   'membership|tenant.membership.set': consume,
+  'agent_credential|tenant.agent.credential.created': consume,
+  'agent_credential|tenant.agent.credential.revoked': consume,
+  'provider_credential|tenant.provider.credential.created': consume,
+  'provider_credential|tenant.provider.credential.revoked': consume,
 };
 
 /**
- * Build the fixed six-entry registry. Overrides are a controlled test seam for
+ * Build the fixed ten-entry registry. Overrides are a controlled test seam for
  * bounded async handlers; they only replace an existing allowlisted key.
  */
 export function createHandlerRegistry(

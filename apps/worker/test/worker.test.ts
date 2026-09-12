@@ -74,6 +74,26 @@ const SIX_CASES: readonly EventCase[] = [
     eventType: 'tenant.membership.set',
     resourceId: 'openarc:account:00000000-0000-4000-8000-000000000015',
   },
+  {
+    resourceType: 'agent_credential',
+    eventType: 'tenant.agent.credential.created',
+    resourceId: '00000000-0000-4000-8000-000000000016',
+  },
+  {
+    resourceType: 'agent_credential',
+    eventType: 'tenant.agent.credential.revoked',
+    resourceId: '00000000-0000-4000-8000-000000000017',
+  },
+  {
+    resourceType: 'provider_credential',
+    eventType: 'tenant.provider.credential.created',
+    resourceId: '00000000-0000-4000-8000-000000000018',
+  },
+  {
+    resourceType: 'provider_credential',
+    eventType: 'tenant.provider.credential.revoked',
+    resourceId: '00000000-0000-4000-8000-000000000019',
+  },
 ];
 
 function eventFor(item: EventCase): ClaimedOutboxEvent {
@@ -254,7 +274,7 @@ describe('worker configuration', () => {
 });
 
 describe('notification handler registry', () => {
-  it('dispatches exactly the six allowlisted events', async () => {
+  it('dispatches exactly the ten allowlisted events', async () => {
     const registry = createHandlerRegistry();
     expect(Object.keys(registry).sort()).toEqual([...NOTIFICATION_EVENT_KEYS].sort());
     for (const item of SIX_CASES) {

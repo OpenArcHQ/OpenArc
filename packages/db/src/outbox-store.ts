@@ -66,12 +66,15 @@ export type ClaimedOutboxEvent = {
   | { readonly resourceType: 'agent'; readonly resourceId: string; readonly eventType: 'tenant.agent.created' | 'tenant.agent.updated' }
   | { readonly resourceType: 'provider'; readonly resourceId: string; readonly eventType: 'tenant.provider.created' | 'tenant.provider.updated' }
   | { readonly resourceType: 'membership'; readonly resourceId: string; readonly eventType: 'tenant.membership.set' }
+  | { readonly resourceType: 'agent_credential'; readonly resourceId: string; readonly eventType: 'tenant.agent.credential.created' | 'tenant.agent.credential.revoked' }
+  | { readonly resourceType: 'provider_credential'; readonly resourceId: string; readonly eventType: 'tenant.provider.credential.created' | 'tenant.provider.credential.revoked' }
 );
 
 const ORG_ID = /^openarc:org:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const AGENT_ID = /^openarc:agent:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const PROVIDER_ID = /^openarc:provider:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ACCOUNT_ID = /^openarc:account:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const CREDENTIAL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export interface ClaimInput {
   readonly limit?: number;
@@ -308,6 +311,24 @@ export class OutboxStore {
       case 'membership|tenant.membership.set':
         if (!ACCOUNT_ID.test(resourceId)) fail('OUTBOX_STORE_UNAVAILABLE');
         return { ...base, resourceType: 'membership', resourceId, eventType: 'tenant.membership.set' };
+      case 'agent_credential|tenant.agent.credential.created':
+      case 'agent_credential|tenant.agent.credential.revoked':
+        if (!CREDENTIAL_ID.test(resourceId)) fail('OUTBOX_STORE_UNAVAILABLE');
+        return {
+          ...base,
+          resourceType: 'agent_credential',
+          resourceId,
+          eventType: eventType as 'tenant.agent.credential.created' | 'tenant.agent.credential.revoked',
+        };
+      case 'provider_credential|tenant.provider.credential.created':
+      case 'provider_credential|tenant.provider.credential.revoked':
+        if (!CREDENTIAL_ID.test(resourceId)) fail('OUTBOX_STORE_UNAVAILABLE');
+        return {
+          ...base,
+          resourceType: 'provider_credential',
+          resourceId,
+          eventType: eventType as 'tenant.provider.credential.created' | 'tenant.provider.credential.revoked',
+        };
       default:
         fail('OUTBOX_STORE_UNAVAILABLE');
     }
