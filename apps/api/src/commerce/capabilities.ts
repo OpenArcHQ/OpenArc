@@ -174,7 +174,8 @@ function enforceAllowedHeaders(request: FastifyRequest): void {
     if (ALLOWED_CLIENT_HEADER_NAMES.has(name)) continue;
     if (PUBLIC_CRITICAL_HEADERS.has(name)) continue;
     if (name === "host" || name === "accept" || name === "accept-encoding" ||
-      name === "user-agent" || name === "connection" || name === "sec-fetch-site" ||
+      name === "accept-language" || name === "user-agent" || name === "connection" ||
+      name === "sec-fetch-site" ||
       name === "sec-fetch-mode" || name === "sec-fetch-dest") continue;
     throw invalidRequest();
   }

@@ -542,6 +542,38 @@ describe("public capability transport", () => {
     }
   });
 
+  it("accepts default credentialless fetch negotiation headers and still rejects unknown client metadata", async () => {
+    const { app } = harness();
+    // Undici's default credentialless GET sends this exact negotiation set:
+    // Accept, Accept-Language, Accept-Encoding, User-Agent. Accept-Language is
+    // standard content negotiation, not arbitrary client metadata, so the
+    // public GET must remain usable with default fetch.
+    const fetchDefaults = {
+      accept: "*/*",
+      "accept-language": "*",
+      "accept-encoding": "gzip, deflate",
+      "user-agent": "undici",
+    };
+    const accepted = await app.inject({
+      method: "GET",
+      url: COMMERCE_CAPABILITIES_PATH,
+      headers: fetchDefaults,
+    });
+    expect(accepted.statusCode).toBe(200);
+    // Accept-Language is permitted but never echoed, persisted or trusted.
+    expect(accepted.headers["set-cookie"]).toBeUndefined();
+    expect(accepted.headers["access-control-allow-origin"]).toBeUndefined();
+    expect(accepted.body).not.toContain("accept-language");
+    expect(accepted.body).not.toContain("undici");
+
+    const unknown = await app.inject({
+      method: "GET",
+      url: COMMERCE_CAPABILITIES_PATH,
+      headers: { ...fetchDefaults, "x-unknown-client": "x" },
+    });
+    expect(unknown.statusCode).toBe(400);
+  });
+
   it("rejects a cross origin with the fixed v2 INVALID_ORIGIN envelope", async () => {
     const { app } = harness();
     const response = await app.inject({
