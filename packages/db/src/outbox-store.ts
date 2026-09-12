@@ -72,6 +72,7 @@ export type ClaimedOutboxEvent = {
   | { readonly resourceType: 'listing_version'; readonly resourceId: string; readonly eventType: 'market.listing.version.created' }
   | { readonly resourceType: 'budget_policy'; readonly resourceId: string; readonly eventType: 'control.policy.created' | 'control.policy.paused' | 'control.policy.resumed' | 'control.policy.revoked' }
   | { readonly resourceType: 'budget_policy_revision'; readonly resourceId: string; readonly eventType: 'control.policy.revision.created' }
+  | { readonly resourceType: 'commerce_session'; readonly resourceId: string; readonly eventType: 'control.commerce_session.issued' | 'control.commerce_session.exchanged' | 'control.commerce_session.revoked' }
 );
 
 const ORG_ID = /^openarc:org:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -96,6 +97,8 @@ const POLICY_REVISION_RESOURCE = /^openarc:policy:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][
 function isPolicyRevisionResource(value: string): boolean {
   return value.length <= POLICY_REVISION_RESOURCE_MAX_LENGTH && POLICY_REVISION_RESOURCE.test(value);
 }
+
+const COMMERCE_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export interface ClaimInput {
   readonly limit?: number;
@@ -374,6 +377,19 @@ export class OutboxStore {
       case 'budget_policy_revision|control.policy.revision.created':
         if (!isPolicyRevisionResource(resourceId)) fail('OUTBOX_STORE_UNAVAILABLE');
         return { ...base, resourceType: 'budget_policy_revision', resourceId, eventType: 'control.policy.revision.created' };
+      case 'commerce_session|control.commerce_session.issued':
+      case 'commerce_session|control.commerce_session.exchanged':
+      case 'commerce_session|control.commerce_session.revoked':
+        if (!COMMERCE_SESSION_ID.test(resourceId)) fail('OUTBOX_STORE_UNAVAILABLE');
+        return {
+          ...base,
+          resourceType: 'commerce_session',
+          resourceId,
+          eventType: eventType as
+            | 'control.commerce_session.issued'
+            | 'control.commerce_session.exchanged'
+            | 'control.commerce_session.revoked',
+        };
       default:
         fail('OUTBOX_STORE_UNAVAILABLE');
     }

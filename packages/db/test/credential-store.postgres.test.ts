@@ -224,6 +224,7 @@ describe('schema5 manifest, unions and ACLs', () => {
       '0006_market',
       '0007_market_lifecycle',
       '0008_control_policies',
+      '0009_control_sessions',
     ]);
     const helpers = await admin.query<{ proname: string; owner: string; secdef: boolean; config: string[] }>(
       `SELECT p.proname, r.rolname AS owner, p.prosecdef AS secdef,
