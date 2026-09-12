@@ -689,6 +689,202 @@ describe("public capability transport", () => {
   });
 });
 
+/**
+ * SECOND-EDGE REPRODUCTION: nginx strips the incoming transport headers and
+ * uses the public HTTPS API upstream, after which Railway's second edge inserts
+ * fresh routing headers BEFORE the API sees them. These are opaque, untrusted
+ * informational proxy metadata: they must be ignored (never trusted, persisted,
+ * echoed, logged, used for requestId/principal/routing/origin) without weakening
+ * the credential, Origin/Fetch-Site or request-shape protections.
+ */
+describe("second-edge Railway transport metadata is ignored", () => {
+  const RAILWAY_EDGE_HEADERS: Record<string, string> = {
+    "x-real-ip": "203.0.113.7",
+    "x-forwarded-proto": "https",
+    "x-forwarded-host": "capabilities.openarc.test",
+    "x-railway-edge": "lhr1",
+    "x-request-start": "1700000000.123",
+    "x-railway-request-id": "railway-req-abc",
+  };
+  const STANDARD_PROXY_HEADERS: Record<string, string> = {
+    "x-forwarded-for": "203.0.113.7, 198.51.100.9",
+    forwarded: "for=203.0.113.7;proto=https;host=capabilities.openarc.test",
+  };
+  const UUID_V4 =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+  it("accepts all six documented edge names simultaneously and each separately", async () => {
+    const { app } = harness();
+    const single: ReadonlyArray<readonly [string, string]> = Object.entries(
+      RAILWAY_EDGE_HEADERS,
+    );
+    const accepted: Record<string, string>[] = [
+      RAILWAY_EDGE_HEADERS,
+      ...single.map(([name, value]) => ({ [name]: value })),
+    ];
+    for (const headers of accepted) {
+      const response = await app.inject({
+        method: "GET",
+        url: COMMERCE_CAPABILITIES_PATH,
+        headers,
+      });
+      expect(response.statusCode, JSON.stringify(headers)).toBe(200);
+      expect(
+        CommerceCapabilitiesSuccessEnvelopeSchema.parse(response.json()).data
+          .capabilities,
+      ).toHaveLength(5);
+      // All flags off: every family is built_disabled, unaffected by metadata.
+      expect(states(response.json()), JSON.stringify(headers)).toEqual(
+        Object.fromEntries(
+          COMMERCE_CAPABILITY_FAMILY_ORDER.map((family) => [
+            family,
+            "built_disabled",
+          ]),
+        ),
+      );
+      expect(response.headers["set-cookie"]).toBeUndefined();
+      expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+    }
+  });
+
+  it("accepts standard x-forwarded-for and forwarded as opaque proxy metadata", async () => {
+    const { app } = harness();
+    const response = await app.inject({
+      method: "GET",
+      url: COMMERCE_CAPABILITIES_PATH,
+      headers: STANDARD_PROXY_HEADERS,
+    });
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("never reflects spoofed proxy metadata, and the app requestId stays in charge", async () => {
+    const { app } = harness();
+    const spoofed: Record<string, string> = {
+      ...RAILWAY_EDGE_HEADERS,
+      ...STANDARD_PROXY_HEADERS,
+      "x-railway-request-id": "attacker-supplied-request-id",
+      "x-real-ip": "6.6.6.6",
+      "x-forwarded-host": "<script>alert(1)</script>",
+    };
+    const response = await app.inject({
+      method: "GET",
+      url: COMMERCE_CAPABILITIES_PATH,
+      headers: spoofed,
+    });
+    expect(response.statusCode).toBe(200);
+    const parsed = CommerceCapabilitiesSuccessEnvelopeSchema.parse(response.json());
+    // The deterministic application requestId is authoritative and is neither
+    // set from nor equal to the spoofed X-Railway-Request-Id.
+    expect(parsed.meta.requestId).toMatch(UUID_V4);
+    expect(parsed.meta.requestId).not.toBe("attacker-supplied-request-id");
+
+    const body = response.body;
+    const headerValues = Object.values(response.headers).map((value) =>
+      String(value),
+    );
+    for (const value of Object.values(spoofed)) {
+      expect(body, value).not.toContain(value);
+      expect(headerValues, value).not.toContain(value);
+    }
+    // Manifest states are unchanged by metadata alone.
+    expect(states(response.json())).toEqual(
+      Object.fromEntries(
+        COMMERCE_CAPABILITY_FAMILY_ORDER.map((family) => [
+          family,
+          "built_disabled",
+        ]),
+      ),
+    );
+  });
+
+  it("does not let edge metadata authorize credentials, CSRF, idempotency or unknown client headers", async () => {
+    const { app } = harness();
+    const forbidden: Record<string, string>[] = [
+      { cookie: "openarc_session=abc" },
+      { authorization: "Bearer x" },
+      { "x-openarc-csrf": "t" },
+      { "idempotency-key": "k" },
+      { "x-openarc-client": "other" },
+      { "x-unknown-client": "x" },
+    ];
+    for (const extra of forbidden) {
+      const response = await app.inject({
+        method: "GET",
+        url: COMMERCE_CAPABILITIES_PATH,
+        headers: { ...RAILWAY_EDGE_HEADERS, ...extra },
+      });
+      expect(response.statusCode, JSON.stringify(extra)).toBe(400);
+      expect(response.json().error.code, JSON.stringify(extra)).toBe(
+        "INVALID_REQUEST",
+      );
+      expect(response.headers["set-cookie"]).toBeUndefined();
+      expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+    }
+  });
+
+  it("still rejects foreign Origin and Fetch-Site even with edge metadata present", async () => {
+    const { app } = harness();
+    const foreignOrigin = await app.inject({
+      method: "GET",
+      url: COMMERCE_CAPABILITIES_PATH,
+      headers: { ...RAILWAY_EDGE_HEADERS, origin: "https://evil.example" },
+    });
+    expect(foreignOrigin.statusCode).toBe(403);
+    expect(foreignOrigin.json().error.code).toBe("INVALID_ORIGIN");
+
+    const foreignSite = await app.inject({
+      method: "GET",
+      url: COMMERCE_CAPABILITIES_PATH,
+      headers: { ...RAILWAY_EDGE_HEADERS, "sec-fetch-site": "cross-site" },
+    });
+    expect(foreignSite.statusCode).toBe(403);
+    expect(foreignSite.json().error.code).toBe("INVALID_ORIGIN");
+  });
+
+  it("still rejects wrong methods, query/body and duplicate critical headers with edge metadata", async () => {
+    const { app } = harness();
+    for (const method of ["POST", "PUT", "DELETE", "PATCH"] as const) {
+      const response = await app.inject({
+        method,
+        url: COMMERCE_CAPABILITIES_PATH,
+        headers: RAILWAY_EDGE_HEADERS,
+        ...(method === "POST" || method === "PUT" || method === "PATCH"
+          ? { payload: {} }
+          : {}),
+      });
+      expect(response.statusCode, method).toBe(405);
+    }
+
+    const queried = await app.inject({
+      method: "GET",
+      url: `${COMMERCE_CAPABILITIES_PATH}?x=1`,
+      headers: RAILWAY_EDGE_HEADERS,
+    });
+    expect(queried.statusCode).toBe(400);
+    expect(queried.body).not.toContain("x=1");
+
+    const port = await listeningPort(app);
+    const duplicates: ReadonlyArray<readonly string[]> = [
+      ["Cookie: a=1", "Cookie: b=2"],
+      ["Authorization: Bearer x", "Authorization: Bearer y"],
+      ["Origin: " + ORIGIN, "Origin: " + ORIGIN],
+      ["Idempotency-Key: a", "Idempotency-Key: b"],
+      ["X-OpenArc-Csrf: a", "X-OpenArc-Csrf: b"],
+      ["X-OpenArc-Client: browser-v1", "X-OpenArc-Client: browser-v1"],
+    ];
+    for (const duplicate of duplicates) {
+      const response = await rawHttp(port, "GET", COMMERCE_CAPABILITIES_PATH, [
+        ...Object.entries(RAILWAY_EDGE_HEADERS).map(
+          ([name, value]) => `${name}: ${value}`,
+        ),
+        ...duplicate,
+      ]);
+      expect(response.status, duplicate.join("|")).toBe(400);
+      expect(response.text).toContain('"code":"INVALID_REQUEST"');
+    }
+  });
+});
+
 describe("public capability manifest stays independent of readyz fail-closed semantics", () => {
   it("returns 200 with unavailable families while /readyz still fails closed", async () => {
     const { app } = harness({
