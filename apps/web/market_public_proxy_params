@@ -1,0 +1,61 @@
+# Shared transport for the credentialless public marketplace catalog reads.
+#
+# Mirrors the reviewed credentialless capability transport: the blanket
+# request-header passthrough is disabled and only an explicit browser-metadata
+# allowlist reaches the public catalog API. No Cookie, Authorization, CSRF,
+# idempotency, proxy/source credential or forwarded peer header can be injected
+# because those locations reject them locally BEFORE this include strips all
+# request headers, and the allowlist below can only reference the client's own
+# same-origin browser headers.
+#
+# Client proxy metadata (X-Real-IP / X-Forwarded-* / Forwarded) is deliberately
+# ABSENT: a separate Railway edge adds opaque informational metadata upstream,
+# so adding a client-supplied copy here would let a caller forge it.
+
+proxy_http_version 1.1;
+proxy_set_header Connection "";
+proxy_pass_request_headers off;
+proxy_set_header Host $proxy_host;
+proxy_set_header Origin $http_origin;
+proxy_set_header X-OpenArc-Client $http_x_openarc_client;
+proxy_set_header Sec-Fetch-Site $http_sec_fetch_site;
+proxy_set_header Sec-Fetch-Mode $http_sec_fetch_mode;
+proxy_set_header Sec-Fetch-Dest $http_sec_fetch_dest;
+proxy_set_header Accept $http_accept;
+
+# The original encoded request target must reach the API for decode-once
+# validation. `proxy_pass` in the marketplace regex/named locations carries no
+# URI part, so nginx forwards $request_uri unchanged; nothing here rewrites it.
+# No request body is ever forwarded on a read.
+proxy_pass_request_body off;
+proxy_set_header Content-Type "";
+proxy_set_header Content-Length "";
+proxy_set_header Transfer-Encoding "";
+proxy_set_header Cookie "";
+proxy_set_header Authorization "";
+proxy_set_header Proxy-Authorization "";
+proxy_set_header X-OpenArc-CSRF "";
+proxy_set_header Idempotency-Key "";
+proxy_set_header X-OpenArc-Proxy-Secret "";
+proxy_set_header X-OpenArc-Proxy-Client-IP "";
+proxy_set_header X-Real-IP "";
+proxy_set_header X-Forwarded-For "";
+proxy_set_header X-Forwarded-Proto "";
+proxy_set_header X-Forwarded-Host "";
+proxy_set_header Forwarded "";
+
+# Verified upstream TLS/SNI/trust is inherited from the enclosing server
+# template (API_UPSTREAM_SNI / API_TRUST_BUNDLE expanded at startup).
+proxy_ssl_server_name on;
+proxy_ssl_verify on;
+proxy_ssl_verify_depth 3;
+
+proxy_connect_timeout 3s;
+proxy_send_timeout 10s;
+proxy_read_timeout 10s;
+
+# No automatic upstream retry, no response cache, no disk spooling.
+proxy_next_upstream off;
+proxy_request_buffering off;
+proxy_buffering off;
+proxy_max_temp_file_size 0;
