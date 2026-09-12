@@ -25,10 +25,10 @@ jobs:
         run: node --test scripts/check-public-history.test.mjs
       - name: Verify source, units and development browser journeys
         run: docker build -f scripts/Dockerfile.node22-gate -t openarc-public-source-gate .
-      - name: Run account deployment tests in the built gate image
+      - name: Run account and tenant deployment tests in the built gate image
         run: |
           docker run --rm openarc-public-source-gate \
-            node --test scripts/account-deployment.test.mjs
+            node --test scripts/account-deployment.test.mjs scripts/tenant-deployment.test.mjs scripts/tenant-ci-wiring.test.mjs
       - name: Run real PostgreSQL database tests
         run: |
           set -euo pipefail
@@ -64,5 +64,5 @@ jobs:
             sh -c 'pnpm --filter @openarc/db test:postgres && pnpm --filter @openarc/api test:postgres && pnpm e2e:accounts'
       - name: Record verification boundary
         run: |
-          echo 'Source gate passed, including real PostgreSQL database and account deployment tests. This is not a production deployment or full historical release gate.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'Private pre-publication RC objects are intentionally absent. See docs/public-source-publication.md.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Source gate passed, including real PostgreSQL database, account deployment tests, tenant deployment guards and the mocked tenant browser wiring. This is not production-image or passkey tenant evidence, not a whole-port result, and not a production deployment or full historical release gate.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Mocked tenant browser journeys run inside the root e2e gate and are not repeated in this workflow. Private pre-publication RC objects are intentionally absent. See docs/public-source-publication.md.' >> "$GITHUB_STEP_SUMMARY"

@@ -9,6 +9,7 @@ import { VaultWorkspace } from "./vault/VaultWorkspace.js";
 
 const SuppliedDesignApp = lazy(() => import("./supplied/DesignApp.js"));
 const AccountPage = lazy(() => import("./account/AccountPage.js"));
+const TenantApp = lazy(() => import("./tenant/TenantApp.js"));
 
 interface DesignErrorBoundaryProps {
   children: ReactNode;
@@ -100,6 +101,23 @@ export function App({ build }: AppProps) {
         }
       >
         <AccountPage />
+      </Suspense>
+    );
+  }
+
+  // The static `/app` workspace routes lazily construct the protected tenant
+  // controller only when one of these paths is actually visited. Public routes
+  // never mount it and never touch the account or tenant controllers.
+  if (path === "/app" || path.startsWith("/app/")) {
+    return (
+      <Suspense
+        fallback={
+          <main className="supplied-fallback" role="status">
+            Loading the organization workspace…
+          </main>
+        }
+      >
+        <TenantApp />
       </Suspense>
     );
   }

@@ -26,6 +26,10 @@ import { authCookieNames } from "./auth/cookies.js";
 import { AUTH_ERRORS, AuthApiError, authErrorEnvelope } from "./auth/errors.js";
 import { AUTH_ROUTE_PATHS, registerAuthRoutes } from "./auth/routes.js";
 import type { AuthService } from "./auth/service.js";
+import { registerTenantRoutes, TENANT_ROUTE_PREFIX } from "./tenant/routes.js";
+import type { TenantReadService } from "./tenant/service.js";
+import { registerTenantWriteRoutes } from "./tenant/write-routes.js";
+import type { TenantWriteService } from "./tenant/write-service.js";
 import { ApiBoundaryError, apiErrorEnvelope, normalizeApiError } from "./http/errors.js";
 import { verifyBrowserOrigin, verifyPreflight } from "./http/origin.js";
 import { registerSourceRoute } from "./http/source-route.js";
@@ -56,11 +60,26 @@ export interface CreateAppOptions {
   gatewayTransferService?: GatewayTransferService;
   authService?: AuthService;
   authReady?: () => Promise<boolean>;
+  tenantReadService?: TenantReadService;
+  tenantWriteService?: TenantWriteService;
+  tenantReady?: () => Promise<boolean>;
+  tenantMaxResponseBytes?: number;
 }
 
 const disabledPaths = [
   "/v1/private/gateway/transfer-evidence",
 ] as const;
+
+/**
+ * The exact bounded protected tenant family is the route root or the root plus
+ * a slash. A bare `startsWith` would capture lookalike paths such as
+ * `/v1/operator/organizationsXYZ`, so those keep their legacy behavior.
+ */
+function isTenantFamilyPath(path: string): boolean {
+  return (
+    path === TENANT_ROUTE_PREFIX || path.startsWith(`${TENANT_ROUTE_PREFIX}/`)
+  );
+}
 
 function routeClass(url: string): RouteClass {
   const path = url.split("?", 1)[0] ?? url;
@@ -68,6 +87,7 @@ function routeClass(url: string): RouteClass {
   if (path === "/readyz") return "readiness";
   if (path === "/metrics") return "metrics";
   if ((AUTH_ROUTE_PATHS as readonly string[]).includes(path)) return "auth";
+  if (isTenantFamilyPath(path)) return "tenant";
   if (path === CAPABILITIES_PATH) return "capabilities";
   if (path === ARC_ACCOUNT_SNAPSHOT_PATH) return "arc_account";
   if (path === ARC_TRANSACTION_EVIDENCE_PATH) return "arc_transaction";
@@ -80,11 +100,31 @@ function routeClass(url: string): RouteClass {
 
 export function createApp({ config, logger = config.NODE_ENV !== "test", logSink, metrics = new AggregateMetrics(),
   sourceBudget, arcAccountService, arcTransactionService, agentRegistryService, jobService, gatewayTransferService,
-  authService, authReady }: CreateAppOptions): FastifyInstance {
+  authService, authReady, tenantReadService, tenantReady,
+  tenantWriteService, tenantMaxResponseBytes }: CreateAppOptions): FastifyInstance {
   // Framework request/error logging is disabled, including parser failures.
+  // `frameworkErrors` receives errors raised before the normal request
+  // lifecycle (notably `FST_ERR_BAD_URL` from the router) which otherwise
+  // bypass `setErrorHandler` and echo the raw URL. The holder is wired to the
+  // same `sendError` used for lifecycle errors once it is defined below.
+  const frameworkErrorHandler: {
+    current:
+      | ((
+          cause: unknown,
+          request: FastifyRequest,
+          reply: FastifyReply,
+        ) => unknown)
+      | null;
+  } = { current: null };
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: API_MAX_REQUEST_BYTES,
     requestIdHeader: false, genReqId: () => randomUUID(), exposeHeadRoutes: false,
-    requestTimeout: 10_000, connectionTimeout: 10_000, keepAliveTimeout: 5_000 });
+    requestTimeout: 10_000, connectionTimeout: 10_000, keepAliveTimeout: 5_000,
+    frameworkErrors: (cause, request, reply) => {
+      if (frameworkErrorHandler.current !== null) {
+        return frameworkErrorHandler.current(cause, request, reply);
+      }
+      return reply.send(cause as never);
+    } });
   const failures = new WeakMap<FastifyRequest, ApiErrorCode>();
   const started = new WeakMap<FastifyRequest, number>();
   const headers = (request: FastifyRequest, reply: FastifyReply) => {
@@ -116,32 +156,48 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
       if (cause.retryAfterSeconds !== undefined) reply.header("Retry-After", String(cause.retryAfterSeconds));
       return reply.code(cause.status).send(authErrorEnvelope(cause, request.id, config.COMMIT_SHA));
     }
-    const authPath = (request.url.split("?", 1)[0] ?? request.url).startsWith("/v2/auth/");
-    if (authPath && !(cause instanceof ApiBoundaryError && cause.code === "NOT_FOUND")) {
+    const rawPath = request.url.split("?", 1)[0] ?? request.url;
+    const causeCode =
+      typeof cause === "object" && cause !== null && "code" in cause
+        ? (cause as { code?: unknown }).code
+        : null;
+    const v2Surface = rawPath.startsWith("/v2/auth/") || isTenantFamilyPath(rawPath);
+    if (v2Surface && !(cause instanceof ApiBoundaryError && cause.code === "NOT_FOUND")) {
       // Parser, body-limit, media, unexpected and response-schema failures on
-      // the account surface must still return a strict v2 envelope with a
-      // correct status and no raw cause or caller data.
+      // the account and protected tenant surfaces must still return a strict
+      // v2 envelope with a correct status and no raw cause or caller data.
+      // The tenant family is exact (root or root + slash): lookalike prefixes
+      // keep the legacy path. A genuine NOT_FOUND (unknown route) is excluded
+      // so routes outside the four frozen handlers stay a normal legacy 404.
       const normalized = normalizeApiError(cause);
       const mapped =
-        normalized.code === "REQUEST_TOO_LARGE"
-          ? AUTH_ERRORS.tooLarge()
-          : normalized.code === "UNSUPPORTED_MEDIA_TYPE"
-            ? AUTH_ERRORS.unsupportedMedia()
-            : normalized.code === "INVALID_REQUEST"
-              ? AUTH_ERRORS.invalidRequest()
+        causeCode === "FST_ERR_BAD_URL" ||
+        normalized.code === "INVALID_REQUEST"
+          ? AUTH_ERRORS.invalidRequest()
+          : normalized.code === "REQUEST_TOO_LARGE"
+            ? AUTH_ERRORS.tooLarge()
+            : normalized.code === "UNSUPPORTED_MEDIA_TYPE"
+              ? AUTH_ERRORS.unsupportedMedia()
               : AUTH_ERRORS.internal();
       failures.set(request, mapped.metricsCode);
       return reply
         .code(mapped.status)
         .send(authErrorEnvelope(mapped, request.id, config.COMMIT_SHA));
     }
-    const error = normalizeApiError(cause);
+    // A malformed URL on any non-v2 surface keeps the legacy 400 shape instead
+    // of being misclassified as an internal error.
+    const error =
+      causeCode === "FST_ERR_BAD_URL"
+        ? new ApiBoundaryError("INVALID_REQUEST")
+        : normalizeApiError(cause);
     failures.set(request, error.code);
     if (error.retryAfterSeconds !== undefined) reply.header("Retry-After", String(error.retryAfterSeconds));
     return reply.code(API_ERRORS[error.code].status).send(apiErrorEnvelope(error, request.id, config.COMMIT_SHA));
   };
   app.setErrorHandler((cause, request, reply) => sendError(request, reply, cause));
   app.setNotFoundHandler((request, reply) => sendError(request, reply, new ApiBoundaryError("NOT_FOUND")));
+  frameworkErrorHandler.current = (cause, request, reply) =>
+    sendError(request, reply, cause);
 
   const build = { service: "openarc-api", version: "0.0.0", commitSha: config.COMMIT_SHA } as const;
   app.get("/healthz", async () => ({ status: "ok" as const, ...build }));
@@ -154,16 +210,27 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
             redis: config.ARC_OBSERVATION_ENABLED ? "not_checked" : "not_required", authDatabase: "down" }, ...build });
       }
     }
+    if (config.TENANT_READS_ENABLED) {
+      const tenantReadyResult = tenantReady ? await tenantReady().catch(() => false) : false;
+      if (!tenantReadyResult) {
+        return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
+          checks: { configuration: "up", sourceRoutes: config.ARC_OBSERVATION_ENABLED ? "enabled" : "disabled",
+            redis: config.ARC_OBSERVATION_ENABLED ? "not_checked" : "not_required",
+            ...(config.AUTH_ENABLED ? { authDatabase: "up" as const } : {}), tenantDatabase: "down" }, ...build });
+      }
+    }
     if (config.ARC_OBSERVATION_ENABLED) {
       const redisReady = sourceBudget ? await sourceBudget.ready(AbortSignal.timeout(750)) : false;
       if (!redisReady) return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
         checks: { configuration: "up", sourceRoutes: "enabled", redis: "down" }, ...build });
       return { ok: true as const, status: "ready" as const,
-        checks: { configuration: "up", sourceRoutes: "enabled", redis: "up" }, ...build };
+        checks: { configuration: "up", sourceRoutes: "enabled", redis: "up",
+          ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}) }, ...build };
     }
     return { ok: true as const, status: "ready" as const,
       checks: { configuration: "up", sourceRoutes: "disabled", redis: "not_required",
-        ...(config.AUTH_ENABLED ? { authDatabase: "up" as const } : {}) }, ...build };
+        ...(config.AUTH_ENABLED ? { authDatabase: "up" as const } : {}),
+        ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}) }, ...build };
   });
 
   if (config.AUTH_ENABLED) {
@@ -182,6 +249,53 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
       cookieNames: authCookieNames(false),
       // A disabled registration never invokes the service.
       service: authService as AuthService,
+      buildSha: config.COMMIT_SHA,
+      enabled: false,
+    });
+  }
+
+  if (config.TENANT_READS_ENABLED) {
+    if (!tenantReadService) throw new Error("Tenant read dependencies are unavailable");
+    registerTenantRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(config.APP_ORIGIN.startsWith("https://")),
+      service: tenantReadService,
+      buildSha: config.COMMIT_SHA,
+      enabled: true,
+      excludePost: config.TENANT_WRITES_ENABLED,
+      ...(tenantMaxResponseBytes !== undefined
+        ? { maxResponseBytes: tenantMaxResponseBytes }
+        : {}),
+    });
+  } else {
+    registerTenantRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(false),
+      // A disabled registration never invokes the service.
+      service: tenantReadService as TenantReadService,
+      buildSha: config.COMMIT_SHA,
+      enabled: false,
+    });
+  }
+
+  if (config.TENANT_WRITES_ENABLED) {
+    if (!tenantWriteService) throw new Error("Tenant write dependencies are unavailable");
+    registerTenantWriteRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(config.APP_ORIGIN.startsWith("https://")),
+      service: tenantWriteService,
+      buildSha: config.COMMIT_SHA,
+      enabled: true,
+      ...(tenantMaxResponseBytes !== undefined
+        ? { maxResponseBytes: tenantMaxResponseBytes }
+        : {}),
+    });
+  } else {
+    registerTenantWriteRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(false),
+      // A disabled registration never invokes the service.
+      service: tenantWriteService as TenantWriteService,
       buildSha: config.COMMIT_SHA,
       enabled: false,
     });

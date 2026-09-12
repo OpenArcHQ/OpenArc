@@ -1,6 +1,7 @@
 import { createApp } from "./app.js";
 import { authCookieNames } from "./auth/cookies.js";
 import { startAuthRuntime, type StartedAuthRuntime } from "./auth/runtime.js";
+import { startTenantRuntime, type StartedTenantRuntime } from "./tenant/runtime.js";
 import { ArcAccountService } from "./arc/account-service.js";
 import { AgentRegistryService } from "./arc/agent-registry-service.js";
 import { JobService } from "./arc/job-service.js";
@@ -35,6 +36,14 @@ async function start(): Promise<void> {
           recoveryLimit: config.AUTH_RATE_RECOVERY_PER_15MIN,
           recoveryWindowSeconds: 900,
         },
+    })
+    : undefined;
+  const tenantRuntime: StartedTenantRuntime | undefined = config.TENANT_READS_ENABLED
+    ? await startTenantRuntime({
+        tenantDatabaseUrl: config.TENANT_DATABASE_URL as string,
+        auth: authRuntime!.service,
+        writesEnabled: config.TENANT_WRITES_ENABLED,
+        writeAuth: authRuntime!.service,
       })
     : undefined;
   const redis = config.ARC_OBSERVATION_ENABLED && config.REDIS_URL ? await connectBudgetRedis(config.REDIS_URL) : undefined;
@@ -53,6 +62,12 @@ async function start(): Promise<void> {
     ...(authRuntime
       ? { authService: authRuntime.service, authReady: () => authRuntime.ready() }
       : {}),
+    ...(tenantRuntime
+      ? { tenantReadService: tenantRuntime.service, tenantReady: () => tenantRuntime.ready(),
+          ...(tenantRuntime.writeService !== undefined
+            ? { tenantWriteService: tenantRuntime.writeService }
+            : {}) }
+      : {}),
     ...(config.GATEWAY_EVIDENCE_ENABLED ? { gatewayTransferService: new GatewayTransferService(new BoundedGatewayClient({
       timeoutMs: config.SOURCE_TIMEOUT_MS, maxResponseBytes: config.SOURCE_MAX_RESPONSE_BYTES,
     })) } : {}),
@@ -63,6 +78,7 @@ async function start(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     await app.close();
     await authRuntime?.close();
+    await tenantRuntime?.close();
     if (redis?.isOpen) redis.destroy();
     process.exit(0);
   };

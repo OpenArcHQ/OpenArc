@@ -19,6 +19,38 @@ import {
   type CommerceProviderProfile,
 } from '@openarc/shared';
 import { loadMigrations, type SqlMigration } from './migrate.js';
+import {
+  DURABILITY_OPERATION,
+  DURABILITY_RESOURCE_TYPE,
+  digestAgentCreateRequest,
+  digestIdempotencyKey,
+  digestSessionContext,
+  parseIdempotencyKey,
+  parseMutationId,
+  type AgentMutationResult,
+  type AgentMutationStatus,
+  type DurableReceipt,
+  type DurableReceiptRow,
+} from './tenant-durability.js';
+import {
+  DURABLE_RESOURCE_BY_OPERATION,
+  digestAgentUpdateRequest,
+  digestMembershipSetRequest,
+  digestOrganizationCreateRequest,
+  digestProviderCreateRequest,
+  digestProviderUpdateRequest,
+  type DurableMutationResult,
+  type DurableMutationReceipt,
+  type DurableMutationStatus,
+  type DurableOperation,
+  type DurableResourceType,
+} from './tenant-mutations.js';
+
+export type {
+  DurableMutationReceipt,
+  DurableMutationResult,
+  DurableMutationStatus,
+} from './tenant-mutations.js';
 
 export type {
   CommerceAgentProfile,
@@ -27,6 +59,8 @@ export type {
   CommerceOrganizationAccessView,
   CommerceProviderProfile,
 } from '@openarc/shared';
+
+export type { AgentMutationResult, AgentMutationStatus, DurableReceipt } from './tenant-durability.js';
 
 /**
  * Tenant repository over the frozen schema2 SQL surface.
@@ -50,6 +84,8 @@ export const TENANT_STORE_ERROR_MESSAGES = {
   TENANT_STORE_FORBIDDEN: 'TenantStore caller is not permitted.',
   TENANT_STORE_NOT_FOUND: 'TenantStore target was not found.',
   TENANT_STORE_CONFLICT: 'TenantStore operation conflicts with existing state.',
+  TENANT_STORE_IDEMPOTENCY_CONFLICT:
+    'TenantStore mutation conflicts with an existing idempotency record.',
   TENANT_STORE_UNAVAILABLE: 'TenantStore is not available.',
   TENANT_STORE_OUTCOME_UNKNOWN:
     'TenantStore mutation outcome could not be confirmed; it may have committed.',
@@ -154,6 +190,11 @@ export interface UpdateProviderPatch {
   readonly status?: 'active' | 'suspended' | 'retired';
 }
 
+export interface DurableMutationMetadata {
+  readonly idempotencyKey: string;
+  readonly mutationId: string;
+}
+
 const SESSION_HASH = /^[0-9a-f]{64}$/;
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -252,6 +293,45 @@ function requireUpdatePatch(value: unknown, allowed: readonly string[]): Record<
   return owned;
 }
 
+/**
+ * Strictly validate durable mutation metadata before any checkout. Only the two
+ * canonical metadata fields are accepted: no digest, principal, role or network
+ * can be supplied by the caller.
+ */
+function requireDurableMetadata(value: unknown): DurableMutationMetadata {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    fail('TENANT_STORE_INPUT_INVALID');
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    fail('TENANT_STORE_INPUT_INVALID');
+  }
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || !keys.includes('idempotencyKey') || !keys.includes('mutationId')) {
+    fail('TENANT_STORE_INPUT_INVALID');
+  }
+  const record = value as Record<string, unknown>;
+  const key = parseIdempotencyKeySafely(record['idempotencyKey']);
+  const mutation = parseMutationIdSafely(record['mutationId']);
+  return { idempotencyKey: key, mutationId: mutation };
+}
+
+function parseIdempotencyKeySafely(value: unknown): string {
+  try {
+    return parseIdempotencyKey(value);
+  } catch {
+    fail('TENANT_STORE_INPUT_INVALID');
+  }
+}
+
+function parseMutationIdSafely(value: unknown): string {
+  try {
+    return parseMutationId(value);
+  } catch {
+    fail('TENANT_STORE_INPUT_INVALID');
+  }
+}
+
 function requireOrganizationId(value: unknown): string {
   const parsed = CommerceOrganizationIdSchema.safeParse(value);
   if (!parsed.success) fail('TENANT_STORE_INPUT_INVALID');
@@ -274,6 +354,35 @@ function requireProviderId(value: unknown): string {
   const parsed = CommerceProviderIdSchema.safeParse(value);
   if (!parsed.success) fail('TENANT_STORE_INPUT_INVALID');
   return parsed.data;
+}
+
+const DURABLE_OPERATIONS: readonly DurableOperation[] = [
+  'tenant.organization.create',
+  'tenant.agent.create',
+  'tenant.agent.update',
+  'tenant.provider.create',
+  'tenant.provider.update',
+  'tenant.membership.set',
+];
+
+function requireDurableOperation(value: unknown): DurableOperation {
+  if (typeof value !== 'string' || !DURABLE_OPERATIONS.includes(value as DurableOperation)) {
+    fail('TENANT_STORE_UNAVAILABLE');
+  }
+  return value as DurableOperation;
+}
+
+function requireResourceId(resourceType: DurableResourceType, value: unknown): string {
+  switch (resourceType) {
+    case 'organization':
+      return requireOrganizationId(value);
+    case 'agent':
+      return requireAgentId(value);
+    case 'provider':
+      return requireProviderId(value);
+    case 'membership':
+      return requireAccountId(value);
+  }
 }
 
 function requireHumanRole(value: unknown): CommerceHumanRole {
@@ -350,6 +459,8 @@ function normalizeError(error: unknown): TenantStoreError {
         return new TenantStoreError('TENANT_STORE_NOT_FOUND');
       case '23505':
         return new TenantStoreError('TENANT_STORE_CONFLICT');
+      case 'P0D01':
+        return new TenantStoreError('TENANT_STORE_IDEMPOTENCY_CONFLICT');
       case '22023':
       case '22P02':
       case '22001':
@@ -604,6 +715,400 @@ export class TenantStore {
       // commit an agent row.
       await this.#recheckSession(client, hash, requireString(session.account_id));
       return this.#projectAgent(row);
+    });
+  }
+
+  /**
+   * Owner/operator create an agent DURABLY.
+   *
+   * One same checked-out transaction commits the agent insert, its idempotency
+   * record, exactly one audit event and exactly one outbox event, or none of
+   * them. Metadata is strictly validated before any checkout; account/role are
+   * resolved server-side and never accepted from the caller. No automatic
+   * mutation or COMMIT retry exists.
+   */
+  async createAgentDurably(
+    sessionHash: unknown,
+    organizationId: unknown,
+    displayName: unknown,
+    metadata: DurableMutationMetadata,
+  ): Promise<AgentMutationResult> {
+    const hash = requireSessionHash(sessionHash);
+    const organization = requireOrganizationId(organizationId);
+    const name = requireDisplayName(displayName);
+    const parsed = requireDurableMetadata(metadata);
+    const sessionContextDigest = digestSessionContext(hash);
+    const keyHash = digestIdempotencyKey(parsed.idempotencyKey);
+
+    return this.#withTransaction(async (client) => {
+      const session = await this.#lockSession(client, hash);
+      const actor = requireString(session.account_id);
+      const access = await this.#lockOrganizationAccess(client, hash, organization);
+      this.#requireRole(access.out_role, AGENT_MUTATE_ROLES);
+      const requestDigest = digestAgentCreateRequest({
+        organizationId: organization,
+        actorAccountId: actor,
+        actorRole: requireHumanRole(access.out_role),
+        sessionContextDigest,
+        mutationId: parsed.mutationId,
+        displayName: name,
+      });
+      const result = await client.query<DurableReceiptRow>(
+        `SELECT out_replayed, out_mutation_id, out_operation, out_resource_type,
+                out_resource_id, out_committed_at
+           FROM openarc_durable.commit_agent_create($1, $2, $3, $4::uuid, $5, $6, $7)`,
+        [
+          hash,
+          organization,
+          name,
+          parsed.mutationId,
+          keyHash,
+          requestDigest,
+          sessionContextDigest,
+        ],
+      );
+      const row = result.rows[0];
+      if (row === undefined) fail('TENANT_STORE_UNAVAILABLE');
+      // Recheck the SAME held session after all blocking writes and before the
+      // repository COMMIT. A rotation cannot commit a replacement mutation.
+      await this.#recheckSession(client, hash, actor);
+      return {
+        replayed: row.out_replayed === true,
+        receipt: this.#projectReceipt(row),
+      };
+    });
+  }
+
+  /**
+   * Owner/operator status lookup for a mutation owned by the SAME authenticated
+   * account. Another account's mutation is indistinguishable from not_found.
+   */
+  async getAgentMutationStatus(
+    sessionHash: unknown,
+    organizationId: unknown,
+    mutationId: unknown,
+  ): Promise<AgentMutationStatus> {
+    const hash = requireSessionHash(sessionHash);
+    const organization = requireOrganizationId(organizationId);
+    const mutation = parseMutationIdSafely(mutationId);
+
+    return this.#withTransaction(async (client) => {
+      const result = await client.query<DurableReceiptRow>(
+        `SELECT out_mutation_id, out_operation, out_resource_type,
+                out_resource_id, out_committed_at
+           FROM openarc_durable.read_agent_mutation_status($1, $2, $3::uuid)`,
+        [hash, organization, mutation],
+      );
+      const row = result.rows[0];
+      if (row === undefined) return { status: 'not_found' } as const;
+      return {
+        status: 'committed' as const,
+        receipt: this.#projectReceipt(row),
+      };
+    });
+  }
+
+  /**
+   * Durable organization bootstrap. Derives the organization id from the
+   * mutation id, resolves the caller server-side under the shared locks and
+   * commits organization + initial owner membership + receipt + audit +
+   * outbox together. The caller-supplied random metadata is not a secret.
+   */
+  async createOrganizationDurably(
+    sessionHash: unknown,
+    displayName: unknown,
+    metadata: DurableMutationMetadata,
+  ): Promise<DurableMutationResult> {
+    const hash = requireSessionHash(sessionHash);
+    const name = requireDisplayName(displayName);
+    const parsed = requireDurableMetadata(metadata);
+    const sessionContextDigest = digestSessionContext(hash);
+    const keyHash = digestIdempotencyKey(parsed.idempotencyKey);
+
+    return this.#withTransaction(async (client) => {
+      const session = await this.#lockFreshBootstrapSession(client, hash);
+      const actor = requireString(session.account_id);
+      const requestDigest = digestOrganizationCreateRequest({
+        mutationId: parsed.mutationId,
+        actorAccountId: actor,
+        sessionContextDigest,
+        displayName: name,
+      });
+      const result = await client.query<DurableReceiptRow>(
+        `SELECT out_replayed, out_mutation_id, out_operation, out_resource_type,
+                out_resource_id, out_committed_at
+           FROM openarc_durable.commit_organization_create($1, $2, $3::uuid, $4, $5, $6)`,
+        [hash, name, parsed.mutationId, keyHash, requestDigest, sessionContextDigest],
+      );
+      const row = result.rows[0];
+      if (row === undefined) fail('TENANT_STORE_UNAVAILABLE');
+      return { replayed: row.out_replayed === true, receipt: this.#projectMutationReceipt(row) };
+    });
+  }
+
+  /** Owner/operator durably update a non-terminal agent. */
+  async updateAgentDurably(
+    sessionHash: unknown,
+    organizationId: unknown,
+    agentId: unknown,
+    patch: UpdateAgentPatch,
+    metadata: DurableMutationMetadata,
+  ): Promise<DurableMutationResult> {
+    const hash = requireSessionHash(sessionHash);
+    const organization = requireOrganizationId(organizationId);
+    const agent = requireAgentId(agentId);
+    const parsed = requireDurableMetadata(metadata);
+    const fields = this.#agentPatchFields(patch);
+    const sessionContextDigest = digestSessionContext(hash);
+    const keyHash = digestIdempotencyKey(parsed.idempotencyKey);
+
+    return this.#withTransaction(async (client) => {
+      const session = await this.#lockSession(client, hash);
+      const actor = requireString(session.account_id);
+      const access = await this.#lockOrganizationAccess(client, hash, organization);
+      this.#requireRole(access.out_role, AGENT_MUTATE_ROLES);
+      const requestDigest = digestAgentUpdateRequest(
+        {
+          organizationId: organization,
+          actorAccountId: actor,
+          actorRole: requireHumanRole(access.out_role),
+          sessionContextDigest,
+          mutationId: parsed.mutationId,
+        },
+        agent,
+        fields,
+      );
+      const result = await client.query<DurableReceiptRow>(
+        `SELECT out_replayed, out_mutation_id, out_operation, out_resource_type,
+                out_resource_id, out_committed_at
+           FROM openarc_durable.commit_agent_update(
+             $1, $2, $3, $4, $5, $6, $7, $8::uuid, $9, $10, $11)`,
+        [
+          hash,
+          organization,
+          agent,
+          fields.hasDisplayName,
+          fields.displayName,
+          fields.hasStatus,
+          fields.status,
+          parsed.mutationId,
+          keyHash,
+          requestDigest,
+          sessionContextDigest,
+        ],
+      );
+      const row = result.rows[0];
+      if (row === undefined) fail('TENANT_STORE_UNAVAILABLE');
+      return { replayed: row.out_replayed === true, receipt: this.#projectMutationReceipt(row) };
+    });
+  }
+
+  /** Owner-only durable provider create. */
+  async createProviderDurably(
+    sessionHash: unknown,
+    organizationId: unknown,
+    displayName: unknown,
+    metadata: DurableMutationMetadata,
+  ): Promise<DurableMutationResult> {
+    const hash = requireSessionHash(sessionHash);
+    const organization = requireOrganizationId(organizationId);
+    const name = requireDisplayName(displayName);
+    const parsed = requireDurableMetadata(metadata);
+    const sessionContextDigest = digestSessionContext(hash);
+    const keyHash = digestIdempotencyKey(parsed.idempotencyKey);
+
+    return this.#withTransaction(async (client) => {
+      const session = await this.#lockSession(client, hash);
+      const actor = requireString(session.account_id);
+      const access = await this.#lockOrganizationAccess(client, hash, organization);
+      this.#requireRole(access.out_role, OWNER_ONLY);
+      const requestDigest = digestProviderCreateRequest(
+        {
+          organizationId: organization,
+          actorAccountId: actor,
+          actorRole: 'owner',
+          sessionContextDigest,
+          mutationId: parsed.mutationId,
+        },
+        name,
+      );
+      const result = await client.query<DurableReceiptRow>(
+        `SELECT out_replayed, out_mutation_id, out_operation, out_resource_type,
+                out_resource_id, out_committed_at
+           FROM openarc_durable.commit_provider_create($1, $2, $3, $4::uuid, $5, $6, $7)`,
+        [hash, organization, name, parsed.mutationId, keyHash, requestDigest, sessionContextDigest],
+      );
+      const row = result.rows[0];
+      if (row === undefined) fail('TENANT_STORE_UNAVAILABLE');
+      return { replayed: row.out_replayed === true, receipt: this.#projectMutationReceipt(row) };
+    });
+  }
+
+  /** Owner-only durable provider update. */
+  async updateProviderDurably(
+    sessionHash: unknown,
+    organizationId: unknown,
+    providerId: unknown,
+    patch: UpdateProviderPatch,
+    metadata: DurableMutationMetadata,
+  ): Promise<DurableMutationResult> {
+    const hash = requireSessionHash(sessionHash);
+    const organization = requireOrganizationId(organizationId);
+    const provider = requireProviderId(providerId);
+    const parsed = requireDurableMetadata(metadata);
+    const fields = this.#providerPatchFields(patch);
+    const sessionContextDigest = digestSessionContext(hash);
+    const keyHash = digestIdempotencyKey(parsed.idempotencyKey);
+
+    return this.#withTransaction(async (client) => {
+      const session = await this.#lockSession(client, hash);
+      const actor = requireString(session.account_id);
+      const access = await this.#lockOrganizationAccess(client, hash, organization);
+      this.#requireRole(access.out_role, OWNER_ONLY);
+      const requestDigest = digestProviderUpdateRequest(
+        {
+          organizationId: organization,
+          actorAccountId: actor,
+          actorRole: 'owner',
+          sessionContextDigest,
+          mutationId: parsed.mutationId,
+        },
+        provider,
+        fields,
+      );
+      const result = await client.query<DurableReceiptRow>(
+        `SELECT out_replayed, out_mutation_id, out_operation, out_resource_type,
+                out_resource_id, out_committed_at
+           FROM openarc_durable.commit_provider_update(
+             $1, $2, $3, $4, $5, $6, $7, $8::uuid, $9, $10, $11)`,
+        [
+          hash,
+          organization,
+          provider,
+          fields.hasDisplayName,
+          fields.displayName,
+          fields.hasStatus,
+          fields.status,
+          parsed.mutationId,
+          keyHash,
+          requestDigest,
+          sessionContextDigest,
+        ],
+      );
+      const row = result.rows[0];
+      if (row === undefined) fail('TENANT_STORE_UNAVAILABLE');
+      return { replayed: row.out_replayed === true, receipt: this.#projectMutationReceipt(row) };
+    });
+  }
+
+  /**
+   * Owner-only durable membership set. The SQL prelock establishes the fixed
+   * sorted-account -> session -> organization -> membership order and resolves
+   * the internal actor/role under those locks; the digest is computed from the
+   * returned internal actor, never from a request DTO principal.
+   */
+  async setMembershipDurably(
+    sessionHash: unknown,
+    organizationId: unknown,
+    targetAccountId: unknown,
+    role: unknown,
+    status: unknown,
+    metadata: DurableMutationMetadata,
+  ): Promise<DurableMutationResult> {
+    const hash = requireSessionHash(sessionHash);
+    const organization = requireOrganizationId(organizationId);
+    const account = requireAccountId(targetAccountId);
+    const requestedRole = requireHumanRole(role);
+    const requestedStatus = requireMembershipStatus(status);
+    const parsed = requireDurableMetadata(metadata);
+    const sessionContextDigest = digestSessionContext(hash);
+    const keyHash = digestIdempotencyKey(parsed.idempotencyKey);
+
+    return this.#withTransaction(async (client) => {
+      const prelock = await client.query<{ out_actor: string; out_role: string }>(
+        `SELECT out_actor, out_role
+           FROM openarc_durable.lock_membership_set($1, $2, $3)`,
+        [hash, organization, account],
+      );
+      const locked = prelock.rows[0];
+      if (locked === undefined) fail('TENANT_STORE_UNAVAILABLE');
+      const actor = requireString(locked.out_actor);
+      const requestDigest = digestMembershipSetRequest(
+        {
+          organizationId: organization,
+          actorAccountId: actor,
+          actorRole: requireHumanRole(locked.out_role),
+          sessionContextDigest,
+          mutationId: parsed.mutationId,
+        },
+        account,
+        requestedRole,
+        requestedStatus,
+      );
+      const result = await client.query<DurableReceiptRow>(
+        `SELECT out_replayed, out_mutation_id, out_operation, out_resource_type,
+                out_resource_id, out_committed_at
+           FROM openarc_durable.commit_membership_set(
+             $1, $2, $3, $4, $5, $6::uuid, $7, $8, $9)`,
+        [
+          hash,
+          organization,
+          account,
+          requestedRole,
+          requestedStatus,
+          parsed.mutationId,
+          keyHash,
+          requestDigest,
+          sessionContextDigest,
+        ],
+      );
+      const row = result.rows[0];
+      if (row === undefined) fail('TENANT_STORE_UNAVAILABLE');
+      return { replayed: row.out_replayed === true, receipt: this.#projectMutationReceipt(row) };
+    });
+  }
+
+  /** Owner/operator-or-owner operation-specific durable status lookup. */
+  async getTenantMutationStatus(
+    sessionHash: unknown,
+    organizationId: unknown,
+    mutationId: unknown,
+  ): Promise<DurableMutationStatus> {
+    const hash = requireSessionHash(sessionHash);
+    const organization = requireOrganizationId(organizationId);
+    const mutation = parseMutationIdSafely(mutationId);
+
+    return this.#withTransaction(async (client) => {
+      const result = await client.query<DurableReceiptRow>(
+        `SELECT out_mutation_id, out_operation, out_resource_type,
+                out_resource_id, out_committed_at
+           FROM openarc_durable.read_tenant_mutation_status($1, $2, $3::uuid)`,
+        [hash, organization, mutation],
+      );
+      const row = result.rows[0];
+      if (row === undefined) return { status: 'not_found' } as const;
+      return { status: 'committed' as const, receipt: this.#projectMutationReceipt(row) };
+    });
+  }
+
+  /** Bootstrap recovery: derive the organization from the mutation id. */
+  async getOrganizationMutationStatus(
+    sessionHash: unknown,
+    mutationId: unknown,
+  ): Promise<DurableMutationStatus> {
+    const hash = requireSessionHash(sessionHash);
+    const mutation = parseMutationIdSafely(mutationId);
+
+    return this.#withTransaction(async (client) => {
+      const result = await client.query<DurableReceiptRow>(
+        `SELECT out_mutation_id, out_operation, out_resource_type,
+                out_resource_id, out_committed_at
+           FROM openarc_durable.read_organization_mutation_status($1, $2::uuid)`,
+        [hash, mutation],
+      );
+      const row = result.rows[0];
+      if (row === undefined) return { status: 'not_found' } as const;
+      return { status: 'committed' as const, receipt: this.#projectMutationReceipt(row) };
     });
   }
 
@@ -1012,6 +1517,82 @@ export class TenantStore {
       status: requireMembershipStatus(row.status),
       createdAt,
       updatedAt,
+    };
+  }
+
+  /**
+   * Project the bounded internal receipt. It contains no raw key/digest/session
+   * hash, body, or stored/replayed full DTO.
+   */
+  #projectReceipt(row: DurableReceiptRow): DurableReceipt {
+    const mutationId = parseMutationIdSafely(row.out_mutation_id);
+    if (row.out_operation !== DURABILITY_OPERATION) fail('TENANT_STORE_UNAVAILABLE');
+    if (row.out_resource_type !== DURABILITY_RESOURCE_TYPE) fail('TENANT_STORE_UNAVAILABLE');
+    const resourceId = requireAgentId(row.out_resource_id);
+    return {
+      mutationId,
+      operation: DURABILITY_OPERATION,
+      resourceType: DURABILITY_RESOURCE_TYPE,
+      resourceId,
+      committedAt: requireCanonicalTimestamp(isoUtc(row.out_committed_at)),
+    };
+  }
+
+  /**
+   * Project the bounded union receipt. The operation/resource-type pair is
+   * validated against the fixed canonical map and the resource id is validated
+   * with the canonical validator for its kind, so a drifted SQL row can never
+   * surface a mismatched or malformed receipt.
+   */
+  #projectMutationReceipt(row: DurableReceiptRow): DurableMutationReceipt {
+    const operation = requireDurableOperation(row.out_operation);
+    const expected = DURABLE_RESOURCE_BY_OPERATION[operation];
+    if (row.out_resource_type !== expected) fail('TENANT_STORE_UNAVAILABLE');
+    return {
+      mutationId: parseMutationIdSafely(row.out_mutation_id),
+      operation,
+      resourceType: expected,
+      resourceId: requireResourceId(expected, row.out_resource_id),
+      committedAt: requireCanonicalTimestamp(isoUtc(row.out_committed_at)),
+    };
+  }
+
+  /**
+   * Canonical patch normalizer: exactly one allowed field may be present and
+   * absent vs provided values are explicit. Shared by the non-durable and
+   * durable agent/provider updates so both enforce identical strictness.
+   */
+  #agentPatchFields(patch: unknown): {
+    hasDisplayName: boolean;
+    displayName: string | null;
+    hasStatus: boolean;
+    status: string | null;
+  } {
+    const fields = requireUpdatePatch(patch, AGENT_PATCH_KEYS);
+    const hasDisplayName = fields['displayName'] !== undefined;
+    const hasStatus = fields['status'] !== undefined;
+    return {
+      hasDisplayName,
+      displayName: hasDisplayName ? requireDisplayName(fields['displayName']) : null,
+      hasStatus,
+      status: hasStatus ? requireAgentStatus(fields['status']) : null,
+    };
+  }
+
+  #providerPatchFields(patch: unknown): {
+    hasDisplayName: boolean;
+    displayName: string | null;
+    hasStatus: boolean;
+    status: string | null;
+  } {
+    const fields = requireUpdatePatch(patch, PROVIDER_PATCH_KEYS);
+    const hasDisplayName = fields['displayName'] !== undefined;
+    const hasStatus = fields['status'] !== undefined;
+    return {
+      hasDisplayName,
+      displayName: hasDisplayName ? requireDisplayName(fields['displayName']) : null,
+      hasStatus,
+      status: hasStatus ? requireProviderStatus(fields['status']) : null,
     };
   }
 

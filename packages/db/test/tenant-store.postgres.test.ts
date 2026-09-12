@@ -204,7 +204,12 @@ describe('tenant migration and schema2 boundary', () => {
     const applied = await admin.query<{ id: string; checksum: string }>(
       'SELECT id, checksum FROM openarc_meta.schema_migrations ORDER BY id',
     );
-    expect(applied.rows.map((row) => row.id)).toEqual(['0001_auth', '0002_tenants']);
+    expect(applied.rows.map((row) => row.id)).toEqual([
+      '0001_auth',
+      '0002_tenants',
+      '0003_durability',
+      '0004_durable_tenant_mutations',
+    ]);
     expect(applied.rows[1]?.checksum).toBe(checksum);
   });
 

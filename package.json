@@ -17,7 +17,7 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm --filter @openarc/shared build && pnpm --filter @openarc/db build && pnpm -r --if-present test --maxWorkers=2",
     "build": "pnpm -r --if-present build",
-    "e2e": "pnpm --filter @openarc/shared build && playwright test && playwright test -c playwright.flag-off.config.ts && playwright test -c playwright.api-boundary.config.ts && playwright test -c playwright.arc-observation.config.ts && playwright test -c playwright.agent-registry.config.ts && playwright test -c playwright.job-evidence.config.ts && playwright test -c playwright.gateway-evidence.config.ts && playwright test -c playwright.local-agent-import.config.ts && playwright test -c playwright.investigations.config.ts && playwright test -c playwright.investigations.flag-off.config.ts && playwright test -c playwright.supplied.config.ts",
+    "e2e": "pnpm --filter @openarc/shared build && playwright test && playwright test -c playwright.flag-off.config.ts && playwright test -c playwright.api-boundary.config.ts && playwright test -c playwright.arc-observation.config.ts && playwright test -c playwright.agent-registry.config.ts && playwright test -c playwright.job-evidence.config.ts && playwright test -c playwright.gateway-evidence.config.ts && playwright test -c playwright.local-agent-import.config.ts && playwright test -c playwright.investigations.config.ts && playwright test -c playwright.investigations.flag-off.config.ts && pnpm e2e:tenant && playwright test -c playwright.supplied.config.ts",
     "e2e:local-agent-import": "playwright test -c playwright.local-agent-import.config.ts",
     "e2e:local-agent-import:production": "OPENARC_EXACT_SOURCE=true playwright test -c playwright.local-agent-import.production.config.ts",
     "e2e:production": "playwright test -c playwright.production.config.ts",
@@ -39,7 +39,9 @@
     "docker:api": "docker build --build-arg COMMIT_SHA=${COMMIT_SHA:-local} -f apps/api/Dockerfile -t openarc-api:local .",
     "docker:web": "docker build --build-arg COMMIT_SHA=${COMMIT_SHA:-local} -f apps/web/Dockerfile -t openarc-web:local .",
     "e2e:accounts": "pnpm --filter @openarc/shared build && pnpm --filter @openarc/db build && playwright test -c playwright.account.config.ts",
-    "e2e:accounts:production": "playwright test -c playwright.account.production.config.ts"
+    "e2e:accounts:production": "playwright test -c playwright.account.production.config.ts",
+    "e2e:tenant": "playwright test -c playwright.tenant.config.ts",
+    "e2e:tenant:production": "playwright test -c playwright.tenant.production.config.ts"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",

@@ -21,6 +21,13 @@ const EnvironmentSchema = z.object({
     .max(4096)
     .regex(/^postgres(?:ql)?:\/\//u)
     .optional(),
+  TENANT_READS_ENABLED: flag(),
+  TENANT_WRITES_ENABLED: flag(),
+  TENANT_DATABASE_URL: z
+    .string()
+    .max(4096)
+    .regex(/^postgres(?:ql)?:\/\//u)
+    .optional(),
   AUTH_SECRET: secret().optional(),
   AUTH_RP_ID: z.string().min(1).max(253).optional(),
   AUTH_RATE_GLOBAL_PER_MINUTE: z.coerce.number().int().min(1).max(100_000).default(600),
@@ -80,6 +87,30 @@ const EnvironmentSchema = z.object({
     }
     if (config.NODE_ENV !== "production" && !config.APP_ORIGIN.startsWith("http://localhost") && !config.APP_ORIGIN.startsWith("http://127.0.0.1")) {
       context.addIssue({ code: "custom", path: ["APP_ORIGIN"], message: "Authentication development origin must be loopback" });
+    }
+  }
+  if (config.TENANT_READS_ENABLED) {
+    if (!config.AUTH_ENABLED) {
+      context.addIssue({ code: "custom", path: ["TENANT_READS_ENABLED"], message: "Protected tenant reads require authentication" });
+    }
+    if (!config.TENANT_DATABASE_URL) {
+      context.addIssue({ code: "custom", path: ["TENANT_DATABASE_URL"], message: "Protected tenant reads require a dedicated database URL" });
+    } else if (
+      config.AUTH_DATABASE_URL !== undefined &&
+      config.TENANT_DATABASE_URL === config.AUTH_DATABASE_URL
+    ) {
+      context.addIssue({ code: "custom", path: ["TENANT_DATABASE_URL"], message: "Protected tenant reads require a dedicated restricted role connection" });
+    }
+  }
+  if (config.TENANT_WRITES_ENABLED) {
+    if (!config.TENANT_READS_ENABLED) {
+      context.addIssue({ code: "custom", path: ["TENANT_WRITES_ENABLED"], message: "Tenant writes require the protected tenant read family" });
+    }
+    if (!config.AUTH_ENABLED) {
+      context.addIssue({ code: "custom", path: ["TENANT_WRITES_ENABLED"], message: "Tenant writes require authentication" });
+    }
+    if (!config.TENANT_DATABASE_URL) {
+      context.addIssue({ code: "custom", path: ["TENANT_DATABASE_URL"], message: "Tenant writes require a dedicated tenant database" });
     }
   }
   if (config.GATEWAY_EVIDENCE_ENABLED) {
