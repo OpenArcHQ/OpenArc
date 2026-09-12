@@ -23,3 +23,4 @@ export * from "./commerce/identity.js";
 export * from "./commerce/tenant.js";
 export * from "./commerce/tenant-writes.js";
 export * from "./commerce/machine.js";
+export * from "./commerce/capabilities.js";
