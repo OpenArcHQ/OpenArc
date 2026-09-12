@@ -46,6 +46,21 @@ export const TENANT_ROUTES = Object.freeze({
   providers: `${TENANT_ROUTE_PREFIX}/:organizationId/providers`,
 } as const);
 
+/**
+ * The methods registered by the read family when the write family owns POST.
+ * Fastify's `all()` would also claim POST, so the read plugin must register an
+ * explicit method list minus POST to leave the single POST registration to the
+ * write plugin. Every other verb keeps the existing read-handler 405.
+ */
+const READ_METHODS_WITHOUT_POST = [
+  "GET",
+  "HEAD",
+  "PUT",
+  "DELETE",
+  "PATCH",
+  "OPTIONS",
+] as const;
+
 const MAX_REQUEST_URL_BYTES = 2048;
 const MAX_PATH_ORGANIZATION_BYTES = 512;
 
@@ -56,6 +71,11 @@ export interface TenantRoutesOptions {
   buildSha: string;
   enabled: boolean;
   maxResponseBytes?: number;
+  /**
+   * When the tenant write family is enabled, the three shared read paths must
+   * not register POST so the write plugin can own the exact POST route.
+   */
+  excludePost?: boolean;
 }
 
 export interface TenantCompletionLogShape {
@@ -130,10 +150,13 @@ function hasMalformedPercentEncoding(value: string): boolean {
  * encoding), separators, control characters and malformed escapes are
  * rejected; no second decode is ever attempted.
  */
-function decodeOrganizationSegment(raw: string): string {
+export function decodePathSegment(
+  raw: string,
+  maxBytes = MAX_PATH_ORGANIZATION_BYTES,
+): string {
   if (
     raw.length === 0 ||
-    Buffer.byteLength(raw, "utf8") > MAX_PATH_ORGANIZATION_BYTES ||
+    Buffer.byteLength(raw, "utf8") > maxBytes ||
     raw.includes("/") ||
     hasControlCharacter(raw) ||
     hasMalformedPercentEncoding(raw)
@@ -153,6 +176,11 @@ function decodeOrganizationSegment(raw: string): string {
   ) {
     throw invalidRequest();
   }
+  return decoded;
+}
+
+function decodeOrganizationSegment(raw: string): string {
+  const decoded = decodePathSegment(raw);
   const parsed = CommerceOrganizationIdSchema.safeParse(decoded);
   if (!parsed.success) throw invalidRequest();
   return parsed.data;
@@ -365,9 +393,39 @@ export function registerTenantRoutes(
     return;
   }
 
-  app.all(
+  type ReadHandler = (
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ) => Promise<unknown>;
+
+  /**
+   * Register one read route. When POST is owned by the write plugin, an exact
+   * method list minus POST is used; every other verb keeps the read handler and
+   * therefore the existing 405. The other read routes keep the full `all` set.
+   */
+  const registerRead = (
+    path: string,
+    excludePost: boolean,
+    handler: ReadHandler,
+  ): void => {
+    const onRequest = async (request: FastifyRequest): Promise<void> => {
+      enforceTransport(request, options);
+    };
+    if (excludePost) {
+      app.route({
+        url: path,
+        method: [...READ_METHODS_WITHOUT_POST],
+        onRequest,
+        handler,
+      });
+    } else {
+      app.all(path, { onRequest }, handler);
+    }
+  };
+
+  registerRead(
     TENANT_ROUTES.organizations,
-    { onRequest: async (request) => { enforceTransport(request, options); } },
+    options.excludePost === true,
     async (request, reply) => {
       requireExactRoot(request.url);
       const query = parseQuery(
@@ -404,9 +462,9 @@ export function registerTenantRoutes(
     },
   );
 
-  app.all(
+  registerRead(
     TENANT_ROUTES.organization,
-    { onRequest: async (request) => { enforceTransport(request, options); } },
+    false,
     async (request, reply) => {
       const organizationId = requireOrganizationPath(request.url, "");
       const query = parseQuery(request.url, [], true);
@@ -425,9 +483,9 @@ export function registerTenantRoutes(
     },
   );
 
-  app.all(
+  registerRead(
     TENANT_ROUTES.agents,
-    { onRequest: async (request) => { enforceTransport(request, options); } },
+    options.excludePost === true,
     async (request, reply) => {
       const organizationId = requireOrganizationPath(request.url, "/agents");
       const query = parseQuery(request.url, ["afterAgentId", "limit"], false);
@@ -457,9 +515,9 @@ export function registerTenantRoutes(
     },
   );
 
-  app.all(
+  registerRead(
     TENANT_ROUTES.providers,
-    { onRequest: async (request) => { enforceTransport(request, options); } },
+    options.excludePost === true,
     async (request, reply) => {
       const organizationId = requireOrganizationPath(
         request.url,

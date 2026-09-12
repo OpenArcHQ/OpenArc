@@ -22,6 +22,7 @@ const EnvironmentSchema = z.object({
     .regex(/^postgres(?:ql)?:\/\//u)
     .optional(),
   TENANT_READS_ENABLED: flag(),
+  TENANT_WRITES_ENABLED: flag(),
   TENANT_DATABASE_URL: z
     .string()
     .max(4096)
@@ -99,6 +100,17 @@ const EnvironmentSchema = z.object({
       config.TENANT_DATABASE_URL === config.AUTH_DATABASE_URL
     ) {
       context.addIssue({ code: "custom", path: ["TENANT_DATABASE_URL"], message: "Protected tenant reads require a dedicated restricted role connection" });
+    }
+  }
+  if (config.TENANT_WRITES_ENABLED) {
+    if (!config.TENANT_READS_ENABLED) {
+      context.addIssue({ code: "custom", path: ["TENANT_WRITES_ENABLED"], message: "Tenant writes require the protected tenant read family" });
+    }
+    if (!config.AUTH_ENABLED) {
+      context.addIssue({ code: "custom", path: ["TENANT_WRITES_ENABLED"], message: "Tenant writes require authentication" });
+    }
+    if (!config.TENANT_DATABASE_URL) {
+      context.addIssue({ code: "custom", path: ["TENANT_DATABASE_URL"], message: "Tenant writes require a dedicated tenant database" });
     }
   }
   if (config.GATEWAY_EVIDENCE_ENABLED) {

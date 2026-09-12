@@ -2,6 +2,8 @@ import { asTenantPool, createDatabasePool, TenantStore } from "@openarc/db";
 
 import { TenantReadService } from "./service.js";
 import type { TenantReadAuthPort } from "./ports.js";
+import { TenantWriteService } from "./write-service.js";
+import type { TenantWriteAuthPort } from "./write-ports.js";
 
 /**
  * Runtime wiring for the protected tenant read family.
@@ -17,10 +19,21 @@ import type { TenantReadAuthPort } from "./ports.js";
 export interface TenantRuntimeDependencies {
   tenantDatabaseUrl: string;
   auth: TenantReadAuthPort;
+  /**
+   * Full write auth seam (adds verifyCsrf). Required only when writes are on;
+   * the same authenticated AuthService instance satisfies both ports.
+   */
+  writeAuth?: TenantWriteAuthPort;
+  /**
+   * Optional tenant write family. Defaults off: when absent or false the
+   * runtime constructs NO write service and reads no extra credential.
+   */
+  writesEnabled?: boolean;
 }
 
 export interface StartedTenantRuntime {
   service: TenantReadService;
+  writeService?: TenantWriteService;
   ready(): Promise<boolean>;
   close(): Promise<void>;
 }
@@ -52,10 +65,22 @@ export async function startTenantRuntime(
     auth: dependencies.auth,
     store,
   });
+  let writeService: TenantWriteService | undefined;
+  if (dependencies.writesEnabled === true) {
+    if (dependencies.writeAuth === undefined) {
+      await pool.end().catch(() => undefined);
+      fail();
+    }
+    writeService = new TenantWriteService({
+      auth: dependencies.writeAuth,
+      store,
+    });
+  }
 
   let closed = false;
   return {
     service,
+    ...(writeService !== undefined ? { writeService } : {}),
     async ready(): Promise<boolean> {
       if (closed) return false;
       try {

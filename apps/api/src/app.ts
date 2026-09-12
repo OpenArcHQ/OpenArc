@@ -28,6 +28,8 @@ import { AUTH_ROUTE_PATHS, registerAuthRoutes } from "./auth/routes.js";
 import type { AuthService } from "./auth/service.js";
 import { registerTenantRoutes, TENANT_ROUTE_PREFIX } from "./tenant/routes.js";
 import type { TenantReadService } from "./tenant/service.js";
+import { registerTenantWriteRoutes } from "./tenant/write-routes.js";
+import type { TenantWriteService } from "./tenant/write-service.js";
 import { ApiBoundaryError, apiErrorEnvelope, normalizeApiError } from "./http/errors.js";
 import { verifyBrowserOrigin, verifyPreflight } from "./http/origin.js";
 import { registerSourceRoute } from "./http/source-route.js";
@@ -59,6 +61,7 @@ export interface CreateAppOptions {
   authService?: AuthService;
   authReady?: () => Promise<boolean>;
   tenantReadService?: TenantReadService;
+  tenantWriteService?: TenantWriteService;
   tenantReady?: () => Promise<boolean>;
   tenantMaxResponseBytes?: number;
 }
@@ -98,7 +101,7 @@ function routeClass(url: string): RouteClass {
 export function createApp({ config, logger = config.NODE_ENV !== "test", logSink, metrics = new AggregateMetrics(),
   sourceBudget, arcAccountService, arcTransactionService, agentRegistryService, jobService, gatewayTransferService,
   authService, authReady, tenantReadService, tenantReady,
-  tenantMaxResponseBytes }: CreateAppOptions): FastifyInstance {
+  tenantWriteService, tenantMaxResponseBytes }: CreateAppOptions): FastifyInstance {
   // Framework request/error logging is disabled, including parser failures.
   // `frameworkErrors` receives errors raised before the normal request
   // lifecycle (notably `FST_ERR_BAD_URL` from the router) which otherwise
@@ -259,6 +262,7 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
       service: tenantReadService,
       buildSha: config.COMMIT_SHA,
       enabled: true,
+      excludePost: config.TENANT_WRITES_ENABLED,
       ...(tenantMaxResponseBytes !== undefined
         ? { maxResponseBytes: tenantMaxResponseBytes }
         : {}),
@@ -269,6 +273,29 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
       cookieNames: authCookieNames(false),
       // A disabled registration never invokes the service.
       service: tenantReadService as TenantReadService,
+      buildSha: config.COMMIT_SHA,
+      enabled: false,
+    });
+  }
+
+  if (config.TENANT_WRITES_ENABLED) {
+    if (!tenantWriteService) throw new Error("Tenant write dependencies are unavailable");
+    registerTenantWriteRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(config.APP_ORIGIN.startsWith("https://")),
+      service: tenantWriteService,
+      buildSha: config.COMMIT_SHA,
+      enabled: true,
+      ...(tenantMaxResponseBytes !== undefined
+        ? { maxResponseBytes: tenantMaxResponseBytes }
+        : {}),
+    });
+  } else {
+    registerTenantWriteRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(false),
+      // A disabled registration never invokes the service.
+      service: tenantWriteService as TenantWriteService,
       buildSha: config.COMMIT_SHA,
       enabled: false,
     });

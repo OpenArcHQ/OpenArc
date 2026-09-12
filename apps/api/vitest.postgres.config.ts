@@ -21,6 +21,7 @@ export default defineConfig({
     include: [
       "test/auth-service.postgres.test.ts",
       "test/tenant-reads.postgres.test.ts",
+      "test/tenant-writes.postgres.test.ts",
     ],
     fileParallelism: false,
   },

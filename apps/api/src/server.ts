@@ -42,6 +42,8 @@ async function start(): Promise<void> {
     ? await startTenantRuntime({
         tenantDatabaseUrl: config.TENANT_DATABASE_URL as string,
         auth: authRuntime!.service,
+        writesEnabled: config.TENANT_WRITES_ENABLED,
+        writeAuth: authRuntime!.service,
       })
     : undefined;
   const redis = config.ARC_OBSERVATION_ENABLED && config.REDIS_URL ? await connectBudgetRedis(config.REDIS_URL) : undefined;
@@ -61,7 +63,10 @@ async function start(): Promise<void> {
       ? { authService: authRuntime.service, authReady: () => authRuntime.ready() }
       : {}),
     ...(tenantRuntime
-      ? { tenantReadService: tenantRuntime.service, tenantReady: () => tenantRuntime.ready() }
+      ? { tenantReadService: tenantRuntime.service, tenantReady: () => tenantRuntime.ready(),
+          ...(tenantRuntime.writeService !== undefined
+            ? { tenantWriteService: tenantRuntime.writeService }
+            : {}) }
       : {}),
     ...(config.GATEWAY_EVIDENCE_ENABLED ? { gatewayTransferService: new GatewayTransferService(new BoundedGatewayClient({
       timeoutMs: config.SOURCE_TIMEOUT_MS, maxResponseBytes: config.SOURCE_MAX_RESPONSE_BYTES,
