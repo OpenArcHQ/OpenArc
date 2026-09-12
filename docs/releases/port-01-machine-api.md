@@ -1,5 +1,16 @@
 # PORT-01 machine credential and session API
 
+Actual-browser correction, September 12: credential list/status GETs returned
+403 because the new handler required Origin even for same-origin browser reads.
+The handler now follows the existing tenant-read boundary: missing Origin is
+accepted only with explicit Sec-Fetch-Site: same-origin. Supplied Origin must
+match exactly, and writes still require exact Origin. Four regressions cover
+both credential kinds, list/status, origin/site/mode/destination denials and
+originless-write rejection. Final component checks passed: 20 machine route
+tests, 497 total API tests, types, test types, lint and build. Actual production
+browser rerun is required after rebuilding the corrected API; earlier mocks did
+not detect this browser transport mismatch.
+
 September 12, 2026. Component-accepted, not hosted or whole-port completion.
 DeepSeek V4.1 Flash on OpenCode implemented the18 source/test files. Lead and
 bounded security/database reviews closed the reported findings.

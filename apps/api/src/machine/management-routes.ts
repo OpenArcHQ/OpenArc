@@ -307,12 +307,21 @@ function requestContext(
 function enforceFetchMetadata(
   request: FastifyRequest,
   options: MachineManagementRoutesOptions,
+  allowOriginlessSameOrigin: boolean,
 ): void {
   const origin = strictHeader(request.headers, "origin");
   const site = strictHeader(request.headers, "sec-fetch-site");
   const mode = strictHeader(request.headers, "sec-fetch-mode");
   const destination = strictHeader(request.headers, "sec-fetch-dest");
-  if (origin !== options.appOrigin) throw originRejected();
+  if (origin === options.appOrigin) {
+    // exact same-origin request
+  } else if (allowOriginlessSameOrigin && origin === undefined && site === "same-origin") {
+    // Same-origin browser GET lists/status normally omit Origin; allow
+    // originless reads ONLY with an explicit same-origin fetch site. This
+    // mirrors the accepted tenant read transport and never applies to writes.
+  } else {
+    throw originRejected();
+  }
   if (site !== undefined && site !== "same-origin") throw originRejected();
   if (mode !== undefined && mode !== "cors" && mode !== "same-origin") {
     throw originRejected();
@@ -325,6 +334,7 @@ function enforceFetchMetadata(
 function enforceBrowserOrigin(
   request: FastifyRequest,
   options: MachineManagementRoutesOptions,
+  allowOriginlessSameOrigin: boolean,
 ): void {
   enforceNoDuplicateCriticalHeaders(request);
   if (Buffer.byteLength(rawRequestUrl(request), "utf8") > MAX_REQUEST_URL_BYTES) {
@@ -336,14 +346,15 @@ function enforceBrowserOrigin(
   if (strictHeader(request.headers, "x-openarc-client") !== API_CLIENT_HEADER) {
     throw originRejected();
   }
-  enforceFetchMetadata(request, options);
+  enforceFetchMetadata(request, options, allowOriginlessSameOrigin);
 }
 
 function enforceStatusTransport(
   request: FastifyRequest,
   options: MachineManagementRoutesOptions,
 ): void {
-  enforceBrowserOrigin(request, options);
+  // Status is a read; an originless same-origin GET is permitted.
+  enforceBrowserOrigin(request, options, true);
   if (request.method !== "GET") throw methodNotAllowed();
   if (isForbiddenMachineRequestTarget(rawRequestUrl(request))) throw invalidRequest();
   const contentLength = strictHeader(request.headers, "content-length");
@@ -373,7 +384,8 @@ function enforceWriteTransport(
   request: FastifyRequest,
   options: MachineManagementRoutesOptions,
 ): void {
-  enforceBrowserOrigin(request, options);
+  // Writes always require the exact Origin header; never apply the GET fallback.
+  enforceBrowserOrigin(request, options, false);
   if (request.method !== "POST") throw methodNotAllowed();
   if (rawRequestUrl(request).includes("?")) throw invalidRequest();
   const contentType = strictHeader(request.headers, "content-type");
@@ -408,8 +420,9 @@ function enforceListTransport(
   request: FastifyRequest,
   options: MachineManagementRoutesOptions,
 ): void {
-  enforceBrowserOrigin(request, options);
   if (request.method === "GET") {
+    // List GET is a read; allow an originless same-origin browser request.
+    enforceBrowserOrigin(request, options, true);
     const contentLength = strictHeader(request.headers, "content-length");
     if (contentLength !== undefined && contentLength !== "0") throw invalidRequest();
     if (strictHeader(request.headers, "transfer-encoding") !== undefined) {

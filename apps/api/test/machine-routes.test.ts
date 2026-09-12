@@ -264,6 +264,153 @@ async function listeningPort(app: ReturnType<typeof createApp>): Promise<number>
 }
 
 describe("machine management routes", () => {
+  it("serves management list/status GETs that omit Origin with same-origin fetch site", async () => {
+    const { app } = harness();
+    const browserGet = (extra: Record<string, string>) => ({
+      "x-openarc-client": "browser-v1",
+      cookie: COOKIE,
+      "sec-fetch-site": "same-origin",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-dest": "empty",
+      ...extra,
+    });
+    const agentList = await app.inject({
+      method: "GET",
+      url: URLS.agentCredentials,
+      headers: browserGet({}),
+    });
+    expect(agentList.statusCode).toBe(200);
+    expect(agentList.json().data.kind).toBe("agent");
+    const providerList = await app.inject({
+      method: "GET",
+      url: URLS.providerCredentials,
+      headers: browserGet({}),
+    });
+    expect(providerList.statusCode).toBe(200);
+    expect(providerList.json().data.kind).toBe("provider");
+    const agentStatus = await app.inject({
+      method: "GET",
+      url: URLS.agentMutation,
+      headers: browserGet({}),
+    });
+    expect(agentStatus.statusCode).toBe(200);
+    expect(agentStatus.json().data.status).toBe("not_found");
+    const providerStatus = await app.inject({
+      method: "GET",
+      url: `${PREFIX}/${ORG}/provider-credential-mutations/${MUTATION}`,
+      headers: browserGet({}),
+    });
+    expect(providerStatus.statusCode).toBe(200);
+    expect(providerStatus.json().data.status).toBe("not_found");
+    expect(MANAGEMENT_CALLS).toEqual([
+      "list:agent",
+      "list:provider",
+      "status:agent",
+      "status:provider",
+    ]);
+  });
+
+  it("still accepts an exact Origin on management reads", async () => {
+    const { app } = harness();
+    const response = await app.inject({
+      method: "GET",
+      url: URLS.agentCredentials,
+      headers: readHeaders({ "sec-fetch-site": "same-origin" }),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(MANAGEMENT_CALLS).toEqual(["list:agent"]);
+  });
+
+  it("fails closed on management reads with a bad or absent transport", async () => {
+    const { app } = harness();
+    const originless: Record<string, string> = {
+      "x-openarc-client": "browser-v1",
+      cookie: COOKIE,
+    };
+    const cases: Array<{ label: string; url: string; headers: Record<string, string>; status: number[] }> = [
+      // Missing Origin AND missing same-origin fetch site.
+      { label: "missing both", url: URLS.agentCredentials, headers: originless, status: [403] },
+      // Missing Origin with a cross-site fetch site.
+      {
+        label: "cross-site",
+        url: URLS.agentCredentials,
+        headers: { ...originless, "sec-fetch-site": "cross-site" },
+        status: [403],
+      },
+      // Explicit literal Origin: null.
+      {
+        label: "origin null",
+        url: URLS.agentCredentials,
+        headers: { ...originless, origin: "null", "sec-fetch-site": "same-origin" },
+        status: [403],
+      },
+      // Foreign supplied Origin.
+      {
+        label: "foreign origin",
+        url: URLS.providerCredentials,
+        headers: { ...originless, origin: "https://evil.example", "sec-fetch-site": "same-origin" },
+        status: [403],
+      },
+      // Empty supplied Origin.
+      {
+        label: "empty origin",
+        url: URLS.providerCredentials,
+        headers: { ...originless, origin: "", "sec-fetch-site": "same-origin" },
+        status: [403],
+      },
+      // Bad mode even with an allowed originless same-origin request.
+      {
+        label: "bad mode",
+        url: URLS.agentMutation,
+        headers: { ...originless, "sec-fetch-site": "same-origin", "sec-fetch-mode": "navigate" },
+        status: [403],
+      },
+      // Bad destination even with an allowed originless same-origin request.
+      {
+        label: "bad dest",
+        url: URLS.agentMutation,
+        headers: { ...originless, "sec-fetch-site": "same-origin", "sec-fetch-dest": "document" },
+        status: [403],
+      },
+    ];
+    for (const entry of cases) {
+      const response = await app.inject({ method: "GET", url: entry.url, headers: entry.headers });
+      expect(entry.status, entry.label).toContain(response.statusCode);
+    }
+    expect(MANAGEMENT_CALLS).toEqual([]);
+  });
+
+  it("keeps issuance and revocation POSTs strict when Origin is omitted despite same-origin site", async () => {
+    const { app } = harness();
+    // Exact browser write headers MINUS Origin: the read fallback must not leak
+    // into writes even with an explicit same-origin fetch site.
+    const originlessWrite = {
+      "x-openarc-client": "browser-v1",
+      cookie: COOKIE,
+      "content-type": "application/json",
+      "sec-fetch-site": "same-origin",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-dest": "empty",
+      "x-openarc-csrf": CSRF,
+      "idempotency-key": IDEMPOTENCY,
+    };
+    const issue = await app.inject({
+      method: "POST",
+      url: URLS.agentCredentials,
+      headers: originlessWrite,
+      payload: { mutationId: MUTATION, expiresAt: SESSION_EXPIRES },
+    });
+    expect(issue.statusCode).toBe(403);
+    const revoke = await app.inject({
+      method: "POST",
+      url: URLS.agentRevoke,
+      headers: originlessWrite,
+      payload: { mutationId: MUTATION },
+    });
+    expect(revoke.statusCode).toBe(403);
+    expect(MANAGEMENT_CALLS).toEqual([]);
+  });
+
   it("serves list GET and issue POST on the shared path with a strict v2 envelope", async () => {
     const { app } = harness();
     const list = await app.inject({ method: "GET", url: URLS.agentCredentials, headers: readHeaders() });

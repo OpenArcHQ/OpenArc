@@ -1,5 +1,15 @@
 # PORT-01 public capability API
 
+Actual production image verification at source 972f52f: API and nginx return
+HTTP 200 with five built-disabled families, all 41 routes and the exact build
+SHA, without Set-Cookie or CORS. The ordinary Node fetch compatibility case
+passes. Proxy checks pass for wrong method (405), query and literal wire bare
+query (400), cookie and foreign Origin (403), and stripped Railway forwarding
+headers (200). A normal URL-based fetch normalizes an empty query away, so the
+bare-query check used an explicit Node HTTP request target. The API-off image
+returns 404; both nginx syntax checks pass. These are disposable network-isolated
+production images, not hosted staging. No auth database is used in this probe.
+
 Component accepted September 12, 2026. OpenCode Go
 `opencode-go/deepseek-v4.1-flash` authored the three-file API packet. Final
 verification passed: 19 focused tests, 492 API unit tests, source/test types,
