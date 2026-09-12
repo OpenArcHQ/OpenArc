@@ -1,6 +1,8 @@
 # Commerce transition status
 
-Updated September 11, 2026. Status: foundation in progress; not a commerce launch.
+Updated September 12, 2026. Status: PORT00/PORT01 accepted; PORT02 implemented in
+integrated source and awaiting final production-browser/release validation;
+PORT03–PORT09 not implemented. Not a commerce launch and not deployed.
 
 ## Authoritative target
 
@@ -26,6 +28,32 @@ authority, and records the accepted passkey path for non-payment accounts.
 The owner accepted minimal credential/account/security records and a separate
 account-free guest path. This is not an anonymous or zero-retention account.
 These are build requirements, not deployed authentication or payment features.
+
+## Current implementation
+
+PORT00 and PORT01 are accepted. PORT02 is implemented in the integrated source
+and undergoing final production-browser and release validation; PORT03–PORT09
+are not implemented. This section describes integrated source, not deployment:
+no port, release, mainnet or payment completion is claimed, and the marketplace
+is not live.
+
+The foundation now includes account, passkey and wallet sign-in; tenant role and
+read/write controls; agent/provider credentials with scoped machine sessions;
+durable idempotency, audit and outbox records; worker reliability; and truthfully
+bounded capability manifests. The marketplace source includes immutable listing
+versions, owner/provider-admin/developer draft and version management,
+independent origin review, publish/pause/retire, an allowlisted public catalog
+with provider profiles, search and pagination, and a protected editor with
+history. Public `/market`, `/market/:listingId` and `/providers/:providerId`
+routes require flags; the `/docs`, `/status` and `/legal` shells exist. Supplied
+`/design` and videos/legacy workspace are preserved.
+
+Hosted account enrollment and new marketplace features remain disabled; purchases
+are unavailable. Listing review by an independent moderator is independent
+origin-metadata moderation, not a security endorsement or execution authority;
+provider self-review is not permitted. Reference-sum artifacts are contract or
+synthetic fixtures only, not a working service, payment or retrieval path. Legacy
+investigation staging remains unchanged.
 
 ## Accepted first contract slice
 

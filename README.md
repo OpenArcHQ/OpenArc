@@ -1,120 +1,159 @@
-# OpenArc marketing and technical product package
+<div align="center">
+  <img src="assets/openarc-logo.jpeg" alt="OpenArc" width="180" />
+  <h1>OpenArc</h1>
+  <p><strong>Understand the evidence behind agent activity.</strong></p>
+  <p>A local-first investigation workspace for autonomous finance on Arc Testnet.</p>
+  <p>
+    <a href="#capabilities">Capabilities</a> ·
+    <a href="#run-locally">Quick start</a> ·
+    <a href="#architecture">Architecture</a> ·
+    <a href="#documentation">Documentation</a>
+  </p>
+</div>
 
-Status: **legacy investigation app on controlled staging; commerce port in progress**
-Prepared: **2026-08-15; Arc and Gateway sources reviewed 2026-09-06**
+---
 
-OpenArc is the proposed private intelligence, policy, and investigation layer for
-autonomous finance on Arc. It is designed to bring an agent's permissions,
-requests, payments, service receipts, and settlement evidence into one coherent
-view without taking custody or pretending that an onchain transfer proves why an
-agent acted.
+OpenArc brings agent reports, owner-supplied policies, payment metadata and
+onchain observations into an inspectable evidence trail. Distinguish what was
+reported, what was observed and what remains unresolved—without treating a
+successful transfer as proof of authorization or service delivery.
 
-Nothing in this package is a claim that OpenArc is publicly launched, endorsed by Circle or
-Arc, available on Arc mainnet, or able to enforce another wallet's policies.
+**Current status:** the legacy investigation app remains on controlled Testnet
+staging. PORT00 and PORT01 are accepted; PORT02 is implemented in the integrated
+source and undergoing final production-browser and release validation; PORT03–PORT09
+are not implemented. Hosted account enrollment and new marketplace features
+remain disabled, and purchases are unavailable. OpenArc does not support mainnet.
+See the [commerce transition and build order](docs/engineering/commerce-transition.md).
 
-OpenArc remains pinned to Arc Testnet. A launch-date expectation does not enable
-mainnet: official endpoints, contract addresses, capability parity and a separately
-reviewed mainnet release are required first.
+## Capabilities
 
-![OpenArc concept logo](assets/openarc-logo.jpeg)
+| Capability | Purpose |
+| --- | --- |
+| Encrypted workspace | Keep records in a passphrase-protected browser vault, with explicit backup, recovery and deletion. |
+| Agent reports and policies | Import structured reports and compare supplied activity against local monitoring rules. |
+| Testnet observations | Request bounded Arc account, transaction, ERC-8004 registry and fixed-reference ERC-8183 job observations with explicit consent. |
+| Payment evidence | Compare imported x402 metadata with separately requested Gateway status and Arc batch evidence. |
+| Investigations | Search records, review exceptions and inspect explicitly linked evidence in graph and list views. |
+| Redacted exports | Preview bounded investigation reports with private fields omitted by default. |
+| Minimal-record account access | Optional passkeys or wallet login, server-side session revocation and recovery codes; no required name or email. Sign-in is authentication only and is not permission to pay. |
+| Marketplace source preview | Public allowlisted catalog, provider profiles, search and pagination, plus draft/version management and independent origin review. Purchases remain unavailable and flags are required. |
+| Tenant and agent scope | Separate public, organization and provider-minimal tenant scopes; role-based read/write and scoped machine sessions for agent/provider credentials. |
+| Supplied public design | Preview the supplied visual system, local video, technical docs and FAQ at `/design`, without replacing the existing evidence workspace. |
 
-## Documents
+Features default off. Local imports and investigations need no live source;
+connector-enabled builds require explicit approval before each source lookup.
+See the [feature and authority matrix](docs/operations/public-testnet-runbook.md#feature-flags-and-authority-matrix)
+for prerequisites and limits.
 
-- [`output/pdf/OpenArc-Marketing-Brief.pdf`](output/pdf/OpenArc-Marketing-Brief.pdf) — polished, visually verified 45-page marketing and technical distribution brief.
-- [`docs/engineering/openarc-engineering-source-of-truth.md`](docs/engineering/openarc-engineering-source-of-truth.md) — controlling engineering scope, shared contracts, mandatory implementation order, release mechanics, and definitions of ready/done.
-- [`docs/engineering/openarc-backend-architecture.md`](docs/engineering/openarc-backend-architecture.md) — normative API, adapter, privacy, rate/budget, observability, testing, and deployment specification.
-- [`docs/engineering/openarc-frontend-architecture.md`](docs/engineering/openarc-frontend-architecture.md) — normative Vault, UI state, consent flow, evidence visualization, accessibility, testing, and deployment specification.
-- [`docs/openarc-marketing-sourcebook.md`](docs/openarc-marketing-sourcebook.md) — canonical Testnet facts, proposed architecture, positioning, messages, claims, campaign copy, FAQ, and content system.
-- [`docs/openarc-technical-spec.md`](docs/openarc-technical-spec.md) — detailed Arc Testnet parameters, integration surfaces, schemas, data flow, privacy boundary, failure states, verification plan, and mainnet migration gate.
-- [`docs/openarc-one-pager.md`](docs/openarc-one-pager.md) — compact team, partner, and early pitch narrative.
-- [`docs/openarc-product-blueprint.md`](docs/openarc-product-blueprint.md) — proposed product boundary, evidence model, architecture, MVP, and verification plan.
-- [`docs/openarc-brand-system.md`](docs/openarc-brand-system.md) — logo interpretation, palette, typography, interface language, graphics, and motion guidance.
-- [`docs/openarc-launch-plan.md`](docs/openarc-launch-plan.md) — testnet launch stages, operational gates, external approvals, and incident language.
-- [`docs/openarc-roadmap.md`](docs/openarc-roadmap.md) — staged development from evidence explorer to optional machine-readable services and mainnet support.
+## A typical investigation
 
-## Current implementation
+1. **Collect:** import a report or add evidence to an unlocked local workspace.
+2. **Observe:** optionally approve a specific Testnet lookup; saved observations
+   retain their source and time context.
+3. **Compare:** inspect explicit relationships, policy findings, conflicts and
+   missing evidence. Incomplete records remain incomplete.
+4. **Share deliberately:** review a redacted export before downloading it.
 
-The supplied commerce specification is now the target. Shared contracts, durable
-account/session/recovery foundations, passkey/wallet login and the supplied public
-design are implemented. Organization authorization, marketplace, financial
-controls and the protected frontend transition remain in progress. Account access
-defaults off. Milestone results below describe the legacy investigation product,
-not supplied S-M00–S-M09.
-See [commerce transition and build order](docs/engineering/commerce-transition.md).
+## Trust boundaries
 
-Milestones 00–09 are complete: foundation, evidence engine, encrypted local
-workspace, consent-first API boundary, Arc account/transaction observations,
-ERC-8004 registry evidence, fixed-reference ERC-8183 job evidence, and private
-x402/Gateway metadata comparison, local agent-report/policy comparison, and local
-investigation operations.
-Gateway controls are behind the default-off
-`GATEWAY_EVIDENCE_ENABLED` / `VITE_GATEWAY_EVIDENCE_ENABLED` flags.
-The completed release gates and controlled live Testnet evidence are recorded in
-[`docs/releases/07-x402-gateway-evidence.md`](docs/releases/07-x402-gateway-evidence.md).
-This is not a public-release or mainnet readiness claim.
+- **No financial execution yet.** No wallet-key custody, transaction signing,
+  payment broadcasting or enforcement of another agent's policy. Optional wallet
+  login requests an authentication signature only; it cannot authorize payment.
+- **Evidence is not endorsement.** Imported reports are unauthenticated claims.
+  Registry entries do not establish trust; matching batch inclusion does not
+  establish individual settlement or resource fulfillment.
+- **Local storage has limits.** Records are encrypted in browser-local storage.
+  Losing the passphrase, clearing storage or changing origin can prevent access.
+  Retain an encrypted backup and its passphrase separately.
+- **Lookups cross a privacy boundary.** Approved inputs leave the browser through
+  the API. The API does not persist workspace or evidence bodies; this is not a
+  promise that hosting infrastructure retains no metadata.
+- **Minimal records are not zero retention.** Account access retains credential
+  public keys/IDs, pseudonymous bindings and necessary security records. Passkey
+  use keeps minimal records and is not a zero-retention path. Guest access
+  remains separate; no email or personal-name field is required.
+- **Metadata review is not authority.** Listing review by an independent
+  moderator is independent origin-metadata moderation, not a security
+  endorsement or execution authority; provider self-review is not permitted.
+  Purchases are unavailable; reference-sum artifacts are contract or synthetic
+  fixtures, not a working service, payment or retrieval path.
+- **Testnet only.** No mainnet compatibility, independent security certification,
+  or Circle/Arc endorsement is claimed. External network and protocol costs are
+  not represented as free.
 
-[M07 preflight](docs/engineering/m07-x402-preflight.md) records the refreshed
-Gateway contract and external live-payment proof boundary. M08 adds bounded local
-agent reports and monitoring-policy comparison behind the default-off
-`VITE_GENERIC_AGENT_IMPORT_ENABLED` flag; it introduces no execution path.
-Its completed scope and verification evidence are recorded in
-[`docs/releases/08-local-agent-connector.md`](docs/releases/08-local-agent-connector.md).
+## Architecture
 
-M09 adds local search, exception views, graph/list evidence inspection, saved source
-history and explicit redacted JSON reports. Its active contract and verification
-ledger are in [`docs/releases/09-investigation-operations.md`](docs/releases/09-investigation-operations.md).
-M09 is complete on controlled staging; no new API or execution path is added.
-Its final gate includes 524 unit/integration tests, 112 development and 44 production
-browser checks, ten image scans, historical-reader compatibility and 32 live staging
-checks. Public Testnet hardening and external launch decisions remain M10; this is
-not public-launch or mainnet approval.
+| Component | Responsibility |
+| --- | --- |
+| `apps/web` | React/TypeScript UI, WebCrypto vault, IndexedDB, consent and investigations. |
+| `apps/api` | Fastify/TypeScript API, fixed Testnet destinations, validation and bounded reads. |
+| `packages/shared` | Versioned schemas, reconciliation, policy evaluation and fail-closed network configuration. |
+| `packages/db` | PostgreSQL migrations, restricted runtime roles and durable account/session/recovery state. |
+| Redis | Shared abuse and source-budget counters; not a server-side workspace vault. |
+| Release tooling | Chromium/WebKit journeys, production-image tests, dependency/license checks, image scans and SBOMs. |
 
-- `packages/shared` owns the fail-closed Arc Testnet registry and primitive
-  schemas, versioned evidence records, append-only action states, deterministic
-  reconciliation, and exact local policy evaluation.
-- `apps/api` uses bounded, fixed public Testnet reads only when the corresponding
-  connector is enabled and a browser request crosses the consent/proxy/rate-limit
-  boundary. It does not persist workspace or evidence bodies.
-- `apps/web` exposes six synthetic complete, missing, conflicting, expired,
-  failed, and refunded cases as an accessible chronological list plus an exact
-  graph summary. The encrypted workspace uses browser-local WebCrypto and
-  IndexedDB. Source-enabled builds require explicit consent per API lookup;
-  approval is encrypted before contact. These legacy flows make no wallet-signing
-  or analytics calls. The separate optional account route can request a wallet
-  login signature, never a transaction or payment authorization.
-- `.github/workflows/release-gates.yml`, production Dockerfiles, Chromium and
-  WebKit journeys, license/audit checks, image scans, and SBOM generation form
-  the initial verification boundary.
+Graph views project the same supplied evidence as the accessible lists. They do
+not infer relationships from matching wallet addresses or transaction hashes.
 
-With Node 22 and Corepack available:
+## Run locally
+
+Prerequisites: **Node.js 22** and **pnpm 11.5.1**. From the repository root:
 
 ```bash
-corepack enable
 pnpm install --frozen-lockfile
-pnpm release:gate
+pnpm --filter @openarc/shared build
+VITE_ENCRYPTED_WORKSPACE_ENABLED=true VITE_GENERIC_AGENT_IMPORT_ENABLED=true VITE_INVESTIGATIONS_ENABLED=true pnpm --filter @openarc/web dev
 ```
 
-The foundation evidence record is in
-[`docs/releases/00-foundation.md`](docs/releases/00-foundation.md). The Milestone
-01 boundary and completed exit evidence are in
-[`docs/releases/01-evidence-engine.md`](docs/releases/01-evidence-engine.md). The
-completed local-only M02 boundary is in
-[`docs/releases/02-encrypted-workspace.md`](docs/releases/02-encrypted-workspace.md).
-The completed M03 boundary and ordered work are in
-[`docs/releases/03-api-privacy-boundary.md`](docs/releases/03-api-privacy-boundary.md).
+Open `http://127.0.0.1:5173`. This enables local workspace, report imports and
+investigations without live API sources. Use synthetic data for testing.
+The inline environment syntax above is for POSIX shells.
 
-## Logo
+Source-enabled deployments need additional API, Redis, origin and proxy
+configuration. Follow the [operations runbook](docs/operations/public-testnet-runbook.md);
+never place real secrets in source control or `VITE_*` variables.
 
-The supplied concept logo is preserved at [`assets/openarc-logo.jpeg`](assets/openarc-logo.jpeg).
-It is a raster concept with deliberate grain. Obtain a vector master, trademark
-search, and small-size optical variants before public launch.
+## Verification
 
-## Canonical short description
+The M10 application candidate passed **528 unit/integration tests**, **112
+development browser checks**, **44 production browser checks** and **ten image
+scans**, without retries or flaky passes. Historical-reader and recovery drills
+also passed. These are candidate-specific results, not a security audit or
+public-launch approval.
 
-> OpenArc brings an agent's permissions, actions, payments, receipts, and
-> settlements into one evidence trail—so people can understand what was allowed,
-> what was attempted, and what actually happened.
+With Docker available, the isolated Node 22 gate provisions its own test Redis
+and browser dependencies:
 
-## Working tagline
+```bash
+docker build -f scripts/Dockerfile.node22-gate -t openarc-local-gate .
+```
 
-> **See the full arc of every agent action.**
+This runs `pnpm release:gate`, also used by the manual **Public source checks**
+workflow. The pre-publication production-image, SBOM and historical-reader gates
+are separate: see the [public verification boundary](docs/public-source-publication.md).
+Exact earlier candidates and limitations are recorded in the
+[M09 release ledger](docs/releases/09-investigation-operations.md) and
+[M10 hardening ledger](docs/releases/10-public-testnet-hardening.md).
+
+## Documentation
+
+| Start here | Contents |
+| --- | --- |
+| [Engineering source of truth](docs/engineering/openarc-engineering-source-of-truth.md) | Scope, implementation order, contracts and release criteria. |
+| [Backend architecture](docs/engineering/openarc-backend-architecture.md) | API boundaries, adapters, budgets, privacy and observability. |
+| [Frontend architecture](docs/engineering/openarc-frontend-architecture.md) | Vault lifecycle, consent, UI states, accessibility and visualization. |
+| [Technical specification](docs/openarc-technical-spec.md) | Testnet parameters, evidence models, source limitations and migration gates. |
+| [Operations runbook](docs/operations/public-testnet-runbook.md) | Flags, source shutdown, recovery, origin migration and incidents. |
+| [Product blueprint](docs/openarc-product-blueprint.md) | Product rationale and investigation workflows. |
+| [Roadmap](docs/openarc-roadmap.md) | Planned capabilities; not a claim that future features are implemented. |
+
+## Project status and contact
+
+The project-facing organization name is **OpenArc**. There is no permanent domain
+yet; the existing Railway address remains a temporary controlled staging origin.
+Public support and security contacts have not been designated. Do not submit
+private records, credentials or vulnerability details in public issues.
+
+The repository is currently marked **UNLICENSED**; no open-source license has been
+granted. Public source availability is separate from licensing and
+product-launch readiness.
