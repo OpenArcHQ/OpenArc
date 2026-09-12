@@ -17,7 +17,13 @@ import {
   type TenantViewControllerState,
   initialTenantState,
 } from "./tenant-controller.js";
-import { tenantReadsEnabled } from "./availability.js";
+import { tenantMutationEnabled, tenantReadsEnabled } from "./availability.js";
+import { TenantMutationPanel } from "./TenantMutationPanel.js";
+import {
+  TenantWriteController,
+  initialTenantMutationState,
+  type TenantMutationState,
+} from "./tenant-write-controller.js";
 
 import tenantCssUrl from "./tenant.css?url";
 
@@ -61,7 +67,17 @@ function isKnownPath(path: AppPath | "/app" | "unknown"): boolean {
 
 export default function TenantApp() {
   const enabled = useMemo(() => tenantReadsEnabled() && accountAccessEnabled(), []);
+  const writesEnabled = useMemo(
+    () =>
+      tenantMutationEnabled(
+        import.meta.env.VITE_TENANT_WRITES_ENABLED,
+        import.meta.env.VITE_TENANT_READS_ENABLED,
+        import.meta.env.VITE_ACCOUNT_ACCESS_ENABLED,
+      ),
+    [],
+  );
   const [state, setState] = useState<TenantViewControllerState>(initialTenantState);
+  const [mutationState, setMutationState] = useState<TenantMutationState>(initialTenantMutationState);
   const [path, setPath] = useState<AppPath | "/app" | "unknown">(currentPath);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -69,6 +85,7 @@ export default function TenantApp() {
   const drawerCloseRef = useRef<HTMLButtonElement | null>(null);
   const restoreFocusRef = useRef(false);
   const controllerRef = useRef<TenantController | null>(null);
+  const writeControllerRef = useRef<TenantWriteController | null>(null);
   const accountRef = useRef<AccountFlowController | null>(null);
   const known = isKnownPath(path);
 
@@ -90,13 +107,29 @@ export default function TenantApp() {
     const controller = new TenantController({ account, onState: setState });
     accountRef.current = account;
     controllerRef.current = controller;
+    // The write controller is constructed ONLY when the write flag and all its
+    // prerequisites are enabled. With writes off, no write client, controller
+    // or form is ever created, so the read-only surface is byte-identical to
+    // the accepted build and makes zero ADDITIONAL auth/write calls.
+    const writeController = writesEnabled
+      ? new TenantWriteController({
+          account,
+          reads: controller,
+          onState: setMutationState,
+        })
+      : null;
+    writeControllerRef.current = writeController;
     const onVisibility = () => {
       if (document.visibilityState === "hidden") {
         setDrawerOpen(false);
         controller.onHidden();
+        writeController?.clear();
       }
     };
-    const onPageHide = () => controller.onHidden();
+    const onPageHide = () => {
+      controller.onHidden();
+      writeController?.clear();
+    };
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("pagehide", onPageHide);
     void controller.initialize();
@@ -104,10 +137,12 @@ export default function TenantApp() {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("pagehide", onPageHide);
       controller.dispose();
+      writeController?.dispose();
       if (controllerRef.current === controller) controllerRef.current = null;
+      if (writeControllerRef.current === writeController) writeControllerRef.current = null;
       if (accountRef.current === account) accountRef.current = null;
     };
-  }, [enabled, known]);
+  }, [enabled, known, writesEnabled]);
 
   useEffect(() => {
     if (!drawerOpen) return;
@@ -162,6 +197,8 @@ export default function TenantApp() {
   );
 
   const navigate = useCallback((next: AppPath) => {
+    writeControllerRef.current?.clear();
+    setMutationState(initialTenantMutationState());
     setDrawerOpen(false);
     window.history.pushState(null, "", next);
     setPath(next);
@@ -169,6 +206,8 @@ export default function TenantApp() {
 
   const selectOrganization = useCallback(
     (organizationId: string) => {
+      writeControllerRef.current?.clear();
+      setMutationState(initialTenantMutationState());
       const controller = controllerRef.current;
       if (controller === null) return;
       void controller.selectOrganization(organizationId as never);
@@ -268,6 +307,8 @@ export default function TenantApp() {
             onSelect={selectOrganization}
             onNavigate={navigate}
             controller={controllerRef.current}
+            writeController={writeControllerRef.current}
+            mutationState={mutationState}
           />
         </main>
 
@@ -401,6 +442,8 @@ interface WorkspaceProps {
   onSelect: (organizationId: string) => void;
   onNavigate: (path: AppPath) => void;
   controller: TenantController | null;
+  writeController: TenantWriteController | null;
+  mutationState: TenantMutationState;
 }
 
 function Workspace(props: WorkspaceProps) {
@@ -481,6 +524,14 @@ function Workspace(props: WorkspaceProps) {
   }
 
   if (state.organizations.items.length === 0 && state.organizations.nextCursor === null) {
+    // First-organization bootstrap: a signed-in, writes-enabled user with zero
+    // organizations gets the create-organization action. A known-recovery
+    // session never sees the form (the server alone decides proof freshness),
+    // and the failed reads/signed-out/flag-off paths returned above.
+    const bootstrapAllowed =
+      props.writeController !== null &&
+      principal.method !== "recovery" &&
+      principal.status === "signed-in";
     return (
       <section aria-labelledby="tenant-noorg-title">
         <p className="tenant-eyebrow">ORGANIZATIONS</p>
@@ -489,6 +540,14 @@ function Workspace(props: WorkspaceProps) {
           This account is not a member of any organization yet. If that seems wrong, an owner
           must invite this account first.
         </p>
+        {bootstrapAllowed ? (
+          <TenantMutationPanel
+            controller={props.writeController}
+            role={props.currentOrganization?.role ?? "owner"}
+            organizationId={props.selectedId ?? ""}
+            mode="bootstrap"
+          />
+        ) : null}
       </section>
     );
   }
@@ -505,11 +564,34 @@ function Workspace(props: WorkspaceProps) {
 
   switch (props.path) {
     case "/app/agents":
-      return <AgentPanel state={state} role={props.currentOrganization.role} controller={props.controller} />;
+      return (
+        <AgentPanel
+          state={state}
+          role={props.currentOrganization.role}
+          controller={props.controller}
+          writeController={props.writeController}
+          organizationId={props.selectedId}
+        />
+      );
     case "/app/provider":
-      return <ProviderPanel state={state} role={props.currentOrganization.role} controller={props.controller} />;
+      return (
+        <ProviderPanel
+          state={state}
+          role={props.currentOrganization.role}
+          controller={props.controller}
+          writeController={props.writeController}
+          organizationId={props.selectedId}
+        />
+      );
     default:
-      return <Overview state={state} currentOrganization={props.currentOrganization} />;
+      return (
+        <Overview
+          state={state}
+          currentOrganization={props.currentOrganization}
+          writeController={props.writeController}
+          organizationId={props.selectedId}
+        />
+      );
   }
 }
 
@@ -552,6 +634,8 @@ function OrganizationList(props: {
 function Overview(props: {
   state: TenantViewControllerState;
   currentOrganization: { displayName: string; role: CommerceHumanRole; status: "active" | "suspended" };
+  writeController: TenantWriteController | null;
+  organizationId: string;
 }) {
   const { currentOrganization, state } = props;
   return (
@@ -572,6 +656,13 @@ function Overview(props: {
         <dd className="tenant-mono">{state.selectedOrganizationId}</dd>
       </dl>
       <p className="tenant-lede">Choose Agents or Provider to view this organization.</p>
+      {currentOrganization.role === "owner" ? (
+        <TenantMutationPanel
+          controller={props.writeController}
+          role={currentOrganization.role}
+          organizationId={props.organizationId}
+        />
+      ) : null}
     </section>
   );
 }
@@ -580,6 +671,8 @@ function AgentPanel(props: {
   state: TenantViewControllerState;
   role: CommerceHumanRole;
   controller: TenantController | null;
+  writeController: TenantWriteController | null;
+  organizationId: string;
 }) {
   if (!canReadAgents(props.role)) return <RoleNotAllowed role={props.role} action="agents" />;
   const { agents } = props.state;
@@ -615,6 +708,13 @@ function AgentPanel(props: {
         onNext={() => void props.controller?.loadNextAgents()}
         onFirst={() => void props.controller?.loadAgents()}
       />
+      {props.role === "owner" || props.role === "operator" ? (
+        <TenantMutationPanel
+          controller={props.writeController}
+          role={props.role}
+          organizationId={props.organizationId}
+        />
+      ) : null}
     </section>
   );
 }
@@ -623,6 +723,8 @@ function ProviderPanel(props: {
   state: TenantViewControllerState;
   role: CommerceHumanRole;
   controller: TenantController | null;
+  writeController: TenantWriteController | null;
+  organizationId: string;
 }) {
   if (!canReadProviders(props.role)) return <RoleNotAllowed role={props.role} action="providers" />;
   const { providers } = props.state;
@@ -660,6 +762,13 @@ function ProviderPanel(props: {
         onNext={() => void props.controller?.loadNextProviders()}
         onFirst={() => void props.controller?.loadProviders()}
       />
+      {props.role === "owner" ? (
+        <TenantMutationPanel
+          controller={props.writeController}
+          role={props.role}
+          organizationId={props.organizationId}
+        />
+      ) : null}
     </section>
   );
 }
