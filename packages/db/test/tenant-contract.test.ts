@@ -17,7 +17,11 @@ function tenantSql(): string {
 describe('tenant migration manifest', () => {
   it('appends 0002 without modifying 0001', () => {
     const migrations = loadMigrations();
-    expect(migrations.map((migration) => migration.id)).toEqual(['0001_auth', '0002_tenants']);
+    expect(migrations.map((migration) => migration.id)).toEqual([
+      '0001_auth',
+      '0002_tenants',
+      '0003_durability',
+    ]);
     const auth = migrations[0];
     expect(auth?.sql).toContain('CREATE TABLE openarc_auth.accounts');
     expect(auth?.sql).not.toContain('openarc_tenant');

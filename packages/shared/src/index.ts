@@ -20,3 +20,4 @@ export * from "./investigation.js";
 export * from "./commerce/account.js";
 export * from "./commerce/api.js";
 export * from "./commerce/identity.js";
+export * from "./commerce/tenant.js";
