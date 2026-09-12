@@ -28,3 +28,4 @@ export * from "./commerce/listing.js";
 export * from "./commerce/market-lifecycle.js";
 export * from "./commerce/market.js";
 export * from "./commerce/market-capabilities.js";
+export * from "./commerce/control-policy.js";
