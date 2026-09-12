@@ -1,6 +1,7 @@
 import {
   API_ERRORS, API_MAX_REQUEST_BYTES, API_MAX_RESPONSE_BYTES, API_SCHEMA_VERSION,
   AGENT_REGISTRY_EVIDENCE_PATH, ARC_ERC8004,
+  COMMERCE_CAPABILITIES_PATH,
   ARC_ACCOUNT_SNAPSHOT_PATH, ARC_TESTNET, ARC_TRANSACTION_EVIDENCE_PATH,
   ArcAccountSnapshotEnvelopeSchema, ArcAccountSnapshotRequestSchema,
   ArcTransactionEvidenceEnvelopeSchema, ArcTransactionEvidenceRequestSchema,
@@ -30,6 +31,11 @@ import { registerTenantRoutes, TENANT_ROUTE_PREFIX } from "./tenant/routes.js";
 import type { TenantReadService } from "./tenant/service.js";
 import { registerTenantWriteRoutes } from "./tenant/write-routes.js";
 import type { TenantWriteService } from "./tenant/write-service.js";
+import { registerMachineManagementRoutes } from "./machine/management-routes.js";
+import { registerMachineSessionRoutes, isMachineSessionFamilyPath } from "./machine/session-routes.js";
+import type { MachineManagementService } from "./machine/management-service.js";
+import type { MachineSessionService } from "./machine/session-service.js";
+import { registerCommerceCapabilities } from "./commerce/capabilities.js";
 import { ApiBoundaryError, apiErrorEnvelope, normalizeApiError } from "./http/errors.js";
 import { verifyBrowserOrigin, verifyPreflight } from "./http/origin.js";
 import { registerSourceRoute } from "./http/source-route.js";
@@ -64,6 +70,9 @@ export interface CreateAppOptions {
   tenantWriteService?: TenantWriteService;
   tenantReady?: () => Promise<boolean>;
   tenantMaxResponseBytes?: number;
+  machineManagementService?: MachineManagementService;
+  machineSessionService?: MachineSessionService;
+  machineReady?: () => Promise<boolean>;
 }
 
 const disabledPaths = [
@@ -81,14 +90,39 @@ function isTenantFamilyPath(path: string): boolean {
   );
 }
 
+/**
+ * The exact machine management family shares the tenant prefix and is matched
+ * BEFORE the broader tenant family so its routes are classified and mapped as
+ * machine, not tenant. Session routes live under `/v1/agent` and `/v1/provider`.
+ */
+function isMachineManagementPath(path: string): boolean {
+  if (!path.startsWith(`${TENANT_ROUTE_PREFIX}/`)) return false;
+  return (
+    path.includes("/agent-credentials/") ||
+    path.includes("/provider-credentials/") ||
+    path.includes("/agent-credential-mutations/") ||
+    path.includes("/provider-credential-mutations/") ||
+    /\/agents\/[^/]+\/credentials(?:\/|$)/u.test(path) ||
+    /\/providers\/[^/]+\/credentials(?:\/|$)/u.test(path)
+  );
+}
+
+function isMachinePath(path: string): boolean {
+  return isMachineManagementPath(path) || isMachineSessionFamilyPath(path);
+}
+
 function routeClass(url: string): RouteClass {
   const path = url.split("?", 1)[0] ?? url;
   if (path === "/healthz") return "health";
   if (path === "/readyz") return "readiness";
   if (path === "/metrics") return "metrics";
   if ((AUTH_ROUTE_PATHS as readonly string[]).includes(path)) return "auth";
+  // Machine routes are labelled with the EXISTING bounded `auth` class; no new
+  // route class or raw path is introduced.
+  if (isMachinePath(path)) return "auth";
   if (isTenantFamilyPath(path)) return "tenant";
   if (path === CAPABILITIES_PATH) return "capabilities";
+  if (path === COMMERCE_CAPABILITIES_PATH) return "capabilities";
   if (path === ARC_ACCOUNT_SNAPSHOT_PATH) return "arc_account";
   if (path === ARC_TRANSACTION_EVIDENCE_PATH) return "arc_transaction";
   if (path === AGENT_REGISTRY_EVIDENCE_PATH) return "agent_registry";
@@ -101,7 +135,8 @@ function routeClass(url: string): RouteClass {
 export function createApp({ config, logger = config.NODE_ENV !== "test", logSink, metrics = new AggregateMetrics(),
   sourceBudget, arcAccountService, arcTransactionService, agentRegistryService, jobService, gatewayTransferService,
   authService, authReady, tenantReadService, tenantReady,
-  tenantWriteService, tenantMaxResponseBytes }: CreateAppOptions): FastifyInstance {
+  tenantWriteService, tenantMaxResponseBytes,
+  machineManagementService, machineSessionService, machineReady }: CreateAppOptions): FastifyInstance {
   // Framework request/error logging is disabled, including parser failures.
   // `frameworkErrors` receives errors raised before the normal request
   // lifecycle (notably `FST_ERR_BAD_URL` from the router) which otherwise
@@ -161,7 +196,28 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
       typeof cause === "object" && cause !== null && "code" in cause
         ? (cause as { code?: unknown }).code
         : null;
-    const v2Surface = rawPath.startsWith("/v2/auth/") || isTenantFamilyPath(rawPath);
+    const machineSurface = isMachinePath(rawPath);
+    const commerceCapabilitySurface = rawPath === COMMERCE_CAPABILITIES_PATH;
+    const v2Surface =
+      rawPath.startsWith("/v2/auth/") ||
+      isTenantFamilyPath(rawPath) ||
+      commerceCapabilitySurface ||
+      machineSurface;
+    if (
+      machineSurface &&
+      cause instanceof ApiBoundaryError &&
+      cause.code === "NOT_FOUND"
+    ) {
+      // Disabled management and unsupported machine-family paths stay on the
+      // bounded machine surface: a fixed v2 404 envelope with no raw URL echo.
+      // This is narrower than the tenant family and never changes legacy
+      // behavior for non-machine paths.
+      const mapped = new AuthApiError("FEATURE_DISABLED", 404, "NOT_FOUND");
+      failures.set(request, mapped.metricsCode);
+      return reply
+        .code(mapped.status)
+        .send(authErrorEnvelope(mapped, request.id, config.COMMIT_SHA));
+    }
     if (v2Surface && !(cause instanceof ApiBoundaryError && cause.code === "NOT_FOUND")) {
       // Parser, body-limit, media, unexpected and response-schema failures on
       // the account and protected tenant surfaces must still return a strict
@@ -200,6 +256,9 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
     sendError(request, reply, cause);
 
   const build = { service: "openarc-api", version: "0.0.0", commitSha: config.COMMIT_SHA } as const;
+  const machineEnabled =
+    config.MACHINE_CREDENTIAL_MANAGEMENT_ENABLED ||
+    config.MACHINE_SESSION_EXCHANGE_ENABLED;
   app.get("/healthz", async () => ({ status: "ok" as const, ...build }));
   app.get("/readyz", async (_request, reply) => {
     if (config.AUTH_ENABLED) {
@@ -219,18 +278,29 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
             ...(config.AUTH_ENABLED ? { authDatabase: "up" as const } : {}), tenantDatabase: "down" }, ...build });
       }
     }
+    if (machineEnabled) {
+      const machineReadyResult = machineReady ? await machineReady().catch(() => false) : false;
+      if (!machineReadyResult) {
+        return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
+          checks: { configuration: "up", sourceRoutes: config.ARC_OBSERVATION_ENABLED ? "enabled" : "disabled",
+            redis: config.ARC_OBSERVATION_ENABLED ? "not_checked" : "not_required",
+            machineDatabase: "down" }, ...build });
+      }
+    }
     if (config.ARC_OBSERVATION_ENABLED) {
       const redisReady = sourceBudget ? await sourceBudget.ready(AbortSignal.timeout(750)) : false;
       if (!redisReady) return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
         checks: { configuration: "up", sourceRoutes: "enabled", redis: "down" }, ...build });
       return { ok: true as const, status: "ready" as const,
         checks: { configuration: "up", sourceRoutes: "enabled", redis: "up",
-          ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}) }, ...build };
+          ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}),
+          ...(machineEnabled ? { machineDatabase: "up" as const } : {}) }, ...build };
     }
     return { ok: true as const, status: "ready" as const,
       checks: { configuration: "up", sourceRoutes: "disabled", redis: "not_required",
         ...(config.AUTH_ENABLED ? { authDatabase: "up" as const } : {}),
-        ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}) }, ...build };
+        ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}),
+        ...(machineEnabled ? { machineDatabase: "up" as const } : {}) }, ...build };
   });
 
   if (config.AUTH_ENABLED) {
@@ -301,6 +371,51 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
     });
   }
 
+  if (config.MACHINE_CREDENTIAL_MANAGEMENT_ENABLED) {
+    if (!machineManagementService) {
+      throw new Error("Machine credential management dependencies are unavailable");
+    }
+    registerMachineManagementRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(config.APP_ORIGIN.startsWith("https://")),
+      service: machineManagementService,
+      buildSha: config.COMMIT_SHA,
+      enabled: true,
+      ...(tenantMaxResponseBytes !== undefined
+        ? { maxResponseBytes: tenantMaxResponseBytes }
+        : {}),
+    });
+  } else {
+    registerMachineManagementRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(false),
+      // A disabled registration never invokes the service.
+      service: machineManagementService as MachineManagementService,
+      buildSha: config.COMMIT_SHA,
+      enabled: false,
+    });
+  }
+
+  if (config.MACHINE_SESSION_EXCHANGE_ENABLED) {
+    if (!machineSessionService) {
+      throw new Error("Machine session exchange dependencies are unavailable");
+    }
+    registerMachineSessionRoutes(app, {
+      service: machineSessionService,
+      buildSha: config.COMMIT_SHA,
+      enabled: true,
+      ...(tenantMaxResponseBytes !== undefined
+        ? { maxResponseBytes: tenantMaxResponseBytes }
+        : {}),
+    });
+  } else {
+    registerMachineSessionRoutes(app, {
+      service: machineSessionService as MachineSessionService,
+      buildSha: config.COMMIT_SHA,
+      enabled: false,
+    });
+  }
+
   app.all(CAPABILITIES_PATH, { onRequest: async (request, reply) => {
     if (!config.API_BOUNDARY_ENABLED) throw new ApiBoundaryError("FEATURE_DISABLED");
     if (request.url.includes("?") || (request.headers["content-length"] !== undefined && request.headers["content-length"] !== "0") || request.headers["transfer-encoding"] !== undefined) {
@@ -332,6 +447,32 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
         globalSourceUnitsPerDay: config.GLOBAL_SOURCE_UNITS_PER_DAY } },
     meta: { schemaVersion: API_SCHEMA_VERSION, requestId: request.id, buildSha: config.COMMIT_SHA },
   }));
+
+  // Public, credentialless capability registry. Only the five explicit
+  // deployment flags, the existing readiness callbacks, the build SHA and the
+  // exact app origin cross this boundary; the full config, secrets, DB URLs,
+  // role objects and private identities never do. This is metadata only and
+  // performs no automatic network/provider/RPC request.
+  registerCommerceCapabilities(app, {
+    flags: {
+      authEnabled: config.AUTH_ENABLED,
+      tenantReadsEnabled: config.TENANT_READS_ENABLED,
+      tenantWritesEnabled: config.TENANT_WRITES_ENABLED,
+      machineCredentialManagementEnabled:
+        config.MACHINE_CREDENTIAL_MANAGEMENT_ENABLED,
+      machineSessionExchangeEnabled: config.MACHINE_SESSION_EXCHANGE_ENABLED,
+    },
+    readiness: {
+      ...(authReady !== undefined ? { authReady } : {}),
+      ...(tenantReady !== undefined ? { tenantReady } : {}),
+      ...(machineReady !== undefined ? { machineReady } : {}),
+    },
+    buildSha: config.COMMIT_SHA,
+    appOrigin: config.APP_ORIGIN,
+    ...(tenantMaxResponseBytes !== undefined
+      ? { maxResponseBytes: tenantMaxResponseBytes }
+      : {}),
+  });
 
   if (config.ARC_OBSERVATION_ENABLED) {
     if (!sourceBudget || !arcAccountService || !arcTransactionService) {

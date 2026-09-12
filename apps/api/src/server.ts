@@ -2,6 +2,7 @@ import { createApp } from "./app.js";
 import { authCookieNames } from "./auth/cookies.js";
 import { startAuthRuntime, type StartedAuthRuntime } from "./auth/runtime.js";
 import { startTenantRuntime, type StartedTenantRuntime } from "./tenant/runtime.js";
+import { startMachineRuntime, type StartedMachineRuntime } from "./machine/runtime.js";
 import { ArcAccountService } from "./arc/account-service.js";
 import { AgentRegistryService } from "./arc/agent-registry-service.js";
 import { JobService } from "./arc/job-service.js";
@@ -46,6 +47,25 @@ async function start(): Promise<void> {
         writeAuth: authRuntime!.service,
       })
     : undefined;
+  const machineEnabled =
+    config.MACHINE_CREDENTIAL_MANAGEMENT_ENABLED ||
+    config.MACHINE_SESSION_EXCHANGE_ENABLED;
+  const machineRuntime: StartedMachineRuntime | undefined = machineEnabled
+    ? await startMachineRuntime({
+        tenantDatabaseUrl: config.TENANT_DATABASE_URL as string,
+        currentPepperVersion: config.MACHINE_CREDENTIAL_PEPPER_VERSION as number,
+        currentPepper: config.MACHINE_CREDENTIAL_PEPPER as string,
+        ...(config.MACHINE_CREDENTIAL_PREVIOUS_VERSION !== undefined
+          ? { previousPepperVersion: config.MACHINE_CREDENTIAL_PREVIOUS_VERSION }
+          : {}),
+        ...(config.MACHINE_CREDENTIAL_PREVIOUS_PEPPER !== undefined
+          ? { previousPepper: config.MACHINE_CREDENTIAL_PREVIOUS_PEPPER }
+          : {}),
+        rateSecret: config.MACHINE_RATE_SECRET as string,
+        rateLimitStore: authRuntime!.rateLimitStore,
+        managementAuth: authRuntime!.service,
+      })
+    : undefined;
   const redis = config.ARC_OBSERVATION_ENABLED && config.REDIS_URL ? await connectBudgetRedis(config.REDIS_URL) : undefined;
   const sourceBudget = redis && config.ABUSE_LIMIT_SECRET ? new SourceBudget(redis, {
     secret: config.ABUSE_LIMIT_SECRET,
@@ -68,6 +88,13 @@ async function start(): Promise<void> {
             ? { tenantWriteService: tenantRuntime.writeService }
             : {}) }
       : {}),
+    ...(machineRuntime
+      ? {
+          machineManagementService: machineRuntime.managementService,
+          machineSessionService: machineRuntime.sessionService,
+          machineReady: () => machineRuntime.ready(),
+        }
+      : {}),
     ...(config.GATEWAY_EVIDENCE_ENABLED ? { gatewayTransferService: new GatewayTransferService(new BoundedGatewayClient({
       timeoutMs: config.SOURCE_TIMEOUT_MS, maxResponseBytes: config.SOURCE_MAX_RESPONSE_BYTES,
     })) } : {}),
@@ -79,6 +106,7 @@ async function start(): Promise<void> {
     await app.close();
     await authRuntime?.close();
     await tenantRuntime?.close();
+    await machineRuntime?.close();
     if (redis?.isOpen) redis.destroy();
     process.exit(0);
   };

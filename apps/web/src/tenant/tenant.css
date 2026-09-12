@@ -460,3 +460,132 @@
     --tenant-line-strong: #4a5568;
   }
 }
+
+/* Mutation forms ----------------------------------------------------------- */
+
+.tenant-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  max-width: 640px;
+}
+
+.tenant-field {
+  display: grid;
+  gap: 6px;
+}
+.tenant-field label {
+  font-size: 14px;
+  font-weight: 700;
+}
+.tenant-input {
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid var(--tenant-line-strong);
+  border-radius: var(--tenant-radius);
+  background: var(--tenant-surface);
+  color: var(--tenant-ink);
+  font-size: 16px;
+  line-height: 1.4;
+}
+.tenant-input--mono {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 14px;
+}
+.tenant-input:focus-visible {
+  outline: 3px solid var(--tenant-cobalt);
+  outline-offset: 2px;
+}
+.tenant-field__error {
+  margin: 0;
+  color: var(--tenant-danger);
+  font-size: 14px;
+}
+.tenant-note {
+  margin: 0;
+  color: var(--tenant-muted);
+  font-size: 14px;
+}
+
+.tenant-confirm,
+.tenant-receipt {
+  margin-top: 18px;
+  padding: 16px 18px;
+  border: 1px solid var(--tenant-line);
+  border-left: 4px solid var(--tenant-gold);
+  border-radius: var(--tenant-radius);
+  background: var(--tenant-surface);
+}
+.tenant-confirm__title,
+.tenant-receipt__title {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+.tenant-confirm__op {
+  margin: 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 860px) {
+  .tenant-form {
+    max-width: none;
+  }
+}
+
+/* Human machine-credential console. Additive and scoped to the new panel. */
+.machine-panel {
+  margin-top: 24px;
+}
+.machine-secret {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px dashed var(--tenant-gold);
+  border-radius: var(--tenant-radius);
+  background: var(--tenant-surface);
+}
+.machine-secret__value {
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.machine-credentials {
+  margin-top: 20px;
+}
+.machine-credential-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.machine-credential {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--tenant-line);
+  border-radius: var(--tenant-radius);
+  background: var(--tenant-surface);
+  overflow-wrap: anywhere;
+}
+.machine-credential__expiry {
+  color: var(--tenant-muted);
+  font-size: 13px;
+}
+.machine-credential__confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 860px) {
+  .machine-credential {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

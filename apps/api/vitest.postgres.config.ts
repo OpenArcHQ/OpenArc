@@ -22,6 +22,7 @@ export default defineConfig({
       "test/auth-service.postgres.test.ts",
       "test/tenant-reads.postgres.test.ts",
       "test/tenant-writes.postgres.test.ts",
+      "test/machine-api.postgres.test.ts",
     ],
     fileParallelism: false,
   },

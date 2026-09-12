@@ -46,6 +46,14 @@ ARG VITE_TENANT_READS_ENABLED=false
 ENV VITE_TENANT_READS_ENABLED=${VITE_TENANT_READS_ENABLED}
 RUN case "${VITE_TENANT_READS_ENABLED}" in true|false) ;; *) echo 'VITE_TENANT_READS_ENABLED must be exactly true or false' >&2; exit 1 ;; esac
 RUN if [ "${VITE_TENANT_READS_ENABLED}" = "true" ] && { [ "${VITE_ACCOUNT_ACCESS_ENABLED}" != "true" ] || [ "${VITE_API_BOUNDARY_ENABLED}" != "true" ]; }; then echo 'VITE_TENANT_READS_ENABLED=true requires VITE_ACCOUNT_ACCESS_ENABLED=true and VITE_API_BOUNDARY_ENABLED=true' >&2; exit 1; fi
+ARG VITE_TENANT_WRITES_ENABLED=false
+ENV VITE_TENANT_WRITES_ENABLED=${VITE_TENANT_WRITES_ENABLED}
+RUN case "${VITE_TENANT_WRITES_ENABLED}" in true|false) ;; *) echo 'VITE_TENANT_WRITES_ENABLED must be exactly true or false' >&2; exit 1 ;; esac
+RUN if [ "${VITE_TENANT_WRITES_ENABLED}" = "true" ] && { [ "${VITE_TENANT_READS_ENABLED}" != "true" ] || [ "${VITE_ACCOUNT_ACCESS_ENABLED}" != "true" ] || [ "${VITE_API_BOUNDARY_ENABLED}" != "true" ]; }; then echo 'VITE_TENANT_WRITES_ENABLED=true requires VITE_TENANT_READS_ENABLED=true, VITE_ACCOUNT_ACCESS_ENABLED=true and VITE_API_BOUNDARY_ENABLED=true' >&2; exit 1; fi
+ARG VITE_MACHINE_CREDENTIAL_MANAGEMENT_ENABLED=false
+ENV VITE_MACHINE_CREDENTIAL_MANAGEMENT_ENABLED=${VITE_MACHINE_CREDENTIAL_MANAGEMENT_ENABLED}
+RUN case "${VITE_MACHINE_CREDENTIAL_MANAGEMENT_ENABLED}" in true|false) ;; *) echo 'VITE_MACHINE_CREDENTIAL_MANAGEMENT_ENABLED must be exactly true or false' >&2; exit 1 ;; esac
+RUN if [ "${VITE_MACHINE_CREDENTIAL_MANAGEMENT_ENABLED}" = "true" ] && { [ "${VITE_TENANT_WRITES_ENABLED}" != "true" ] || [ "${VITE_TENANT_READS_ENABLED}" != "true" ] || [ "${VITE_ACCOUNT_ACCESS_ENABLED}" != "true" ] || [ "${VITE_API_BOUNDARY_ENABLED}" != "true" ]; }; then echo 'VITE_MACHINE_CREDENTIAL_MANAGEMENT_ENABLED=true requires VITE_TENANT_WRITES_ENABLED=true, VITE_TENANT_READS_ENABLED=true, VITE_ACCOUNT_ACCESS_ENABLED=true and VITE_API_BOUNDARY_ENABLED=true' >&2; exit 1; fi
 RUN if [ "${VITE_GENERIC_AGENT_IMPORT_ENABLED}" = "true" ] && [ "${VITE_ENCRYPTED_WORKSPACE_ENABLED}" != "true" ]; then exit 1; fi
 RUN if [ "${VITE_GATEWAY_EVIDENCE_ENABLED}" = "true" ] && [ "${VITE_AGENT_JOBS_ENABLED}" != "true" ]; then exit 1; fi
 RUN if [ "${VITE_AGENT_JOBS_ENABLED}" = "true" ] && [ "${VITE_AGENT_REGISTRY_ENABLED}" != "true" ]; then exit 1; fi
@@ -70,12 +78,18 @@ ARG VITE_ARC_OBSERVATION_ENABLED=false
 ARG VITE_AGENT_REGISTRY_ENABLED=false
 ARG VITE_ACCOUNT_ACCESS_ENABLED=false
 ARG VITE_TENANT_READS_ENABLED=false
-COPY apps/web/nginx.conf apps/web/nginx-api.conf apps/web/nginx-arc.conf apps/web/proxy_params apps/web/auth_proxy_params apps/web/tenant_proxy_params apps/web/nginx-account-locations.conf apps/web/nginx-account-disabled.conf apps/web/nginx-tenant-locations.conf apps/web/nginx-tenant-disabled.conf apps/web/validate-m04-runtime-env.sh /tmp/openarc-nginx/
+ARG VITE_TENANT_WRITES_ENABLED=false
+ARG VITE_MACHINE_CREDENTIAL_MANAGEMENT_ENABLED=false
+COPY apps/web/nginx.conf apps/web/nginx-api.conf apps/web/nginx-arc.conf apps/web/proxy_params apps/web/auth_proxy_params apps/web/tenant_proxy_params apps/web/tenant_write_proxy_params apps/web/nginx-account-locations.conf apps/web/nginx-account-disabled.conf apps/web/nginx-tenant-locations.conf apps/web/nginx-tenant-write-locations.conf apps/web/nginx-tenant-disabled.conf apps/web/nginx-machine-management-locations.conf apps/web/nginx-machine-management-disabled.conf apps/web/validate-m04-runtime-env.sh /tmp/openarc-nginx/
 RUN set -eu; \
     case "${VITE_ACCOUNT_ACCESS_ENABLED}" in true|false) ;; *) echo 'VITE_ACCOUNT_ACCESS_ENABLED must be exactly true or false' >&2; exit 1 ;; esac; \
     case "${VITE_TENANT_READS_ENABLED}" in true|false) ;; *) echo 'VITE_TENANT_READS_ENABLED must be exactly true or false' >&2; exit 1 ;; esac; \
+    case "${VITE_TENANT_WRITES_ENABLED}" in true|false) ;; *) echo 'VITE_TENANT_WRITES_ENABLED must be exactly true or false' >&2; exit 1 ;; esac; \
     if [ "${VITE_ACCOUNT_ACCESS_ENABLED}" = "true" ] && [ "${VITE_API_BOUNDARY_ENABLED}" != "true" ]; then echo 'VITE_ACCOUNT_ACCESS_ENABLED=true requires VITE_API_BOUNDARY_ENABLED=true' >&2; exit 1; fi; \
     if [ "${VITE_TENANT_READS_ENABLED}" = "true" ] && { [ "${VITE_ACCOUNT_ACCESS_ENABLED}" != "true" ] || [ "${VITE_API_BOUNDARY_ENABLED}" != "true" ]; }; then echo 'VITE_TENANT_READS_ENABLED=true requires VITE_ACCOUNT_ACCESS_ENABLED=true and VITE_API_BOUNDARY_ENABLED=true' >&2; exit 1; fi; \
+    if [ "${VITE_TENANT_WRITES_ENABLED}" = "true" ] && { [ "${VITE_TENANT_READS_ENABLED}" != "true" ] || [ "${VITE_ACCOUNT_ACCESS_ENABLED}" != "true" ] || [ "${VITE_API_BOUNDARY_ENABLED}" != "true" ]; }; then echo 'VITE_TENANT_WRITES_ENABLED=true requires VITE_TENANT_READS_ENABLED=true, VITE_ACCOUNT_ACCESS_ENABLED=true and VITE_API_BOUNDARY_ENABLED=true' >&2; exit 1; fi; \
+    case "${VITE_MACHINE_CREDENTIAL_MANAGEMENT_ENABLED}" in true|false) ;; *) echo 'VITE_MACHINE_CREDENTIAL_MANAGEMENT_ENABLED must be exactly true or false' >&2; exit 1 ;; esac; \
+    if [ "${VITE_MACHINE_CREDENTIAL_MANAGEMENT_ENABLED}" = "true" ] && { [ "${VITE_TENANT_WRITES_ENABLED}" != "true" ] || [ "${VITE_TENANT_READS_ENABLED}" != "true" ] || [ "${VITE_ACCOUNT_ACCESS_ENABLED}" != "true" ] || [ "${VITE_API_BOUNDARY_ENABLED}" != "true" ]; }; then echo 'VITE_MACHINE_CREDENTIAL_MANAGEMENT_ENABLED=true requires VITE_TENANT_WRITES_ENABLED=true, VITE_TENANT_READS_ENABLED=true, VITE_ACCOUNT_ACCESS_ENABLED=true and VITE_API_BOUNDARY_ENABLED=true' >&2; exit 1; fi; \
     if [ "${VITE_API_BOUNDARY_ENABLED}" = "true" ]; then \
       mkdir -p /etc/nginx/templates; \
       if [ "${VITE_AGENT_REGISTRY_ENABLED}" = "true" ] && [ "${VITE_ARC_OBSERVATION_ENABLED}" != "true" ]; then exit 1; fi; \
@@ -93,10 +107,20 @@ RUN set -eu; \
         cp /tmp/openarc-nginx/nginx-account-disabled.conf /etc/nginx/templates/openarc-auth-locations.inc.template; \
       fi; \
       if [ "${VITE_TENANT_READS_ENABLED}" = "true" ]; then \
-        cp /tmp/openarc-nginx/nginx-tenant-locations.conf /etc/nginx/templates/openarc-tenant-locations.inc.template; \
+        if [ "${VITE_TENANT_WRITES_ENABLED}" = "true" ]; then \
+          cp /tmp/openarc-nginx/nginx-tenant-write-locations.conf /etc/nginx/templates/openarc-tenant-locations.inc.template; \
+          cp /tmp/openarc-nginx/tenant_write_proxy_params /etc/nginx/tenant_write_proxy_params; \
+        else \
+          cp /tmp/openarc-nginx/nginx-tenant-locations.conf /etc/nginx/templates/openarc-tenant-locations.inc.template; \
+        fi; \
         cp /tmp/openarc-nginx/tenant_proxy_params /etc/nginx/tenant_proxy_params; \
       else \
         cp /tmp/openarc-nginx/nginx-tenant-disabled.conf /etc/nginx/templates/openarc-tenant-locations.inc.template; \
+      fi; \
+      if [ "${VITE_MACHINE_CREDENTIAL_MANAGEMENT_ENABLED}" = "true" ]; then \
+        cp /tmp/openarc-nginx/nginx-machine-management-locations.conf /etc/nginx/templates/openarc-machine-locations.inc.template; \
+      else \
+        cp /tmp/openarc-nginx/nginx-machine-management-disabled.conf /etc/nginx/templates/openarc-machine-locations.inc.template; \
       fi; \
       cp /tmp/openarc-nginx/proxy_params /etc/nginx/proxy_params; \
       rm -f /etc/nginx/conf.d/default.conf; \

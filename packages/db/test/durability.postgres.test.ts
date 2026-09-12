@@ -318,6 +318,7 @@ describe('durability migration and readiness', () => {
       '0002_tenants',
       '0003_durability',
       '0004_durable_tenant_mutations',
+      '0005_machine_credentials',
     ]);
     const helpers = await admin.query<{ proname: string; owner: string }>(
       `SELECT p.proname, r.rolname AS owner
@@ -330,19 +331,39 @@ describe('durability migration and readiness', () => {
     expect(helpers.rows.map((row) => row.proname)).toEqual([
       'claim_outbox_jobs',
       'commit_agent_create',
+      'commit_agent_credential_issue',
+      'commit_agent_credential_revoke',
       'commit_agent_update',
       'commit_membership_set',
       'commit_organization_create',
       'commit_provider_create',
+      'commit_provider_credential_issue',
+      'commit_provider_credential_revoke',
       'commit_provider_update',
       'complete_outbox_job',
+      'create_agent_session',
+      'create_provider_session',
       'fail_outbox_job',
+      'find_agent_credential_verifier',
+      'find_provider_credential_verifier',
+      'is_canonical_base64url',
       'is_canonical_display_name',
+      'is_canonical_hex64',
       'is_canonical_org_id',
+      'is_canonical_uuid_v4',
+      'list_agent_credentials',
+      'list_provider_credentials',
+      'lock_credential_issuer',
       'lock_membership_set',
+      'read_agent_credential_mutation_status',
       'read_agent_mutation_status',
+      'read_agent_session',
       'read_organization_mutation_status',
+      'read_provider_credential_mutation_status',
+      'read_provider_session',
       'read_tenant_mutation_status',
+      'revoke_agent_session',
+      'revoke_provider_session',
     ]);
     expect(helpers.rows.every((row) => row.owner === 'openarc_migrator')).toBe(true);
     const identities = await admin.query<{ proname: string; args: string; prosecdef: boolean; config: string[] }>(
@@ -400,9 +421,13 @@ describe('durability migration and readiness', () => {
         ORDER BY c.relname`,
     );
     expect(rls.rows.map((row) => row.relname)).toEqual([
+      'agent_credentials',
+      'agent_sessions',
       'audit_events',
       'idempotency_records',
       'outbox_events',
+      'provider_credentials',
+      'provider_sessions',
     ]);
     expect(rls.rows.every((row) => row.forced)).toBe(true);
   });

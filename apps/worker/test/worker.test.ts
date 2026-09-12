@@ -1,0 +1,862 @@
+import { describe, expect, it } from 'vitest';
+import type { ClaimedOutboxEvent } from '@openarc/db';
+import { parseWorkerConfig, WorkerConfigError } from '../src/config.js';
+import {
+  InvalidEventError,
+  NOTIFICATION_EVENT_KEYS,
+  ackIdentityOf,
+  createHandlerRegistry,
+  eventKeyOf,
+  validateNotification,
+  type NotificationHandler,
+} from '../src/handlers.js';
+import { startWorkerRuntime, type WorkerOutboxStore, type WorkerRuntimeOptions } from '../src/runtime.js';
+import {
+  WorkerLoop,
+  type WorkerClock,
+  type WorkerLogger,
+  type WorkerLogRecord,
+  type WorkerStore,
+} from '../src/worker.js';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function baseEvent(overrides: Record<string, unknown> = {}): ClaimedOutboxEvent {
+  return {
+    eventId: '00000000-0000-4000-8000-000000000001',
+    organizationId: 'openarc:org:00000000-0000-4000-8000-000000000002',
+    mutationId: '00000000-0000-4000-8000-000000000003',
+    resourceType: 'agent',
+    resourceId: 'openarc:agent:00000000-0000-4000-8000-000000000004',
+    eventType: 'tenant.agent.created',
+    payloadVersion: 1,
+    leaseGeneration: '1',
+    leaseUntil: new Date(Date.now() + 30000).toISOString(),
+    attemptCount: 0,
+    ...overrides,
+  } as unknown as ClaimedOutboxEvent;
+}
+
+interface EventCase {
+  readonly resourceType: string;
+  readonly eventType: string;
+  readonly resourceId: string;
+}
+
+const SIX_CASES: readonly EventCase[] = [
+  {
+    resourceType: 'organization',
+    eventType: 'tenant.organization.created',
+    resourceId: 'openarc:org:00000000-0000-4000-8000-000000000010',
+  },
+  {
+    resourceType: 'agent',
+    eventType: 'tenant.agent.created',
+    resourceId: 'openarc:agent:00000000-0000-4000-8000-000000000011',
+  },
+  {
+    resourceType: 'agent',
+    eventType: 'tenant.agent.updated',
+    resourceId: 'openarc:agent:00000000-0000-4000-8000-000000000012',
+  },
+  {
+    resourceType: 'provider',
+    eventType: 'tenant.provider.created',
+    resourceId: 'openarc:provider:00000000-0000-4000-8000-000000000013',
+  },
+  {
+    resourceType: 'provider',
+    eventType: 'tenant.provider.updated',
+    resourceId: 'openarc:provider:00000000-0000-4000-8000-000000000014',
+  },
+  {
+    resourceType: 'membership',
+    eventType: 'tenant.membership.set',
+    resourceId: 'openarc:account:00000000-0000-4000-8000-000000000015',
+  },
+  {
+    resourceType: 'agent_credential',
+    eventType: 'tenant.agent.credential.created',
+    resourceId: '00000000-0000-4000-8000-000000000016',
+  },
+  {
+    resourceType: 'agent_credential',
+    eventType: 'tenant.agent.credential.revoked',
+    resourceId: '00000000-0000-4000-8000-000000000017',
+  },
+  {
+    resourceType: 'provider_credential',
+    eventType: 'tenant.provider.credential.created',
+    resourceId: '00000000-0000-4000-8000-000000000018',
+  },
+  {
+    resourceType: 'provider_credential',
+    eventType: 'tenant.provider.credential.revoked',
+    resourceId: '00000000-0000-4000-8000-000000000019',
+  },
+];
+
+function eventFor(item: EventCase): ClaimedOutboxEvent {
+  return baseEvent({
+    resourceType: item.resourceType,
+    eventType: item.eventType,
+    resourceId: item.resourceId,
+  });
+}
+
+class FakeStore implements WorkerStore {
+  readonly batches: ClaimedOutboxEvent[][];
+  claimCalls = 0;
+  readonly completions: Array<{ eventId: string; leaseGeneration: string }> = [];
+  readonly failures: Array<{ eventId: string; leaseGeneration: string; code: unknown }> = [];
+  completeResult = true;
+  failResult = true;
+  claimError: Error | undefined;
+  completeError: Error | undefined;
+  failError: Error | undefined;
+
+  constructor(batches: ClaimedOutboxEvent[][]) {
+    this.batches = batches;
+  }
+
+  async claim(): Promise<ClaimedOutboxEvent[]> {
+    this.claimCalls += 1;
+    if (this.claimError !== undefined) throw this.claimError;
+    return this.batches.shift() ?? [];
+  }
+
+  async complete(eventId: unknown, leaseGeneration: unknown): Promise<{ applied: boolean }> {
+    this.completions.push({
+      eventId: String(eventId),
+      leaseGeneration: String(leaseGeneration),
+    });
+    if (this.completeError !== undefined) throw this.completeError;
+    return { applied: this.completeResult };
+  }
+
+  async fail(
+    eventId: unknown,
+    leaseGeneration: unknown,
+    code: unknown,
+  ): Promise<{ applied: boolean }> {
+    this.failures.push({
+      eventId: String(eventId),
+      leaseGeneration: String(leaseGeneration),
+      code,
+    });
+    if (this.failError !== undefined) throw this.failError;
+    return { applied: this.failResult };
+  }
+}
+
+class FakeClock implements WorkerClock {
+  current = 0;
+  readonly sleeps: number[] = [];
+
+  now(): number {
+    return this.current;
+  }
+
+  async sleep(milliseconds: number, signal: AbortSignal): Promise<void> {
+    this.sleeps.push(milliseconds);
+    if (signal.aborted) throw new Error('aborted');
+  }
+}
+
+interface Recorder {
+  readonly records: WorkerLogRecord[];
+  readonly logger: WorkerLogger;
+}
+
+function recorder(stopStatus: WorkerLogRecord['status'] | undefined, onStop: () => void): Recorder {
+  const records: WorkerLogRecord[] = [];
+  const logger: WorkerLogger = {
+    log: (record) => {
+      records.push(record);
+      if (stopStatus !== undefined && record.status === stopStatus) onStop();
+    },
+  };
+  return { records, logger };
+}
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error('condition not observed');
+}
+
+function enabledConfig() {
+  const config = parseWorkerConfig({
+    WORKER_ENABLED: 'true',
+    WORKER_DATABASE_URL: 'postgres://openarc_worker_app:pw@127.0.0.1:5432/openarc_auth_test',
+  });
+  if (!config.enabled) throw new Error('expected enabled');
+  return config;
+}
+
+describe('worker configuration', () => {
+  it('is disabled by default and opens no database', async () => {
+    expect(parseWorkerConfig({})).toEqual({ enabled: false });
+    expect(parseWorkerConfig({ WORKER_ENABLED: 'false' })).toEqual({ enabled: false });
+    let created = 0;
+    const runtime = startWorkerRuntime({
+      config: { enabled: false },
+      createPool: () => {
+        created += 1;
+        throw new Error('must not create a pool');
+      },
+      installSignalHandlers: false,
+    });
+    expect(runtime.state).toBe('disabled');
+    await runtime.stopped;
+    expect(created).toBe(0);
+  });
+
+  it('parses the documented enabled settings and ignores unrelated variables', () => {
+    const parsed = parseWorkerConfig({
+      WORKER_ENABLED: 'true',
+      WORKER_DATABASE_URL: 'postgres://openarc_worker_app:pw@127.0.0.1:5432/openarc_auth_test',
+      WORKER_CLAIM_LIMIT: '7',
+      WORKER_POLL_MS: '500',
+      WORKER_IDLE_MAX_MS: '9000',
+      WORKER_SHUTDOWN_GRACE_MS: '1000',
+      PATH: '/unrelated',
+      DATABASE_URL: 'postgres://admin@example.test/db',
+    });
+    expect(parsed).toEqual({
+      enabled: true,
+      databaseUrl: 'postgres://openarc_worker_app:pw@127.0.0.1:5432/openarc_auth_test',
+      claimLimit: 7,
+      pollMs: 500,
+      idleMaxMs: 9000,
+      shutdownGraceMs: 1000,
+    });
+  });
+
+  it('rejects strict invalid values', () => {
+    const url = 'postgres://openarc_worker_app:pw@127.0.0.1:5432/openarc_auth_test';
+    const bad: Array<Record<string, string | undefined>> = [
+      { WORKER_ENABLED: 'TRUE', WORKER_DATABASE_URL: url },
+      { WORKER_ENABLED: 'true' },
+      { WORKER_ENABLED: 'true', WORKER_DATABASE_URL: 'mysql://x' },
+      { WORKER_ENABLED: 'true', WORKER_DATABASE_URL: '   ' },
+      { WORKER_ENABLED: 'true', WORKER_DATABASE_URL: `postgres://${'a'.repeat(5000)}` },
+      { WORKER_ENABLED: 'true', WORKER_DATABASE_URL: url, WORKER_CLAIM_LIMIT: '0' },
+      { WORKER_ENABLED: 'true', WORKER_DATABASE_URL: url, WORKER_CLAIM_LIMIT: '51' },
+      { WORKER_ENABLED: 'true', WORKER_DATABASE_URL: url, WORKER_POLL_MS: '249' },
+      { WORKER_ENABLED: 'true', WORKER_DATABASE_URL: url, WORKER_POLL_MS: '10001' },
+      { WORKER_ENABLED: 'true', WORKER_DATABASE_URL: url, WORKER_IDLE_MAX_MS: '999' },
+      { WORKER_ENABLED: 'true', WORKER_DATABASE_URL: url, WORKER_IDLE_MAX_MS: '30001' },
+      { WORKER_ENABLED: 'true', WORKER_DATABASE_URL: url, WORKER_SHUTDOWN_GRACE_MS: '99' },
+      { WORKER_ENABLED: 'true', WORKER_DATABASE_URL: url, WORKER_SHUTDOWN_GRACE_MS: '15001' },
+      { WORKER_ENABLED: 'true', WORKER_DATABASE_URL: url, WORKER_POLL_MS: '1000', WORKER_IDLE_MAX_MS: '500' },
+      { WORKER_ENABLED: 'true', WORKER_DATABASE_URL: url, WORKER_CLAIM_LIMIT: '1e2' },
+    ];
+    for (const env of bad) {
+      expect(() => parseWorkerConfig(env)).toThrow(WorkerConfigError);
+    }
+  });
+});
+
+describe('notification handler registry', () => {
+  it('dispatches exactly the ten allowlisted events', async () => {
+    const registry = createHandlerRegistry();
+    expect(Object.keys(registry).sort()).toEqual([...NOTIFICATION_EVENT_KEYS].sort());
+    for (const item of SIX_CASES) {
+      const event = eventFor(item);
+      const key = eventKeyOf(event);
+      const handler = registry[key];
+      expect(handler).toBeDefined();
+      await handler?.(event, { signal: new AbortController().signal });
+    }
+  });
+
+  it('rejects unknown and mismatched events without a truthy success', async () => {
+    const registry = createHandlerRegistry();
+    const unknown = baseEvent({ eventType: 'tenant.agent.deleted' });
+    expect(() => eventKeyOf(unknown)).toThrow(InvalidEventError);
+
+    const mismatched = baseEvent({ resourceType: 'agent', eventType: 'tenant.provider.created' });
+    expect(() => validateNotification(mismatched)).toThrow(InvalidEventError);
+
+    const wrongResource = baseEvent({ resourceId: 'openarc:org:00000000-0000-4000-8000-000000000099' });
+    expect(() => validateNotification(wrongResource)).toThrow(InvalidEventError);
+
+    expect(() => validateNotification(null)).toThrow(InvalidEventError);
+    expect(ackIdentityOf(null)).toBeNull();
+    expect(ackIdentityOf({ eventId: 'nope', leaseGeneration: '1' })).toBeNull();
+    expect(await Promise.resolve(registry['agent|tenant.agent.created'])).toBeTypeOf('function');
+  });
+
+  it('derives an ack identity only for well-formed ids', () => {
+    const event = baseEvent();
+    expect(ackIdentityOf(event)).toEqual({ eventId: event.eventId, leaseGeneration: '1' });
+    const longGeneration = baseEvent({ leaseGeneration: '1'.repeat(30) });
+    expect(ackIdentityOf(longGeneration)).toBeNull();
+  });
+});
+
+describe('bounded worker loop', () => {
+  it('claims one batch, settles it, then idles and never leaves work queued', async () => {
+    const store = new FakeStore([[eventFor(SIX_CASES[1]!), eventFor(SIX_CASES[3]!)]]);
+    const clock = new FakeClock();
+    const state: { loop?: WorkerLoop } = {};
+    const { records, logger } = recorder('claim_empty', () => state.loop?.requestStop());
+    const loop = new WorkerLoop({ store, claimLimit: 10, pollMs: 250, idleMaxMs: 5000, clock, logger });
+    state.loop = loop;
+    await loop.run();
+
+    expect(store.claimCalls).toBe(2);
+    expect(store.completions).toHaveLength(2);
+    expect(store.failures).toHaveLength(0);
+    expect(clock.sleeps.length).toBeGreaterThanOrEqual(1);
+    expect(records.some((record) => record.status === 'completed')).toBe(true);
+  });
+
+  it('backs off on empty claims and never tight-loops', async () => {
+    const store = new FakeStore([]);
+    const clock = new FakeClock();
+    const state: { loop?: WorkerLoop } = {};
+    const { logger } = recorder('claim_empty', () => state.loop?.requestStop());
+    const loop = new WorkerLoop({ store, claimLimit: 5, pollMs: 250, idleMaxMs: 1000, clock, logger });
+    state.loop = loop;
+    await loop.run();
+    expect(store.claimCalls).toBe(1);
+    expect(clock.sleeps).toEqual([250]);
+  });
+
+  it('backs off on claim errors and never tight-loops', async () => {
+    const store = new FakeStore([]);
+    store.claimError = new Error('claim down');
+    const clock = new FakeClock();
+    const state: { loop?: WorkerLoop } = {};
+    const { logger } = recorder('claim_error', () => state.loop?.requestStop());
+    const loop = new WorkerLoop({ store, claimLimit: 5, pollMs: 250, idleMaxMs: 1000, clock, logger });
+    state.loop = loop;
+    await loop.run();
+    expect(store.claimCalls).toBe(1);
+    expect(clock.sleeps).toEqual([250]);
+    expect(store.completions).toHaveLength(0);
+  });
+
+  it('does not acknowledge before the handler succeeds', async () => {
+    const gate = deferred<void>();
+    const event = eventFor(SIX_CASES[1]!);
+    const store = new FakeStore([[event]]);
+    const registry = createHandlerRegistry({
+      'agent|tenant.agent.created': async () => {
+        await gate.promise;
+      },
+    });
+    const state: { loop?: WorkerLoop } = {};
+    const { logger } = recorder('claim_empty', () => state.loop?.requestStop());
+    const loop = new WorkerLoop({ store, registry, claimLimit: 5, pollMs: 250, idleMaxMs: 1000, clock: new FakeClock(), logger });
+    state.loop = loop;
+    const running = loop.run();
+    await waitUntil(() => store.claimCalls === 1);
+    expect(store.completions).toHaveLength(0);
+    gate.resolve();
+    await running;
+    expect(store.completions).toHaveLength(1);
+  });
+
+  it('fails handler_failed exactly once when a handler throws', async () => {
+    const event = eventFor(SIX_CASES[1]!);
+    const store = new FakeStore([[event]]);
+    const registry = createHandlerRegistry({
+      'agent|tenant.agent.created': () => {
+        throw new Error('boom');
+      },
+    });
+    const state: { loop?: WorkerLoop } = {};
+    const { logger } = recorder('failed', () => state.loop?.requestStop());
+    const loop = new WorkerLoop({ store, registry, claimLimit: 5, pollMs: 250, idleMaxMs: 1000, clock: new FakeClock(), logger });
+    state.loop = loop;
+    await loop.run();
+    expect(store.completions).toHaveLength(0);
+    expect(store.failures).toHaveLength(1);
+    expect(store.failures[0]?.code).toBe('handler_failed');
+  });
+
+  it('maps a bounded handler timeout to dependency_unavailable', async () => {
+    const event = eventFor(SIX_CASES[1]!);
+    const store = new FakeStore([[event]]);
+    const registry = createHandlerRegistry({
+      'agent|tenant.agent.created': () => new Promise<void>(() => undefined),
+    });
+    const state: { loop?: WorkerLoop } = {};
+    const { logger } = recorder('failed', () => state.loop?.requestStop());
+    const loop = new WorkerLoop({ store, registry, claimLimit: 5, pollMs: 250, idleMaxMs: 1000, handlerTimeoutMs: 20, clock: new FakeClock(), logger });
+    state.loop = loop;
+    await loop.run();
+    expect(store.failures).toHaveLength(1);
+    expect(store.failures[0]?.code).toBe('dependency_unavailable');
+  });
+
+  it('never fails again when a completion response is lost', async () => {
+    const event = eventFor(SIX_CASES[1]!);
+    const store = new FakeStore([[event]]);
+    store.completeError = new Error('lost');
+    const state: { loop?: WorkerLoop } = {};
+    const { records, logger } = recorder('claim_empty', () => state.loop?.requestStop());
+    const loop = new WorkerLoop({ store, claimLimit: 5, pollMs: 250, idleMaxMs: 1000, clock: new FakeClock(), logger });
+    state.loop = loop;
+    await loop.run();
+    expect(store.completions).toHaveLength(1);
+    expect(store.failures).toHaveLength(0);
+    expect(records.some((record) => record.status === 'outcome_unknown')).toBe(true);
+  });
+
+  it('treats a stale completion as stale and does not retry', async () => {
+    const event = eventFor(SIX_CASES[1]!);
+    const store = new FakeStore([[event]]);
+    store.completeResult = false;
+    const state: { loop?: WorkerLoop } = {};
+    const { records, logger } = recorder('claim_empty', () => state.loop?.requestStop());
+    const loop = new WorkerLoop({ store, claimLimit: 5, pollMs: 250, idleMaxMs: 1000, clock: new FakeClock(), logger });
+    state.loop = loop;
+    await loop.run();
+    expect(store.completions).toHaveLength(1);
+    expect(store.failures).toHaveLength(0);
+    expect(records.some((record) => record.status === 'stale')).toBe(true);
+  });
+
+  it('suppresses acknowledgement after a graceful stop and a late handler result', async () => {
+    const gate = deferred<void>();
+    const event = eventFor(SIX_CASES[1]!);
+    const store = new FakeStore([[event]]);
+    let started = false;
+    const registry = createHandlerRegistry({
+      'agent|tenant.agent.created': async () => {
+        started = true;
+        await gate.promise;
+      },
+    });
+    const state: { loop?: WorkerLoop } = {};
+    const { records, logger } = recorder(undefined, () => undefined);
+    const loop = new WorkerLoop({ store, registry, claimLimit: 5, pollMs: 250, idleMaxMs: 1000, clock: new FakeClock(), logger });
+    state.loop = loop;
+    const running = loop.run();
+    await waitUntil(() => started);
+    loop.requestStop();
+    gate.resolve();
+    await running;
+    expect(store.completions).toHaveLength(0);
+    expect(store.failures).toHaveLength(0);
+    expect(records.some((record) => record.status === 'aborted')).toBe(true);
+  });
+
+  it('suppresses acknowledgement after an abort', async () => {
+    const event = eventFor(SIX_CASES[1]!);
+    const store = new FakeStore([[event]]);
+    let started = false;
+    const registry = createHandlerRegistry({
+      'agent|tenant.agent.created': async () => {
+        started = true;
+        await new Promise<void>(() => undefined);
+      },
+    });
+    const state: { loop?: WorkerLoop } = {};
+    const { records, logger } = recorder(undefined, () => undefined);
+    const loop = new WorkerLoop({ store, registry, claimLimit: 5, pollMs: 250, idleMaxMs: 1000, clock: new FakeClock(), logger });
+    state.loop = loop;
+    const running = loop.run();
+    await waitUntil(() => started);
+    loop.requestStop();
+    loop.abort();
+    await running;
+    expect(store.completions).toHaveLength(0);
+    expect(store.failures).toHaveLength(0);
+    expect(records.some((record) => record.status === 'aborted')).toBe(true);
+  });
+
+  it('dead-letters a well-formed unknown event once and fails closed otherwise', async () => {
+    const unknown = baseEvent({ eventType: 'tenant.unknown.event' });
+    const store = new FakeStore([[unknown]]);
+    const state: { loop?: WorkerLoop } = {};
+    const { logger } = recorder('failed', () => state.loop?.requestStop());
+    const loop = new WorkerLoop({ store, claimLimit: 5, pollMs: 250, idleMaxMs: 1000, clock: new FakeClock(), logger });
+    state.loop = loop;
+    await loop.run();
+    expect(store.completions).toHaveLength(0);
+    expect(store.failures).toHaveLength(1);
+    expect(store.failures[0]?.code).toBe('invalid_event');
+
+    const notAckable = baseEvent({ eventId: 'not-an-id', eventType: 'tenant.unknown.event' });
+    const store2 = new FakeStore([[notAckable]]);
+    const state2: { loop?: WorkerLoop } = {};
+    const { logger: logger2 } = recorder('aborted', () => state2.loop?.requestStop());
+    const loop2 = new WorkerLoop({ store: store2, claimLimit: 5, pollMs: 250, idleMaxMs: 1000, clock: new FakeClock(), logger: logger2 });
+    state2.loop = loop2;
+    await loop2.run();
+    expect(store2.failures).toHaveLength(0);
+    expect(store2.completions).toHaveLength(0);
+  });
+
+  it('is harmless on duplicate delivery', async () => {
+    const event = eventFor(SIX_CASES[1]!);
+    const store = new FakeStore([[event], [event]]);
+    const state: { loop?: WorkerLoop } = {};
+    const { logger } = recorder('claim_empty', () => state.loop?.requestStop());
+    const loop = new WorkerLoop({ store, claimLimit: 5, pollMs: 250, idleMaxMs: 1000, clock: new FakeClock(), logger });
+    state.loop = loop;
+    await loop.run();
+    expect(store.completions).toHaveLength(2);
+    expect(store.failures).toHaveLength(0);
+  });
+
+  it('does not dispatch an event whose lease already expired', async () => {
+    const event = baseEvent({ leaseUntil: new Date(Date.now() - 1000).toISOString() });
+    const store = new FakeStore([[event]]);
+    const state: { loop?: WorkerLoop } = {};
+    const { logger } = recorder('claim_empty', () => state.loop?.requestStop());
+    const clock = new FakeClock();
+    clock.current = Date.now();
+    const loop = new WorkerLoop({ store, claimLimit: 5, pollMs: 250, idleMaxMs: 1000, clock, logger });
+    state.loop = loop;
+    await loop.run();
+    expect(store.completions).toHaveLength(0);
+    expect(store.failures).toHaveLength(0);
+  });
+
+  it('emits only fixed allowlisted log fields and never leaks identifiers', async () => {
+    const CANARY = 'CANARY-secret-identifier';
+    const event = baseEvent({ eventId: '00000000-0000-4000-8000-0000000000aa' });
+    const store = new FakeStore([[event]]);
+    store.completeError = new Error(CANARY);
+    const state: { loop?: WorkerLoop } = {};
+    const { records, logger } = recorder('claim_empty', () => state.loop?.requestStop());
+    const loop = new WorkerLoop({
+      store,
+      registry: createHandlerRegistry({
+        'agent|tenant.agent.created': Object.assign(
+          (() => undefined) as NotificationHandler,
+          { canary: CANARY },
+        ),
+      }),
+      claimLimit: 5,
+      pollMs: 250,
+      idleMaxMs: 1000,
+      clock: new FakeClock(),
+      logger,
+    });
+    state.loop = loop;
+    await loop.run();
+    const serialized = JSON.stringify(records);
+    expect(serialized).not.toContain(CANARY);
+    for (const record of records) {
+      for (const key of Object.keys(record)) {
+        expect(['status', 'eventType', 'count']).toContain(key);
+      }
+    }
+    expect(records.every((record) => UUID.test(record.eventType ?? '') === false)).toBe(true);
+  });
+
+  it('dispatches the whole delayed batch concurrently and suppresses late acknowledgements', async () => {
+    const events = [
+      baseEvent({ eventId: '00000000-0000-4000-8000-0000000000c1', resourceId: 'openarc:agent:00000000-0000-4000-8000-000000000021' }),
+      baseEvent({ eventId: '00000000-0000-4000-8000-0000000000c2', resourceId: 'openarc:agent:00000000-0000-4000-8000-000000000022' }),
+      baseEvent({ eventId: '00000000-0000-4000-8000-0000000000c3', resourceId: 'openarc:agent:00000000-0000-4000-8000-000000000023' }),
+      baseEvent({ eventId: '00000000-0000-4000-8000-0000000000c4', resourceId: 'openarc:agent:00000000-0000-4000-8000-000000000024' }),
+    ];
+    const store = new FakeStore([events]);
+    let starts = 0;
+    const gate = deferred<void>();
+    const registry = createHandlerRegistry({
+      'agent|tenant.agent.created': async () => {
+        starts += 1;
+        await gate.promise;
+      },
+    });
+    const state: { loop?: WorkerLoop } = {};
+    const { records, logger } = recorder('aborted', () => state.loop?.requestStop());
+    const loop = new WorkerLoop({
+      store,
+      registry,
+      claimLimit: 50,
+      pollMs: 250,
+      idleMaxMs: 1000,
+      handlerTimeoutMs: 5000,
+      batchDeadlineMs: 20,
+      clock: new FakeClock(),
+      logger,
+    });
+    state.loop = loop;
+    await loop.run();
+    // Every claimed event was dispatched concurrently; the batch deadline
+    // cancelled them all and no late acknowledgement was attempted.
+    expect(store.claimCalls).toBe(1);
+    expect(starts).toBe(4);
+    expect(store.completions).toHaveLength(0);
+    expect(store.failures).toHaveLength(0);
+    expect(records.some((record) => record.status === 'aborted')).toBe(true);
+  });
+
+  it('never claims a next batch while a delayed batch is still active', async () => {
+    const first = baseEvent({ resourceId: 'openarc:agent:00000000-0000-4000-8000-000000000031' });
+    const second = baseEvent({ resourceId: 'openarc:agent:00000000-0000-4000-8000-000000000032' });
+    const later = baseEvent({ resourceId: 'openarc:agent:00000000-0000-4000-8000-000000000033' });
+    const store = new FakeStore([[first, second], [later]]);
+    const gate = deferred<void>();
+    let starts = 0;
+    const registry = createHandlerRegistry({
+      'agent|tenant.agent.created': async () => {
+        starts += 1;
+        await gate.promise;
+      },
+    });
+    const { logger } = recorder(undefined, () => undefined);
+    const loop = new WorkerLoop({
+      store,
+      registry,
+      claimLimit: 5,
+      pollMs: 250,
+      idleMaxMs: 1000,
+      handlerTimeoutMs: 5000,
+      batchDeadlineMs: 20000,
+      clock: new FakeClock(),
+      logger,
+    });
+    const running = loop.run();
+    await waitUntil(() => starts === 2);
+    for (let tick = 0; tick < 20; tick += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(store.claimCalls).toBe(1);
+    expect(store.completions).toHaveLength(0);
+    loop.requestStop();
+    gate.resolve();
+    await running;
+    expect(store.claimCalls).toBe(1);
+    expect(store.completions).toHaveLength(0);
+  });
+
+  it('starts all 50 claimed delayed handlers concurrently and acks each exactly once', async () => {
+    const events = Array.from({ length: 50 }, (_unused, index) =>
+      baseEvent({
+        eventId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+        resourceId: `openarc:agent:00000000-0000-4000-8000-${String(index + 1001).padStart(12, '0')}`,
+      }),
+    );
+    const store = new FakeStore([events]);
+    let starts = 0;
+    let active = 0;
+    let maxActive = 0;
+    const gate = deferred<void>();
+    const registry = createHandlerRegistry({
+      'agent|tenant.agent.created': async () => {
+        starts += 1;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await gate.promise;
+        active -= 1;
+      },
+    });
+    const state: { loop?: WorkerLoop } = {};
+    const { logger } = recorder('claim_empty', () => state.loop?.requestStop());
+    const loop = new WorkerLoop({
+      store,
+      registry,
+      claimLimit: 50,
+      pollMs: 250,
+      idleMaxMs: 1000,
+      handlerTimeoutMs: 5000,
+      batchDeadlineMs: 20000,
+      clock: new FakeClock(),
+      logger,
+    });
+    state.loop = loop;
+    const running = loop.run();
+    await waitUntil(() => starts === 50);
+    expect(store.completions).toHaveLength(0);
+    gate.resolve();
+    await running;
+    expect(maxActive).toBe(50);
+    expect(store.completions).toHaveLength(50);
+    expect(store.failures).toHaveLength(0);
+    expect(new Set(store.completions.map((completion) => completion.eventId)).size).toBe(50);
+  });
+
+  it('does not starve any position across repeated delivery cycles', async () => {
+    const makeBatch = (cycle: number): ClaimedOutboxEvent[] =>
+      Array.from({ length: 50 }, (_unused, index) =>
+        baseEvent({
+          eventId: `00000000-0000-4000-8000-${String(cycle * 100 + index + 1).padStart(12, '0')}`,
+          resourceId: `openarc:agent:00000000-0000-4000-8000-${String(cycle * 100 + index + 2001).padStart(12, '0')}`,
+        }),
+      );
+    const store = new FakeStore([makeBatch(0), makeBatch(1), makeBatch(2)]);
+    let starts = 0;
+    const registry = createHandlerRegistry({
+      'agent|tenant.agent.created': async () => {
+        starts += 1;
+        await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      },
+    });
+    const state: { loop?: WorkerLoop } = {};
+    const { logger } = recorder('claim_empty', () => state.loop?.requestStop());
+    const loop = new WorkerLoop({
+      store,
+      registry,
+      claimLimit: 50,
+      pollMs: 250,
+      idleMaxMs: 1000,
+      handlerTimeoutMs: 5000,
+      batchDeadlineMs: 20000,
+      clock: new FakeClock(),
+      logger,
+    });
+    state.loop = loop;
+    await loop.run();
+    expect(starts).toBe(150);
+    expect(store.completions).toHaveLength(150);
+    expect(store.failures).toHaveLength(0);
+    expect(store.claimCalls).toBe(4);
+  });
+});
+
+describe('runtime lifecycle', () => {
+  it('closes the pool exactly once when initialization fails', async () => {
+    let ended = 0;
+    const pool = {
+      end: async () => {
+        ended += 1;
+      },
+    };
+    const store: WorkerOutboxStore = {
+      initialize: async () => {
+        throw new Error('init failed');
+      },
+      claim: async () => [],
+      complete: async () => ({ applied: true }),
+      fail: async () => ({ applied: true }),
+    };
+    const runtime = startWorkerRuntime({
+      config: enabledConfig(),
+      createPool: (() => pool) as unknown as NonNullable<WorkerRuntimeOptions['createPool']>,
+      createStore: () => store,
+      installSignalHandlers: false,
+      clock: new FakeClock(),
+    });
+    await expect(runtime.ready).rejects.toBeInstanceOf(Error);
+    expect(runtime.state).toBe('failed');
+    await runtime.stopped;
+    expect(ended).toBe(1);
+  });
+
+  it('shuts down once and closes the pool once', async () => {
+    let ended = 0;
+    const pool = {
+      end: async () => {
+        ended += 1;
+      },
+    };
+    const store: WorkerOutboxStore = {
+      initialize: async () => undefined,
+      claim: async () => [],
+      complete: async () => ({ applied: true }),
+      fail: async () => ({ applied: true }),
+    };
+    const runtime = startWorkerRuntime({
+      config: enabledConfig(),
+      createPool: (() => pool) as unknown as NonNullable<WorkerRuntimeOptions['createPool']>,
+      createStore: () => store,
+      installSignalHandlers: false,
+      clock: new FakeClock(),
+    });
+    await runtime.ready;
+    expect(runtime.state).toBe('ready');
+    await Promise.all([runtime.shutdown(), runtime.shutdown()]);
+    await runtime.stopped;
+    expect(runtime.state).toBe('stopped');
+    expect(ended).toBe(1);
+  });
+
+  it('does not resurrect readiness or claim when shutdown races initialize', async () => {
+    let ended = 0;
+    const pool = {
+      end: async () => {
+        ended += 1;
+      },
+    };
+    const init = deferred<void>();
+    let claimCalls = 0;
+    const store: WorkerOutboxStore = {
+      initialize: () => init.promise,
+      claim: async () => {
+        claimCalls += 1;
+        return [];
+      },
+      complete: async () => ({ applied: true }),
+      fail: async () => ({ applied: true }),
+    };
+    const runtime = startWorkerRuntime({
+      config: enabledConfig(),
+      createPool: (() => pool) as unknown as NonNullable<WorkerRuntimeOptions['createPool']>,
+      createStore: () => store,
+      installSignalHandlers: false,
+      clock: new FakeClock(),
+      poolCloseTimeoutMs: 50,
+    });
+    let readySettled = false;
+    void runtime.ready.then(
+      () => {
+        readySettled = true;
+      },
+      () => {
+        readySettled = true;
+      },
+    );
+    const shutdown = runtime.shutdown();
+    expect(runtime.state).toBe('stopping');
+    init.resolve();
+    await shutdown;
+    await runtime.stopped;
+    expect(runtime.state).toBe('stopped');
+    expect(readySettled).toBe(false);
+    expect(claimCalls).toBe(0);
+    expect(ended).toBe(1);
+  });
+
+  it('settles a shutdown whose initialize never resolves', async () => {
+    let ended = 0;
+    const pool = {
+      end: async () => {
+        ended += 1;
+      },
+    };
+    const store: WorkerOutboxStore = {
+      initialize: () => new Promise<void>(() => undefined),
+      claim: async () => [],
+      complete: async () => ({ applied: true }),
+      fail: async () => ({ applied: true }),
+    };
+    const runtime = startWorkerRuntime({
+      config: enabledConfig(),
+      createPool: (() => pool) as unknown as NonNullable<WorkerRuntimeOptions['createPool']>,
+      createStore: () => store,
+      installSignalHandlers: false,
+      clock: new FakeClock(),
+      poolCloseTimeoutMs: 50,
+    });
+    await runtime.shutdown();
+    await runtime.stopped;
+    expect(runtime.state).toBe('stopped');
+    expect(ended).toBe(1);
+  });
+});

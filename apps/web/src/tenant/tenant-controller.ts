@@ -1,11 +1,13 @@
 import { CommerceAgentIdSchema, CommerceProviderIdSchema } from "@openarc/shared";
 import type {
+  AccountSessionMethod,
   AccountSessionView,
   CommerceAgentPage,
   CommerceOrganizationContext,
   CommerceOrganizationId,
   CommerceOrganizationPage,
   CommerceProviderPage,
+  CommerceHumanRole,
 } from "@openarc/shared";
 
 import type { AccountFlowController } from "../account/flow-controller.js";
@@ -36,6 +38,12 @@ export interface TenantPrincipalState {
   readonly status: TenantPrincipalStatus;
   readonly accountId: string | null;
   readonly expiresAt: string | null;
+  /**
+   * The accepted authentication method, when signed in. Used ONLY to keep the
+   * first-organization bootstrap form away from a known-recovery session; it
+   * is never treated as freshness proof.
+   */
+  readonly method: AccountSessionMethod | null;
 }
 
 export type TenantDataStatus = "none" | "loading" | "ready" | "error";
@@ -85,7 +93,7 @@ export interface TenantViewControllerState {
 
 export function initialTenantState(): TenantViewControllerState {
   return {
-    principal: { status: "idle", accountId: null, expiresAt: null },
+    principal: { status: "idle", accountId: null, expiresAt: null, method: null },
     organizations: { status: "none", items: [], nextCursor: null, hasPrevious: false, failure: null },
     selectedOrganizationId: null,
     context: null,
@@ -149,7 +157,7 @@ export class TenantController {
     const principalGeneration = this.#principalGeneration;
     this.#set({
       ...this.#state,
-      principal: { status: "loading", accountId: null, expiresAt: null },
+      principal: { status: "loading", accountId: null, expiresAt: null, method: null },
       refreshRequired: false,
       busy: true,
     });
@@ -157,7 +165,7 @@ export class TenantController {
       await this.#account.refreshSession();
     } catch {
       if (!this.#stillCurrent(principalGeneration)) return;
-      this.#adoptPrincipal(null, null, principalGeneration);
+      this.#adoptPrincipal(null, null, null, principalGeneration);
       this.#clearProtected();
       this.#set({ ...this.#state, busy: false });
       return;
@@ -165,16 +173,16 @@ export class TenantController {
     if (!this.#stillCurrent(principalGeneration)) return;
     const session = this.#account.state.session;
     if (!session.signedIn) {
-      this.#adoptPrincipal(null, null, principalGeneration);
+      this.#adoptPrincipal(null, null, null, principalGeneration);
       this.#clearProtected();
       this.#set({
         ...this.#state,
-        principal: { status: "signed-out", accountId: null, expiresAt: null },
+        principal: { status: "signed-out", accountId: null, expiresAt: null, method: null },
         busy: false,
       });
       return;
     }
-    this.#adoptPrincipal(session.accountId, session.expiresAt, principalGeneration);
+    this.#adoptPrincipal(session.accountId, session.expiresAt, session.method, principalGeneration);
     this.#scheduleExpiry(session.expiresAt);
     await this.loadOrganizations();
   }
@@ -445,6 +453,75 @@ export class TenantController {
     // Intentionally no fetch. The user drives recovery via refreshSession().
   }
 
+  /** The current selected organization id, or null. Mutation-flow reads. */
+  currentOrganizationId(): CommerceOrganizationId | null {
+    return this.#state.selectedOrganizationId;
+  }
+
+  /** The current context role, or null when no context is loaded. */
+  currentRole(): CommerceHumanRole | null {
+    return this.#state.context?.access.role ?? null;
+  }
+
+  /**
+   * Aborts every pending read and bumps the read generations WITHOUT clearing
+   * protected data or starting a refresh. A mutation uses this so a racing read
+   * cannot publish over the post-commit reload, while the caller-owned mutation
+   * flow stays current.
+   */
+  abortPendingReads(): void {
+    if (this.#disposed) return;
+    this.#readGeneration += 1;
+    this.#organizationGeneration += 1;
+    this.#listAbort?.abort();
+    this.#listAbort = null;
+    this.#abortChildren();
+  }
+
+  /**
+   * Account/session change: abort reads and clear all protected read data.
+   * The existing principal adoption already does this on identity change; this
+   * hook lets the mutation flow force the same clearing after a detected
+   * account change without re-reading.
+   */
+  clearForAccountChange(): void {
+    if (this.#disposed) return;
+    this.#invalidateProtected();
+  }
+
+  /**
+   * Reloads only the bounded page relevant to a committed resource. It is
+   * deliberately bounded and never auto-selects a newly created organization.
+   */
+  async reloadAfterCommit(
+    section: "organizations" | "context" | "agents" | "providers" | "membership",
+  ): Promise<void> {
+    if (this.#disposed) return;
+    switch (section) {
+      case "organizations":
+        await this.loadOrganizations();
+        return;
+      case "agents":
+        await this.loadAgents();
+        return;
+      case "providers":
+        await this.loadProviders();
+        return;
+      case "membership":
+        // No invented membership list exists; the relevant bounded read is the
+        // organization context, which carries the caller's own access view.
+        if (this.#state.selectedOrganizationId !== null) {
+          await this.selectOrganization(this.#state.selectedOrganizationId);
+        }
+        return;
+      case "context":
+        if (this.#state.selectedOrganizationId !== null) {
+          await this.selectOrganization(this.#state.selectedOrganizationId);
+        }
+        return;
+    }
+  }
+
   /** Route change or unmount: abort reads and clear protected state locally. */
   dispose(): void {
     if (this.#disposed) return;
@@ -473,6 +550,7 @@ export class TenantController {
   #adoptPrincipal(
     accountId: string | null,
     expiresAt: string | null,
+    method: AccountSessionMethod | null,
     principalGeneration: number,
   ): void {
     if (!this.#stillCurrent(principalGeneration)) return;
@@ -491,6 +569,7 @@ export class TenantController {
         status: accountId === null ? "signed-out" : "signed-in",
         accountId,
         expiresAt,
+        method,
       },
     });
   }
@@ -519,7 +598,7 @@ export class TenantController {
     this.#invalidateProtected();
     this.#set({
       ...this.#state,
-      principal: { status: "expired", accountId: null, expiresAt: null },
+      principal: { status: "expired", accountId: null, expiresAt: null, method: null },
       busy: false,
     });
   }
@@ -531,7 +610,7 @@ export class TenantController {
       this.#invalidateProtected();
       this.#set({
         ...this.#state,
-        principal: { status: "signed-out", accountId: null, expiresAt: null },
+        principal: { status: "signed-out", accountId: null, expiresAt: null, method: null },
         busy: false,
       });
       return;

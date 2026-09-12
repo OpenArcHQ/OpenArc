@@ -1,0 +1,23 @@
+{
+  "name": "@openarc/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "main": "./dist/main.js",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run -c vitest.config.ts",
+    "test:postgres": "vitest run -c vitest.postgres.config.ts"
+  },
+  "dependencies": {
+    "@openarc/db": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "4.23.13",
+    "vitest": "4.1.11"
+  }
+}
