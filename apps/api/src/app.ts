@@ -31,6 +31,8 @@ import { registerTenantRoutes, TENANT_ROUTE_PREFIX } from "./tenant/routes.js";
 import type { TenantReadService } from "./tenant/service.js";
 import { registerTenantWriteRoutes } from "./tenant/write-routes.js";
 import type { TenantWriteService } from "./tenant/write-service.js";
+import { registerMarketRoutes, MARKET_ROUTE_PREFIX } from "./market/routes.js";
+import type { MarketService } from "./market/service.js";
 import { registerMachineManagementRoutes } from "./machine/management-routes.js";
 import { registerMachineSessionRoutes, isMachineSessionFamilyPath } from "./machine/session-routes.js";
 import type { MachineManagementService } from "./machine/management-service.js";
@@ -70,6 +72,9 @@ export interface CreateAppOptions {
   tenantWriteService?: TenantWriteService;
   tenantReady?: () => Promise<boolean>;
   tenantMaxResponseBytes?: number;
+  marketService?: MarketService;
+  marketReady?: () => Promise<boolean>;
+  marketMaxResponseBytes?: number;
   machineManagementService?: MachineManagementService;
   machineSessionService?: MachineSessionService;
   machineReady?: () => Promise<boolean>;
@@ -87,6 +92,17 @@ const disabledPaths = [
 function isTenantFamilyPath(path: string): boolean {
   return (
     path === TENANT_ROUTE_PREFIX || path.startsWith(`${TENANT_ROUTE_PREFIX}/`)
+  );
+}
+
+/**
+ * The exact bounded protected market family is the route root or the root plus
+ * a slash. A bare `startsWith` would capture lookalike paths such as
+ * `/v2/provider/organizationsXYZ`, so those keep their legacy behavior.
+ */
+function isMarketFamilyPath(path: string): boolean {
+  return (
+    path === MARKET_ROUTE_PREFIX || path.startsWith(`${MARKET_ROUTE_PREFIX}/`)
   );
 }
 
@@ -121,6 +137,9 @@ function routeClass(url: string): RouteClass {
   // route class or raw path is introduced.
   if (isMachinePath(path)) return "auth";
   if (isTenantFamilyPath(path)) return "tenant";
+  // The protected market family maps to the EXISTING coarse `tenant` metrics
+  // label; no new route class or label is introduced.
+  if (isMarketFamilyPath(path)) return "tenant";
   if (path === CAPABILITIES_PATH) return "capabilities";
   if (path === COMMERCE_CAPABILITIES_PATH) return "capabilities";
   if (path === ARC_ACCOUNT_SNAPSHOT_PATH) return "arc_account";
@@ -136,6 +155,7 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
   sourceBudget, arcAccountService, arcTransactionService, agentRegistryService, jobService, gatewayTransferService,
   authService, authReady, tenantReadService, tenantReady,
   tenantWriteService, tenantMaxResponseBytes,
+  marketService, marketReady, marketMaxResponseBytes,
   machineManagementService, machineSessionService, machineReady }: CreateAppOptions): FastifyInstance {
   // Framework request/error logging is disabled, including parser failures.
   // `frameworkErrors` receives errors raised before the normal request
@@ -201,6 +221,7 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
     const v2Surface =
       rawPath.startsWith("/v2/auth/") ||
       isTenantFamilyPath(rawPath) ||
+      isMarketFamilyPath(rawPath) ||
       commerceCapabilitySurface ||
       machineSurface;
     if (
@@ -278,28 +299,43 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
             ...(config.AUTH_ENABLED ? { authDatabase: "up" as const } : {}), tenantDatabase: "down" }, ...build });
       }
     }
+    if (config.LISTING_MANAGEMENT_ENABLED) {
+      const marketReadyResult = marketReady ? await marketReady().catch(() => false) : false;
+      if (!marketReadyResult) {
+        return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
+          checks: { configuration: "up", sourceRoutes: config.ARC_OBSERVATION_ENABLED ? "enabled" : "disabled",
+            redis: config.ARC_OBSERVATION_ENABLED ? "not_checked" : "not_required",
+            ...(config.AUTH_ENABLED ? { authDatabase: "up" as const } : {}),
+            ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}),
+            marketDatabase: "down" }, ...build });
+      }
+    }
     if (machineEnabled) {
       const machineReadyResult = machineReady ? await machineReady().catch(() => false) : false;
       if (!machineReadyResult) {
         return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
           checks: { configuration: "up", sourceRoutes: config.ARC_OBSERVATION_ENABLED ? "enabled" : "disabled",
             redis: config.ARC_OBSERVATION_ENABLED ? "not_checked" : "not_required",
+            ...(config.LISTING_MANAGEMENT_ENABLED ? { marketDatabase: "up" as const } : {}),
             machineDatabase: "down" }, ...build });
       }
     }
     if (config.ARC_OBSERVATION_ENABLED) {
       const redisReady = sourceBudget ? await sourceBudget.ready(AbortSignal.timeout(750)) : false;
       if (!redisReady) return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
-        checks: { configuration: "up", sourceRoutes: "enabled", redis: "down" }, ...build });
+        checks: { configuration: "up", sourceRoutes: "enabled", redis: "down",
+          ...(config.LISTING_MANAGEMENT_ENABLED ? { marketDatabase: "up" as const } : {}) }, ...build });
       return { ok: true as const, status: "ready" as const,
         checks: { configuration: "up", sourceRoutes: "enabled", redis: "up",
           ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}),
+          ...(config.LISTING_MANAGEMENT_ENABLED ? { marketDatabase: "up" as const } : {}),
           ...(machineEnabled ? { machineDatabase: "up" as const } : {}) }, ...build };
     }
     return { ok: true as const, status: "ready" as const,
       checks: { configuration: "up", sourceRoutes: "disabled", redis: "not_required",
         ...(config.AUTH_ENABLED ? { authDatabase: "up" as const } : {}),
         ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}),
+        ...(config.LISTING_MANAGEMENT_ENABLED ? { marketDatabase: "up" as const } : {}),
         ...(machineEnabled ? { machineDatabase: "up" as const } : {}) }, ...build };
   });
 
@@ -366,6 +402,30 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
       cookieNames: authCookieNames(false),
       // A disabled registration never invokes the service.
       service: tenantWriteService as TenantWriteService,
+      buildSha: config.COMMIT_SHA,
+      enabled: false,
+    });
+  }
+
+  if (config.LISTING_MANAGEMENT_ENABLED) {
+    if (!marketService) throw new Error("Market listing dependencies are unavailable");
+    registerMarketRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(config.APP_ORIGIN.startsWith("https://")),
+      service: marketService,
+      buildSha: config.COMMIT_SHA,
+      enabled: true,
+      ...(marketMaxResponseBytes !== undefined
+        ? { maxResponseBytes: marketMaxResponseBytes }
+        : {}),
+    });
+  } else {
+    // Default-off registers NO market route; the request keeps the framework's
+    // ordinary 404 instead of a simulated disabled response.
+    registerMarketRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(false),
+      service: marketService as MarketService,
       buildSha: config.COMMIT_SHA,
       enabled: false,
     });

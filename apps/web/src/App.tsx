@@ -10,6 +10,18 @@ import { VaultWorkspace } from "./vault/VaultWorkspace.js";
 const SuppliedDesignApp = lazy(() => import("./supplied/DesignApp.js"));
 const AccountPage = lazy(() => import("./account/AccountPage.js"));
 const TenantApp = lazy(() => import("./tenant/TenantApp.js"));
+const MarketApp = lazy(() => import("./market/MarketApp.js"));
+
+/**
+ * The new public marketplace routes. This is a pure route predicate: it only
+ * selects the lazily-loaded public shell and never touches the wallet, Vault,
+ * account or protected tenant controllers.
+ */
+function isMarketPublicPath(path: string): boolean {
+  if (path === "/market" || path.startsWith("/market/")) return true;
+  if (path.startsWith("/providers/")) return true;
+  return path === "/docs" || path === "/status" || path === "/legal";
+}
 
 interface DesignErrorBoundaryProps {
   children: ReactNode;
@@ -118,6 +130,23 @@ export function App({ build }: AppProps) {
         }
       >
         <TenantApp />
+      </Suspense>
+    );
+  }
+
+  // Public marketplace routes lazily construct the public catalog shell only
+  // when one of these paths is visited. The shell owns its own flag gate, so a
+  // disabled deployment makes zero catalog or auth requests.
+  if (isMarketPublicPath(path)) {
+    return (
+      <Suspense
+        fallback={
+          <main className="supplied-fallback" role="status">
+            Loading the public marketplace…
+          </main>
+        }
+      >
+        <MarketApp />
       </Suspense>
     );
   }
