@@ -9,11 +9,12 @@ import type { ClaimedOutboxEvent } from '@openarc/db';
  * providers, sign or broadcast, reconcile evidence, or claim any commerce side
  * effect. Future projection handlers are a separate phase.
  *
- * The registry is a fixed, closed union of twelve resourceType+eventType pairs
- * already accepted by ClaimedOutboxEvent (the original six plus four
- * notification-only credential events and two market listing events). There
- * are no dynamic callbacks, user URLs or plugin handlers, and the original
- * event is never JSON-logged.
+ * The registry is a fixed, closed union of resourceType+eventType pairs already
+ * accepted by ClaimedOutboxEvent (the original tenant events, four
+ * notification-only credential events, the market listing and listing-version
+ * lifecycle events, and the five control policy events). There are no dynamic
+ * callbacks, user URLs or plugin handlers, and the original event is never
+ * JSON-logged.
  */
 
 export const INVALID_EVENT_MESSAGE = 'Durable notification event is invalid.';
@@ -52,7 +53,12 @@ export type NotificationEventKey =
   | 'listing_version|market.listing.origin_review.recorded'
   | 'listing_version|market.listing.version.published'
   | 'listing_version|market.listing.version.paused'
-  | 'listing_version|market.listing.version.retired';
+  | 'listing_version|market.listing.version.retired'
+  | 'budget_policy|control.policy.created'
+  | 'budget_policy_revision|control.policy.revision.created'
+  | 'budget_policy|control.policy.paused'
+  | 'budget_policy|control.policy.resumed'
+  | 'budget_policy|control.policy.revoked';
 
 export type NotificationHandlerRegistry = Readonly<
   Record<NotificationEventKey, NotificationHandler>
@@ -75,6 +81,11 @@ export const NOTIFICATION_EVENT_KEYS: readonly NotificationEventKey[] = [
   'listing_version|market.listing.version.published',
   'listing_version|market.listing.version.paused',
   'listing_version|market.listing.version.retired',
+  'budget_policy|control.policy.created',
+  'budget_policy_revision|control.policy.revision.created',
+  'budget_policy|control.policy.paused',
+  'budget_policy|control.policy.resumed',
+  'budget_policy|control.policy.revoked',
 ];
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -100,6 +111,44 @@ function isLifecycleListingVersionResource(value: string): boolean {
     value.length <= LISTING_VERSION_RESOURCE_MAX_LENGTH &&
     LIFECYCLE_LISTING_VERSION_RESOURCE.test(value)
   );
+}
+
+// Control policy root resource: canonical lower-case openarc:policy: UUID with
+// an absolute end (a trailing newline can never satisfy the anchor).
+const POLICY_ID = /^openarc:policy:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\s\S])/;
+// Control policy revision resource: canonical root + '@' + canonical decimal
+// 2..999999999 (so '@1', '@0', '@01', '@1000000000' and any extra '@' fail).
+// The absolute end rejects a trailing newline or any other suffix.
+const POLICY_REVISION_RESOURCE_MAX_LENGTH = 160;
+const POLICY_REVISION_RESOURCE = /^openarc:policy:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@([2-9][0-9]{0,8}|1[0-9]{1,8})(?![\s\S])/;
+
+function isPolicyRevisionResource(value: string): boolean {
+  return value.length <= POLICY_REVISION_RESOURCE_MAX_LENGTH && POLICY_REVISION_RESOURCE.test(value);
+}
+
+// The exact safe metadata keyset accepted at the handler boundary. Anything
+// else (a private canary, an internal digest, a raw body) is rejected rather
+// than ignored, and the fixed error never echoes it.
+const SAFE_METADATA_KEYS = [
+  'attemptCount',
+  'eventId',
+  'eventType',
+  'leaseGeneration',
+  'leaseUntil',
+  'mutationId',
+  'organizationId',
+  'payloadVersion',
+  'resourceId',
+  'resourceType',
+] as const;
+
+function hasOnlySafeMetadataKeys(raw: Record<string, unknown>): boolean {
+  const keys = Object.keys(raw);
+  if (keys.length !== SAFE_METADATA_KEYS.length) return false;
+  for (const key of keys) {
+    if (!(SAFE_METADATA_KEYS as readonly string[]).includes(key)) return false;
+  }
+  return true;
 }
 const DECIMAL = /^(0|[1-9][0-9]*)$/;
 
@@ -145,6 +194,7 @@ export function ackIdentityOf(
  */
 export function validateNotification(raw: unknown): ClaimedOutboxEvent {
   if (!isRecord(raw)) throw new InvalidEventError();
+  if (!hasOnlySafeMetadataKeys(raw)) throw new InvalidEventError();
   const eventId = raw['eventId'];
   const organizationId = raw['organizationId'];
   const mutationId = raw['mutationId'];
@@ -213,6 +263,15 @@ export function validateNotification(raw: unknown): ClaimedOutboxEvent {
     case 'listing_version|market.listing.version.retired':
       if (!isLifecycleListingVersionResource(resourceId)) throw new InvalidEventError();
       break;
+    case 'budget_policy|control.policy.created':
+    case 'budget_policy|control.policy.paused':
+    case 'budget_policy|control.policy.resumed':
+    case 'budget_policy|control.policy.revoked':
+      if (!POLICY_ID.test(resourceId)) throw new InvalidEventError();
+      break;
+    case 'budget_policy_revision|control.policy.revision.created':
+      if (!isPolicyRevisionResource(resourceId)) throw new InvalidEventError();
+      break;
     default:
       throw new InvalidEventError();
   }
@@ -241,10 +300,15 @@ const DEFAULT_HANDLERS: Record<NotificationEventKey, NotificationHandler> = {
   'listing_version|market.listing.version.published': consume,
   'listing_version|market.listing.version.paused': consume,
   'listing_version|market.listing.version.retired': consume,
+  'budget_policy|control.policy.created': consume,
+  'budget_policy_revision|control.policy.revision.created': consume,
+  'budget_policy|control.policy.paused': consume,
+  'budget_policy|control.policy.resumed': consume,
+  'budget_policy|control.policy.revoked': consume,
 };
 
 /**
- * Build the fixed twelve-entry registry. Overrides are a controlled test seam for
+ * Build the fixed closed registry. Overrides are a controlled test seam for
  * bounded async handlers; they only replace an existing allowlisted key.
  */
 export function createHandlerRegistry(

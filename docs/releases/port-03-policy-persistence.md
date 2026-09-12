@@ -33,5 +33,13 @@ The final combined PORT-03 gate remains pending consumer integration. Do not
 present the prior full-suite run as verification of that later combined revision.
 
 No scoped commerce token, reservation, grant, provider call, signing or broadcast
-was added. Earlier migrations remain byte-identical. Five policy notification
-tuples are allowlisted; notification-worker integration is separately verified.
+was added. Earlier migrations remain byte-identical.
+
+Notification-worker integration is accepted on the DB8 foundation:35 worker
+unit tests and11 real PostgreSQL tests, plus build/typecheck/lint, passed. The
+new fixture creates the policy and revision and performs pause/resume/revoke
+through the real store, then consumes and acknowledges exactly five durable
+events without replay duplication. No direct outbox insertion or mocked success
+is used. Closed event/resource validation and private-canary rejection passed
+independent review. Consuming a notification does not execute a business action,
+send a message or dispatch a payment.

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ClaimedOutboxEvent } from '@openarc/db';
 import { parseWorkerConfig, WorkerConfigError } from '../src/config.js';
 import {
+  INVALID_EVENT_MESSAGE,
   InvalidEventError,
   NOTIFICATION_EVENT_KEYS,
   ackIdentityOf,
@@ -123,6 +124,36 @@ const SIX_CASES: readonly EventCase[] = [
     resourceType: 'listing_version',
     eventType: 'market.listing.version.retired',
     resourceId: 'openarc:listing:00000000-0000-4000-8000-000000000025@1',
+  },
+];
+
+const POLICY_ID = 'openarc:policy:00000000-0000-4000-8000-000000000040';
+
+const POLICY_CASES: readonly EventCase[] = [
+  {
+    resourceType: 'budget_policy',
+    eventType: 'control.policy.created',
+    resourceId: POLICY_ID,
+  },
+  {
+    resourceType: 'budget_policy_revision',
+    eventType: 'control.policy.revision.created',
+    resourceId: `${POLICY_ID}@2`,
+  },
+  {
+    resourceType: 'budget_policy',
+    eventType: 'control.policy.paused',
+    resourceId: 'openarc:policy:00000000-0000-4000-8000-000000000041',
+  },
+  {
+    resourceType: 'budget_policy',
+    eventType: 'control.policy.resumed',
+    resourceId: 'openarc:policy:00000000-0000-4000-8000-000000000042',
+  },
+  {
+    resourceType: 'budget_policy',
+    eventType: 'control.policy.revoked',
+    resourceId: 'openarc:policy:00000000-0000-4000-8000-000000000043',
   },
 ];
 
@@ -304,16 +335,129 @@ describe('worker configuration', () => {
 });
 
 describe('notification handler registry', () => {
-  it('dispatches exactly the twelve allowlisted events', async () => {
+  it('dispatches exactly the allowlisted events, including the five control policy tuples', async () => {
     const registry = createHandlerRegistry();
     expect(Object.keys(registry).sort()).toEqual([...NOTIFICATION_EVENT_KEYS].sort());
-    for (const item of SIX_CASES) {
+    for (const item of [...SIX_CASES, ...POLICY_CASES]) {
       const event = eventFor(item);
       const key = eventKeyOf(event);
       const handler = registry[key];
       expect(handler).toBeDefined();
       await handler?.(event, { signal: new AbortController().signal });
     }
+  });
+
+  it('accepts each of the five control policy tuples with its exact resource grammar', async () => {
+    const registry = createHandlerRegistry();
+    for (const item of POLICY_CASES) {
+      const event = eventFor(item);
+      const key = `${item.resourceType}|${item.eventType}`;
+      expect(eventKeyOf(event)).toBe(key);
+      expect(validateNotification(event)).toEqual(event);
+      const handler = registry[key];
+      expect(handler).toBeDefined();
+      await handler?.(event, { signal: new AbortController().signal });
+    }
+  });
+
+  it('rejects mismatched control policy resource/event tuples', () => {
+    const mismatches = [
+      baseEvent({
+        resourceType: 'budget_policy',
+        eventType: 'control.policy.revision.created',
+        resourceId: POLICY_ID,
+      }),
+      baseEvent({
+        resourceType: 'budget_policy_revision',
+        eventType: 'control.policy.created',
+        resourceId: `${POLICY_ID}@2`,
+      }),
+      baseEvent({
+        resourceType: 'budget_policy',
+        eventType: 'control.policy.paused',
+        resourceId: `${POLICY_ID}@2`,
+      }),
+    ];
+    for (const event of mismatches) {
+      expect(() => validateNotification(event)).toThrow(InvalidEventError);
+    }
+  });
+
+  it('rejects malformed policy ids and revisions without coercion', () => {
+    const malformedIds = [
+      'openarc:policy:00000000-0000-4000-8000-00000000004', // short
+      'openarc:policy:00000000-0000-0000-8000-000000000040', // version nibble 0
+      'openarc:policy:00000000-0000-4000-7000-000000000040', // variant 7
+      'openarc:policy:00000000-0000-4000-8000-00000000004Z', // uppercase/non-hex
+      'openarc:policy:00000000-0000-4000-8000-000000000040\n', // trailing newline
+      `${POLICY_ID}@2`, // revision resource on a root event
+      `${POLICY_ID} `, // trailing space
+    ];
+    for (const resourceId of malformedIds) {
+      expect(() =>
+        validateNotification(
+          baseEvent({
+            resourceType: 'budget_policy',
+            eventType: 'control.policy.created',
+            resourceId,
+          }),
+        ),
+      ).toThrow(InvalidEventError);
+    }
+
+    const revisionEvent = (revision: string): ClaimedOutboxEvent =>
+      baseEvent({
+        resourceType: 'budget_policy_revision',
+        eventType: 'control.policy.revision.created',
+        resourceId: `${POLICY_ID}@${revision}`,
+      });
+    for (const good of ['2', '9', '10', '100', '999999999']) {
+      expect(() => validateNotification(revisionEvent(good))).not.toThrow();
+    }
+    for (const bad of [
+      '0',
+      '1',
+      '01',
+      '1000000000', // overflow: 10 digits
+      '1.0',
+      '+2',
+      '1e2',
+      '2\n',
+      '2 ',
+      '2@3',
+      '',
+    ]) {
+      expect(() => validateNotification(revisionEvent(bad))).toThrow(InvalidEventError);
+    }
+  });
+
+  it('rejects unknown metadata keys without echoing a private canary', () => {
+    const CANARY = 'CANARY-private-policy-key-7f31';
+    const withCanary = baseEvent({
+      resourceType: 'budget_policy',
+      eventType: 'control.policy.created',
+      resourceId: POLICY_ID,
+      privateCanary: CANARY,
+    });
+    let message = '';
+    try {
+      validateNotification(withCanary);
+    } catch (error) {
+      expect(error).toBeInstanceOf(InvalidEventError);
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toBe(INVALID_EVENT_MESSAGE);
+    expect(message).not.toContain(CANARY);
+    expect(JSON.stringify(withCanary)).toContain(CANARY);
+  });
+
+  it('consumes a policy event with an already-aborted signal without side effects', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const event = eventFor(POLICY_CASES[0]!);
+    const handler = createHandlerRegistry()[eventKeyOf(event)];
+    expect(handler).toBeDefined();
+    expect(await handler?.(event, { signal: controller.signal })).toBeUndefined();
   });
 
   it('rejects unknown and mismatched events without a truthy success', async () => {
