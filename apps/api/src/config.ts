@@ -57,6 +57,7 @@ const EnvironmentSchema = z.object({
   POLICY_MANAGEMENT_ENABLED: flag(),
   MACHINE_CREDENTIAL_MANAGEMENT_ENABLED: flag(),
   MACHINE_SESSION_EXCHANGE_ENABLED: flag(),
+  COMMERCE_SESSIONS_ENABLED: flag(),
   MACHINE_CREDENTIAL_PEPPER_VERSION: pepperVersion().optional(),
   MACHINE_CREDENTIAL_PEPPER: canonical32ByteSecret().optional(),
   MACHINE_CREDENTIAL_PREVIOUS_VERSION: pepperVersion().optional(),
@@ -259,6 +260,25 @@ const EnvironmentSchema = z.object({
     }
     if (hasPreviousPepper && config.MACHINE_CREDENTIAL_PREVIOUS_PEPPER === config.MACHINE_CREDENTIAL_PEPPER) {
       context.addIssue({ code: "custom", path: ["MACHINE_CREDENTIAL_PREVIOUS_PEPPER"], message: "Machine previous pepper material must differ from the current pepper" });
+    }
+  }
+  // Commerce sessions are an INDEPENDENT protected family. Enabling them
+  // requires authentication and the dedicated restricted TENANT_DATABASE_URL
+  // (distinct from AUTH_DATABASE_URL), but is deliberately independent of
+  // tenant HTTP reads/writes, marketplace, machine issuance/exchange, policy,
+  // wallet and ARC observation flags. A shared auth/tenant connection would
+  // erase the restricted-role boundary, so the URLs must differ.
+  if (config.COMMERCE_SESSIONS_ENABLED) {
+    if (!config.AUTH_ENABLED) {
+      context.addIssue({ code: "custom", path: ["COMMERCE_SESSIONS_ENABLED"], message: "Commerce sessions require authentication" });
+    }
+    if (!config.TENANT_DATABASE_URL) {
+      context.addIssue({ code: "custom", path: ["COMMERCE_SESSIONS_ENABLED"], message: "Commerce sessions require a dedicated restricted database URL" });
+    } else if (
+      config.AUTH_DATABASE_URL !== undefined &&
+      config.TENANT_DATABASE_URL === config.AUTH_DATABASE_URL
+    ) {
+      context.addIssue({ code: "custom", path: ["TENANT_DATABASE_URL"], message: "Commerce sessions require a dedicated restricted role connection" });
     }
   }
   if (config.GATEWAY_EVIDENCE_ENABLED) {

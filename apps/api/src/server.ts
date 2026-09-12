@@ -5,6 +5,7 @@ import { startTenantRuntime, type StartedTenantRuntime } from "./tenant/runtime.
 import { startMarketRuntime, type StartedMarketRuntime } from "./market/runtime.js";
 import { startMachineRuntime, type StartedMachineRuntime } from "./machine/runtime.js";
 import { startControlRuntime, type StartedControlRuntime } from "./control/runtime.js";
+import { startCommerceSessionRuntime, type StartedCommerceSessionRuntime } from "./control/session-runtime.js";
 import { ArcAccountService } from "./arc/account-service.js";
 import { AgentRegistryService } from "./arc/agent-registry-service.js";
 import { JobService } from "./arc/job-service.js";
@@ -25,6 +26,7 @@ async function start(): Promise<void> {
   let marketRuntimeHandle: StartedMarketRuntime | undefined;
   let machineRuntimeHandle: StartedMachineRuntime | undefined;
   let controlRuntimeHandle: StartedControlRuntime | undefined;
+  let commerceSessionRuntimeHandle: StartedCommerceSessionRuntime | undefined;
   let redis: Awaited<ReturnType<typeof connectBudgetRedis>> | undefined;
   let sourceBudget: SourceBudget | undefined;
   let rpc: ArcRpcClient | undefined;
@@ -102,6 +104,14 @@ async function start(): Promise<void> {
           auth: authRuntimeHandle!.service,
         })
       : undefined;
+    commerceSessionRuntimeHandle = config.COMMERCE_SESSIONS_ENABLED
+      ? await startCommerceSessionRuntime({
+          tenantDatabaseUrl: config.TENANT_DATABASE_URL as string,
+          authSecret: config.AUTH_SECRET as string,
+          auth: authRuntimeHandle!.service,
+          rateLimitStore: authRuntimeHandle!.rateLimitStore,
+        })
+      : undefined;
     redis = config.ARC_OBSERVATION_ENABLED && config.REDIS_URL ? await connectBudgetRedis(config.REDIS_URL) : undefined;
     sourceBudget = redis && config.ABUSE_LIMIT_SECRET ? new SourceBudget(redis, {
       secret: config.ABUSE_LIMIT_SECRET,
@@ -151,6 +161,12 @@ async function start(): Promise<void> {
             policyReady: () => controlRuntimeHandle!.ready(),
           }
         : {}),
+      ...(commerceSessionRuntimeHandle
+        ? {
+            commerceSessionService: commerceSessionRuntimeHandle.service,
+            commerceSessionReady: () => commerceSessionRuntimeHandle!.ready(),
+          }
+        : {}),
       ...(config.GATEWAY_EVIDENCE_ENABLED ? { gatewayTransferService: new GatewayTransferService(new BoundedGatewayClient({
         timeoutMs: config.SOURCE_TIMEOUT_MS, maxResponseBytes: config.SOURCE_MAX_RESPONSE_BYTES,
       })) } : {}),
@@ -166,6 +182,7 @@ async function start(): Promise<void> {
       await marketRuntimeHandle?.close();
       await machineRuntimeHandle?.close();
       await controlRuntimeHandle?.close();
+      await commerceSessionRuntimeHandle?.close();
       if (redis?.isOpen) redis.destroy();
       process.exit(0);
     };
@@ -181,6 +198,7 @@ async function start(): Promise<void> {
     await marketRuntimeHandle?.close().catch(() => undefined);
     await machineRuntimeHandle?.close().catch(() => undefined);
     await controlRuntimeHandle?.close().catch(() => undefined);
+    await commerceSessionRuntimeHandle?.close().catch(() => undefined);
     if (redis?.isOpen) redis.destroy();
     throw error;
   }
