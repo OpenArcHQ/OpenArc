@@ -25,6 +25,7 @@ export default defineConfig({
       "test/market-api.postgres.test.ts",
       "test/market-lifecycle-api.postgres.test.ts",
       "test/machine-api.postgres.test.ts",
+      "test/control-policy-api.postgres.test.ts",
     ],
     fileParallelism: false,
   },

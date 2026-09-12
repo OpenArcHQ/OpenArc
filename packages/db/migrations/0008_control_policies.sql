@@ -1541,6 +1541,24 @@ BEGIN
     FROM openarc_durable.idempotency_records r
    WHERE r.organization_id = organization_id AND r.mutation_id = mutation_id
      AND r.actor_account_id = v_actor AND r.status = 'committed'
+     -- Exact presented session-context binding: the recorded digest must equal
+     -- sha256(domain || ':' || session_hash) for THIS presenting session and the
+     -- row's operation, byte-for-byte with TS digestPolicySessionContext. A
+     -- different live session for the same account can never recover the
+     -- receipt from account identity or session liveness alone.
+     AND r.session_context_digest = encode(
+       sha256(convert_to(
+         (CASE r.operation
+            WHEN 'control.policy.create' THEN 'openarc.control.policy.create.session.v1'
+            WHEN 'control.policy.revision.create' THEN 'openarc.control.policy.revision.create.session.v1'
+            WHEN 'control.policy.pause' THEN 'openarc.control.policy.pause.session.v1'
+            WHEN 'control.policy.resume' THEN 'openarc.control.policy.resume.session.v1'
+            WHEN 'control.policy.revoke' THEN 'openarc.control.policy.revoke.session.v1'
+          END) || ':' || session_hash,
+         'UTF8'
+       )),
+       'hex'
+     )
      AND r.operation IN (
        'control.policy.create',
        'control.policy.revision.create',

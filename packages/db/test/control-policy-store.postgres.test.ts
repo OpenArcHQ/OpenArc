@@ -729,6 +729,45 @@ describe('CAS, replay and conflicts', () => {
     void created;
   });
 
+  it('hides a committed mutation from a second live session of the same account', async () => {
+    const owner = await seedOwner(130);
+    await seedAgent(130, owner.org);
+    const created = await createPolicy(owner, 130);
+
+    // The committing session resolves its own receipt.
+    const own = await store.getPolicyMutationStatus(owner.hash, owner.org, mutationId(130));
+    expect(own.status).toBe('committed');
+
+    // A SECOND LIVE session for the SAME account (same org, unexpired,
+    // non-recovery) is a different presented session context. Exact digest
+    // binding must hide the receipt independently of the account identity and
+    // session liveness checks that already exist.
+    const secondHash = await seedSession(131, owner.account);
+    expect(secondHash).not.toBe(owner.hash);
+    const hidden = await store.getPolicyMutationStatus(secondHash, owner.org, mutationId(130));
+    expect(hidden).toEqual({ status: 'not_found' });
+
+    // Replaying the SAME mutation/key body from the second session is a
+    // session-context idempotency conflict, never a replayed receipt.
+    await expectCode(
+      store.createPolicy(secondHash, owner.org, policyContent(owner.org, 130), {
+        idempotencyKey: key(130),
+        mutationId: mutationId(130),
+      }),
+      'CONTROL_POLICY_STORE_IDEMPOTENCY_CONFLICT',
+    );
+
+    // The original session still retrieves its own receipt unchanged and the
+    // conflict left exactly one durable record for the mutation.
+    const stillOwn = await store.getPolicyMutationStatus(owner.hash, owner.org, mutationId(130));
+    expect(stillOwn.status).toBe('committed');
+    const durable = await counts(owner.org);
+    expect(durable.idem).toBe(1);
+    expect(durable.audit).toBe(1);
+    expect(durable.outbox).toBe(1);
+    void created;
+  });
+
   it('enforces at most one active root per organization and subject agent', async () => {
     const owner = await seedOwner(170);
     await seedAgent(170, owner.org);

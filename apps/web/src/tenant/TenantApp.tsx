@@ -2,6 +2,7 @@ import {
   ARC_TESTNET,
   CommerceAgentProfileSchema,
   CommerceProviderProfileSchema,
+  type CommerceAgentProfile,
   type CommerceListingOwnerVersion,
   type CommerceHumanRole,
 } from "@openarc/shared";
@@ -21,11 +22,23 @@ import {
 } from "./tenant-controller.js";
 import { machineCredentialEnabled, tenantMutationEnabled, tenantReadsEnabled } from "./availability.js";
 import { listingManagementEnabledFromEnv } from "./listing-availability.js";
+import { policyManagementEnabledFromEnv } from "./policy-availability.js";
 import { TenantMutationPanel } from "./TenantMutationPanel.js";
 import { MachineCredentialPanel } from "./MachineCredentialPanel.js";
 import { ListingListPanel } from "./ListingListPanel.js";
 import { ListingEditorPanel, ListingLifecycleActions } from "./ListingEditorPanel.js";
 import { ListingVersionHistory } from "./ListingVersionHistory.js";
+import { PolicyListPanel } from "./PolicyListPanel.js";
+import { PolicyRevisionHistory } from "./PolicyRevisionHistory.js";
+import {
+  beginAppendFromRevision,
+  PolicyController,
+  initialPolicyControllerState,
+  renderPolicyState,
+  suppressStalePolicyContext,
+  type PolicyControllerState,
+} from "./policy-controller.js";
+import { parsePolicyRoute, type PolicyRoute } from "./policy-routes.js";
 import {
   ListingController,
   initialListingControllerState,
@@ -56,6 +69,7 @@ import {
 
 import tenantCssUrl from "./tenant.css?url";
 import listingCssUrl from "./market-listing.css?url";
+import policyCssUrl from "./control-policy.css?url";
 
 /**
  * Protected organization workspace.
@@ -71,12 +85,15 @@ type AppPath =
   | "/app/agents"
   | "/app/provider"
   | "/app/provider/listings"
-  | "/app/provider/listings/new";
+  | "/app/provider/listings/new"
+  | "/app/budgets"
+  | "/app/budgets/new";
 
 type WorkspacePath =
   | AppPath
   | "/app"
   | { readonly kind: "listing-detail"; readonly listingId: string }
+  | { readonly kind: "policy-detail"; readonly policyId: string }
   | "unknown";
 
 function useTenantStyles(): void {
@@ -103,6 +120,19 @@ function useListingStyles(active: boolean): void {
   }, [active]);
 }
 
+/** Mounts the scoped policy stylesheet for the feature lifetime only. */
+function usePolicyStyles(active: boolean): void {
+  useEffect(() => {
+    if (!active) return;
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = policyCssUrl;
+    link.dataset.policyStyle = "true";
+    document.head.append(link);
+    return () => link.remove();
+  }, [active]);
+}
+
 function currentPath(): WorkspacePath {
   if (typeof window === "undefined") return "/app";
   const raw = window.location.pathname.replace(/\/+$/u, "") || "/";
@@ -116,6 +146,13 @@ function currentPath(): WorkspacePath {
     if (listing.kind === "roots") return "/app/provider/listings";
     if (listing.kind === "new") return "/app/provider/listings/new";
     if (listing.kind === "detail") return { kind: "listing-detail", listingId: listing.listingId };
+  }
+  if (raw === "/app/budgets") return "/app/budgets";
+  if (raw === "/app/budgets/new") return "/app/budgets/new";
+  if (raw.startsWith("/app/budgets/")) {
+    const policy = parsePolicyRoute(raw);
+    if (policy === null) return "unknown";
+    if (policy.kind === "detail") return { kind: "policy-detail", policyId: policy.policyId };
   }
   if (raw.startsWith("/app/")) return "unknown";
   return "unknown";
@@ -138,6 +175,20 @@ function listingRouteOf(path: WorkspacePath): ListingRoute | null {
 
 function isListingWorkspacePath(path: WorkspacePath): boolean {
   return listingRouteOf(path) !== null;
+}
+
+/** The route object for a policy workspace path, or null when not policy. */
+function policyRouteOf(path: WorkspacePath): PolicyRoute | null {
+  if (path === "/app/budgets") return { kind: "roots" };
+  if (path === "/app/budgets/new") return { kind: "new" };
+  if (typeof path === "object" && path.kind === "policy-detail") {
+    return { kind: "detail", policyId: path.policyId };
+  }
+  return null;
+}
+
+function isPolicyWorkspacePath(path: WorkspacePath): boolean {
+  return policyRouteOf(path) !== null;
 }
 
 export default function TenantApp() {
@@ -164,6 +215,10 @@ export default function TenantApp() {
   // The listing surface is independent of the write and machine flags: it has
   // its own server authority and its own capability probe. All defaults false.
   const listingEnabled = useMemo(() => listingManagementEnabledFromEnv(), []);
+  // The policy surface is independent of tenant writes, machine, listing,
+  // Vault, wallet and session flags: it has its own server authority and its
+  // own credentialless capability probe. All defaults false.
+  const policyEnabled = useMemo(() => policyManagementEnabledFromEnv(), []);
   const [state, setState] = useState<TenantViewControllerState>(initialTenantState);
   const [mutationState, setMutationState] = useState<TenantMutationState>(initialTenantMutationState);
   const [machineState, setMachineState] = useState<MachineConsoleState>(initialMachineConsoleState);
@@ -172,6 +227,15 @@ export default function TenantApp() {
   const [listingCreating, setListingCreating] = useState(false);
   const [listingProviderId, setListingProviderId] = useState<string | null>(null);
   const [listingBaseVersion, setListingBaseVersion] = useState<CommerceListingOwnerVersion | null>(null);
+  const [policyState, setPolicyState] = useState<PolicyControllerState>(initialPolicyControllerState);
+  const [policyCreating, setPolicyCreating] = useState(false);
+  // A monotonic generation that forces the policy create editor to REMOUNT
+  // (and therefore reinitialize every useState field) on an external privacy
+  // boundary: hidden/pagehide. Account/organization/role changes are already
+  // part of the editor key below, so they remount synchronously in the same
+  // render the context changes. The generation is committed inside the same
+  // flushSync as the controller clear, so no previous form frame is painted.
+  const [policyFormGeneration, setPolicyFormGeneration] = useState(0);
   const [selectedProfile, setSelectedProfile] = useState<MachineCredentialTarget | null>(null);
   const [path, setPath] = useState<WorkspacePath>(currentPath);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -183,14 +247,18 @@ export default function TenantApp() {
   const writeControllerRef = useRef<TenantWriteController | null>(null);
   const machineControllerRef = useRef<MachineCredentialController | null>(null);
   const listingControllerRef = useRef<ListingController | null>(null);
+  const policyControllerRef = useRef<PolicyController | null>(null);
   const boundMachineContextRef = useRef<MachineRenderContext | null>(null);
   const boundListingContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
+  const boundPolicyContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
   const listingOpenRef = useRef<((listingId: string) => void) | null>(null);
+  const policyOpenRef = useRef<((policyId: string) => void) | null>(null);
   const accountRef = useRef<AccountFlowController | null>(null);
   const known = isKnownPath(path);
 
   useTenantStyles();
   useListingStyles(listingEnabled);
+  usePolicyStyles(policyEnabled);
 
   useEffect(() => {
     const onPopState = () => setPath(currentPath());
@@ -266,6 +334,32 @@ export default function TenantApp() {
         })
       : null;
     listingControllerRef.current = listingController;
+    // The policy controller is constructed ONLY when its own flag and all its
+    // prerequisites are enabled. It mounts no request until a protected policy
+    // route initializes the independent credentialless capability gate, and it
+    // never depends on the tenant-write, machine, listing, Vault, wallet or
+    // session flags. With it off, ZERO policy/capability requests are made.
+    const policyController = policyEnabled
+      ? new PolicyController({
+          account,
+          reads: {
+            currentOrganizationId: () => controller.currentOrganizationId(),
+            currentRole: () => controller.currentRole(),
+            currentAccountId: () =>
+              account.state.session.signedIn ? account.state.session.accountId : null,
+            abortPendingReads: () => controller.abortPendingReads(),
+            reloadAfterCommit: async () => {
+              // Policy revisions are independent of the tenant read sections.
+              // A context reload here would transiently clear the authoritative
+              // role and erase the just-committed receipt, so the controller
+              // reloads its own bounded policy page after the commit instead.
+            },
+          },
+          onState: setPolicyState,
+          onCommittedPolicy: (policyId) => policyOpenRef.current?.(policyId),
+        })
+      : null;
+    policyControllerRef.current = policyController;
     const onVisibility = () => {
       if (document.visibilityState === "hidden") {
         // The hidden boundary is external and synchronous: a browser may
@@ -279,6 +373,8 @@ export default function TenantApp() {
           writeController?.clear();
           machineController?.clear();
           listingController?.clear();
+          policyController?.clear();
+          setPolicyFormGeneration((value) => value + 1);
         });
       }
     };
@@ -288,6 +384,8 @@ export default function TenantApp() {
         writeController?.clear();
         machineController?.clear();
         listingController?.clear();
+        policyController?.clear();
+        setPolicyFormGeneration((value) => value + 1);
       });
     };
     document.addEventListener("visibilitychange", onVisibility);
@@ -300,13 +398,15 @@ export default function TenantApp() {
       writeController?.dispose();
       machineController?.dispose();
       listingController?.dispose();
+      policyController?.dispose();
       if (controllerRef.current === controller) controllerRef.current = null;
       if (writeControllerRef.current === writeController) writeControllerRef.current = null;
       if (machineControllerRef.current === machineController) machineControllerRef.current = null;
       if (listingControllerRef.current === listingController) listingControllerRef.current = null;
+      if (policyControllerRef.current === policyController) policyControllerRef.current = null;
       if (accountRef.current === account) accountRef.current = null;
     };
-  }, [enabled, known, writesEnabled, machineEnabled, listingEnabled]);
+  }, [enabled, known, writesEnabled, machineEnabled, listingEnabled, policyEnabled]);
 
   // Clear the create/version selection when leaving the listing subtree.
   useEffect(() => {
@@ -315,6 +415,13 @@ export default function TenantApp() {
     setListingProviderId(null);
     setListingBaseVersion(null);
     listingControllerRef.current?.clearSensitive();
+  }, [path]);
+
+  // Clear the create selection when leaving the policy subtree.
+  useEffect(() => {
+    if (isPolicyWorkspacePath(path)) return;
+    setPolicyCreating(false);
+    policyControllerRef.current?.clearSensitive();
   }, [path]);
 
   // A signed-in identity change must never expose a previous account's
@@ -341,6 +448,8 @@ export default function TenantApp() {
       setListingCreating(false);
       setListingProviderId(null);
       setListingBaseVersion(null);
+      policyControllerRef.current?.clear();
+      setPolicyCreating(false);
       setSelectedProfile(null);
     }
   }, [accountId]);
@@ -354,6 +463,7 @@ export default function TenantApp() {
     // The listing controller is independent of the machine flag, so reconcile
     // its role before the machine early-return below.
     listingControllerRef.current?.reconcileRole(role);
+    policyControllerRef.current?.reconcileRole(role);
     const machineController = machineControllerRef.current;
     if (machineController === null) return;
     // Role is authoritative from the current server context. Reconcile it
@@ -372,6 +482,8 @@ export default function TenantApp() {
     setListingProviderId(null);
     setListingBaseVersion(null);
     listingControllerRef.current?.clear();
+    policyControllerRef.current?.clear();
+    setPolicyCreating(false);
   }, [organizationId]);
 
   // Initialize the listing controller only for a protected listing route. This
@@ -386,6 +498,21 @@ export default function TenantApp() {
     if (route === null) return;
     void listingController.initialize(route);
   }, [path, listingEnabled, organizationId, role, accountId]);
+
+  // Initialize the policy controller only for a protected policy route. The
+  // capability probe runs first; when it is not `enabled`, no policy request is
+  // made and an honest unavailable state is rendered.
+  useEffect(() => {
+    const policyController = policyControllerRef.current;
+    if (policyController === null) return;
+    const route = policyRouteOf(path);
+    if (route === null) return;
+    void policyController.initialize(route);
+    // The policy create form needs the EXISTING current-organization agent read
+    // state. Load that bounded read once for the new route (never a machine
+    // profile and never a new endpoint).
+    if (route.kind === "new") void controllerRef.current?.loadAgents();
+  }, [path, policyEnabled, organizationId, role, accountId]);
 
   // After the render where the machine context is current, record the bound
   // context so the NEXT transition render can suppress synchronously. When the
@@ -419,6 +546,22 @@ export default function TenantApp() {
       return;
     }
     boundListingContextRef.current = { accountId, organizationId, role };
+  }, [path, organizationId, accountId, role]);
+
+  // After the render where the policy context is current, record the bound
+  // account/organization/role so the NEXT transition render suppresses
+  // synchronously before any child can read a stale draft, receipt or list.
+  useEffect(() => {
+    if (
+      policyControllerRef.current === null ||
+      !isPolicyWorkspacePath(path) ||
+      organizationId === null ||
+      accountId === null
+    ) {
+      boundPolicyContextRef.current = null;
+      return;
+    }
+    boundPolicyContextRef.current = { accountId, organizationId, role };
   }, [path, organizationId, accountId, role]);
 
   // Synchronous privacy guard: effects run after render, so the effect above
@@ -467,6 +610,28 @@ export default function TenantApp() {
           : null,
         { accountId, organizationId, role },
       ));
+
+  const suppressPolicy =
+    policyControllerRef.current !== null &&
+    (suppressPriorMutation ||
+      suppressStalePolicyContext(
+        boundPolicyContextRef.current !== null && accountId !== null && organizationId !== null
+          ? {
+              accountId: boundPolicyContextRef.current.accountId,
+              organizationId: boundPolicyContextRef.current.organizationId,
+              role: boundPolicyContextRef.current.role,
+            }
+          : null,
+        { accountId, organizationId, role },
+      ));
+
+  // The policy create editor is keyed by its FULL bound context plus the
+  // external privacy generation. A context change remounts it in the SAME
+  // render (so no stale caps/allowlists/expiry/agent selection survive), and a
+  // hidden/pagehide boundary bumps the generation inside flushSync so the
+  // remount happens before the next paint. This is a privacy guard only: it
+  // never derives server authority.
+  const policyFormKey = `${accountId ?? "anon"}|${organizationId ?? "none"}|${role ?? "none"}|${policyFormGeneration}`;
 
   useEffect(() => {
     if (!drawerOpen) return;
@@ -523,9 +688,11 @@ export default function TenantApp() {
   const navigate = useCallback((next: AppPath) => {
     writeControllerRef.current?.clear();
     listingControllerRef.current?.clearSensitive();
+    policyControllerRef.current?.clearSensitive();
     setListingCreating(false);
     setListingProviderId(null);
     setListingBaseVersion(null);
+    setPolicyCreating(false);
     setMutationState(initialTenantMutationState());
     setDrawerOpen(false);
     window.history.pushState(null, "", next);
@@ -542,6 +709,17 @@ export default function TenantApp() {
   useEffect(() => {
     listingOpenRef.current = openListing;
   }, [openListing]);
+
+  const openPolicy = useCallback((policyId: string) => {
+    const route = parsePolicyRoute(`/app/budgets/${encodeURIComponent(policyId)}`);
+    if (route === null || route.kind !== "detail") return;
+    setDrawerOpen(false);
+    window.history.pushState(null, "", `/app/budgets/${encodeURIComponent(route.policyId)}`);
+    setPath({ kind: "policy-detail", policyId: route.policyId });
+  }, []);
+  useEffect(() => {
+    policyOpenRef.current = openPolicy;
+  }, [openPolicy]);
 
   const selectOrganization = useCallback(
     (organizationId: string) => {
@@ -569,7 +747,9 @@ export default function TenantApp() {
       : path === "unknown"
         ? null
         : typeof path === "object"
-          ? "/app/provider/listings"
+          ? path.kind === "policy-detail"
+            ? "/app/budgets"
+            : "/app/provider/listings"
           : path;
 
   return (
@@ -685,6 +865,17 @@ export default function TenantApp() {
               listingControllerRef.current?.selectVersion(version);
             }}
             onOpenListing={openListing}
+            policyEnabled={policyEnabled}
+            policyState={renderPolicyState(suppressPolicy, policyState)}
+            policyController={suppressPolicy ? null : policyControllerRef.current}
+            policyCreating={policyCreating}
+            policyFormKey={policyFormKey}
+            onStartPolicyCreate={() => {
+              setPolicyCreating(true);
+              void controllerRef.current?.loadAgents();
+            }}
+            onCancelPolicyCreate={() => setPolicyCreating(false)}
+            onOpenPolicy={openPolicy}
           />
         </main>
 
@@ -718,6 +909,7 @@ function Rail(props: RailProps) {
     { path: "/app/agents", label: "Agents" },
     { path: "/app/provider", label: "Provider" },
     { path: "/app/provider/listings", label: "Listings" },
+    { path: "/app/budgets", label: "Budgets" },
   ];
   return (
     <nav
@@ -841,6 +1033,14 @@ interface WorkspaceProps {
   onCancelListingCreate: () => void;
   onSelectListingBaseVersion: (version: CommerceListingOwnerVersion) => void;
   onOpenListing: (listingId: string) => void;
+  policyEnabled: boolean;
+  policyState: PolicyControllerState;
+  policyController: PolicyController | null;
+  policyCreating: boolean;
+  policyFormKey: string;
+  onStartPolicyCreate: () => void;
+  onCancelPolicyCreate: () => void;
+  onOpenPolicy: (policyId: string) => void;
 }
 
 function Workspace(props: WorkspaceProps) {
@@ -869,6 +1069,14 @@ function Workspace(props: WorkspaceProps) {
     // constructed and the section is honestly unavailable. With the flag on the
     // controller's independent capability gate decides the rendered state.
     if (!props.listingEnabled) return <NotAvailable onNavigate={props.onNavigate} />;
+  }
+
+  const policyRoute = policyRouteOf(props.path);
+  if (policyRoute !== null) {
+    // A policy route is known (not "unknown"): with the flag off nothing was
+    // constructed and the section is honestly unavailable. With the flag on the
+    // controller's independent capability gate decides the rendered state.
+    if (!props.policyEnabled) return <NotAvailable onNavigate={props.onNavigate} />;
   }
 
   if (state.refreshRequired && principal.status === "signed-in" && state.organizations.status === "none") {
@@ -1038,6 +1246,22 @@ function Workspace(props: WorkspaceProps) {
         onSelectBaseVersion={props.onSelectListingBaseVersion}
         onOpenListing={props.onOpenListing}
         onNavigate={props.onNavigate}
+      />
+    );
+  }
+
+  if (policyRoute !== null) {
+    return (
+      <PolicyWorkspace
+        route={policyRoute}
+        state={props.policyState}
+        tenantController={props.controller}
+        policyController={props.policyController}
+        creating={props.policyCreating}
+        formKey={props.policyFormKey}
+        onStartCreate={props.onStartPolicyCreate}
+        onCancelCreate={props.onCancelPolicyCreate}
+        onOpenPolicy={props.onOpenPolicy}
       />
     );
   }
@@ -1614,6 +1838,292 @@ function ListingMutationStatusView(props: {
   return (
     <section aria-labelledby="listing-unknown-title">
       <h3 className="tenant-title tenant-title--small" id="listing-unknown-title">
+        The write outcome is unknown
+      </h3>
+      <p className="tenant-status tenant-status--warning" role="status">
+        {mutation.statusMessage ??
+          "The write may have committed. Only an explicit status check with the original mutation id can resolve it."}
+      </p>
+      <div className="tenant-actions">
+        <button
+          type="button"
+          className="tenant-button"
+          disabled={mutation.checking}
+          onClick={() => void props.controller?.checkStatus()}
+        >
+          Check status
+        </button>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Protected policy-rules workspace.
+ *
+ * These are policy RULES only. No funds are reserved, committed, moved or
+ * executed here, and no available/reserved/spent counter exists. The
+ * independent capability gate is rendered honestly: `checking` is a status,
+ * `unavailable` is never fake empty data.
+ */
+function PolicyWorkspace(props: {
+  route: PolicyRoute;
+  state: PolicyControllerState;
+  tenantController: TenantController | null;
+  policyController: PolicyController | null;
+  creating: boolean;
+  formKey: string;
+  onStartCreate: () => void;
+  onCancelCreate: () => void;
+  onOpenPolicy: (policyId: string) => void;
+}) {
+  const controller = props.policyController;
+  if (props.state.capability === "unknown" || props.state.capability === "checking") {
+    return <p className="tenant-status" role="status">Checking policy availability…</p>;
+  }
+  if (props.state.capability === "unavailable") {
+    return (
+      <section aria-labelledby="policy-unavailable-title">
+        <p className="tenant-eyebrow">POLICY RULES</p>
+        <h1 className="tenant-title" id="policy-unavailable-title">
+          Policy management is not available in this deployment
+        </h1>
+        <p className="tenant-status tenant-status--warning" role="status">
+          The control capability manifest does not enable policy management here. No policy
+          request was made and no empty rule set is implied.
+        </p>
+      </section>
+    );
+  }
+  const agents: readonly CommerceAgentProfile[] = props.tenantController?.state.agents.items ?? [];
+  const agentsStatus = props.tenantController?.state.agents.status ?? "none";
+  const agentsNextCursor = props.tenantController?.state.agents.nextCursor ?? null;
+  return (
+    <div className="tenant-policies">
+      <p className="tenant-eyebrow">POLICY RULES</p>
+      <h1 className="tenant-title">Budgets</h1>
+      {/*
+        Prominent truthful copy required by the contract: these are rules only.
+      */}
+      <p className="tenant-status tenant-status--warning" role="status">
+        These are policy rules only. No funds are reserved, committed, moved, or executed here.
+      </p>
+      <p className="tenant-status" role="status">
+        {props.state.canWrite
+          ? "You can create and manage policy rules. Every write requires an explicit confirmation and is server-authorized."
+          : "Your role is read-only here. Only owner and operator roles can write."}
+      </p>
+      <PolicyMutationStatusView state={props.state.mutation} controller={controller} />
+      {props.route.kind === "roots" || props.route.kind === "new" ? (
+        <PolicyListPanel
+          state={props.state}
+          creating={props.creating || props.route.kind === "new"}
+          formKey={props.formKey}
+          agents={agents}
+          agentsStatus={agentsStatus}
+          onLoadAgents={() => void props.tenantController?.loadAgents()}
+          onLoadMoreAgents={() => void props.tenantController?.loadNextAgents()}
+          hasNextAgents={agentsNextCursor !== null}
+          organizationId={props.tenantController?.currentOrganizationId() ?? ""}
+          onStartCreate={props.onStartCreate}
+          onCancelCreate={props.onCancelCreate}
+          onLoadRoots={() => void controller?.loadRoots()}
+          onNextRoots={() => void controller?.loadNextRoots()}
+          onSubmitCreate={(content) => controller?.beginCreate(content)}
+          onOpenPolicy={props.onOpenPolicy}
+        />
+      ) : (
+        <PolicyDetailView state={props.state} controller={controller} onNavigate={undefined} />
+      )}
+    </div>
+  );
+}
+
+function PolicyDetailView(props: {
+  state: PolicyControllerState;
+  controller: PolicyController | null;
+  onNavigate: undefined;
+}) {
+  const detail = props.state.detail;
+  const controller = props.controller;
+  if (detail.status === "loading" || detail.status === "none") {
+    return <p className="tenant-status" role="status">Loading policy detail…</p>;
+  }
+  if (detail.status === "not-found") {
+    return (
+      <p className="tenant-status tenant-status--warning" role="status">
+        This policy was not found. No empty or fabricated policy is shown.
+      </p>
+    );
+  }
+  if (detail.status === "error") {
+    return (
+      <p className="tenant-status tenant-status--error" role="alert">
+        The policy detail could not be loaded.
+      </p>
+    );
+  }
+  const root = detail.root;
+  if (root === null) return null;
+  return (
+    <>
+      <section aria-labelledby="policy-root-title">
+        <h2 className="tenant-title tenant-title--small" id="policy-root-title">
+          Policy {root.policyId}
+        </h2>
+        <dl className="tenant-meta">
+          <dt>Subject agent</dt>
+          <dd className="tenant-mono">{root.subjectAgentId}</dd>
+          <dt>Status</dt>
+          <dd>{root.status}</dd>
+          <dt>Current revision (authoritative CAS root)</dt>
+          <dd className="tenant-mono">{root.currentRevision}</dd>
+          <dt>Updated</dt>
+          <dd className="tenant-mono">{root.updatedAt}</dd>
+        </dl>
+      </section>
+      <PolicyLifecycleActions state={props.state} controller={controller} />
+      <PolicyRevisionHistory
+        history={detail.history}
+        revision={props.state.revision}
+        canWrite={props.state.canWrite}
+        onLoadMore={() => void controller?.loadMoreRevisions()}
+        onReadRevision={(revision) => void controller?.readRevision(revision)}
+        onAppendFrom={() => {
+          const revision = props.state.revision.revision;
+          if (revision === null || controller === null) return;
+          beginAppendFromRevision(controller, revision);
+        }}
+      />
+    </>
+  );
+}
+
+function PolicyLifecycleActions(props: {
+  state: PolicyControllerState;
+  controller: PolicyController | null;
+}) {
+  const status = props.state.detail.root?.status;
+  if (status === undefined) return null;
+  return (
+    <div className="tenant-actions tenant-policies__lifecycle">
+      {status === "active" ? (
+        <button
+          type="button"
+          className="tenant-button"
+          disabled={!props.state.canWrite}
+          onClick={() => props.controller?.beginLifecycle("pause")}
+        >
+          Pause policy
+        </button>
+      ) : null}
+      {status === "paused" ? (
+        <button
+          type="button"
+          className="tenant-button tenant-button--primary"
+          disabled={!props.state.canWrite}
+          onClick={() => props.controller?.beginLifecycle("resume")}
+        >
+          Resume policy
+        </button>
+      ) : null}
+      {status !== "revoked" ? (
+        <button
+          type="button"
+          className="tenant-button"
+          disabled={!props.state.canWrite}
+          onClick={() => props.controller?.beginLifecycle("revoke")}
+        >
+          Revoke policy
+        </button>
+      ) : (
+        <p className="tenant-status">This policy is revoked and terminal.</p>
+      )}
+    </div>
+  );
+}
+
+function PolicyMutationStatusView(props: {
+  state: PolicyControllerState["mutation"];
+  controller: PolicyController | null;
+}) {
+  const mutation = props.state;
+  if (mutation.kind === "idle") return null;
+  if (mutation.kind === "confirming") {
+    const draft = mutation.draft;
+    const label =
+      draft.op === "create"
+        ? "Create policy"
+        : draft.op === "append"
+          ? `Append revision ${(BigInt(draft.cas.expectedRevision) + 1n).toString()}`
+          : `${draft.op === "pause" ? "Pause" : draft.op === "resume" ? "Resume" : "Revoke"} policy`;
+    return (
+      <section className="tenant-policies__disclosure" aria-labelledby="policy-confirm-title">
+        <h3 className="tenant-title tenant-title--small" id="policy-confirm-title">
+          Confirm: {label}
+        </h3>
+        <p className="tenant-status">
+          These are policy rules only. No funds are reserved, committed, moved, or executed here.
+          One explicit confirmation sends exactly one logical write with a fresh mutation id and an
+          idempotency key held in memory only. There is no automatic retry.
+        </p>
+        {draft.op === "append" || draft.op === "pause" || draft.op === "resume" || draft.op === "revoke" ? (
+          <p className="tenant-mono">
+            expectedRevision {draft.cas.expectedRevision} · expectedUpdatedAt {draft.cas.expectedUpdatedAt}
+          </p>
+        ) : null}
+        <div className="tenant-actions">
+          <button
+            type="button"
+            className="tenant-button tenant-button--primary"
+            onClick={() => void props.controller?.confirm()}
+          >
+            Confirm write
+          </button>
+          <button type="button" className="tenant-button" onClick={() => props.controller?.cancel()}>
+            Cancel
+          </button>
+        </div>
+      </section>
+    );
+  }
+  if (mutation.kind === "pending") {
+    return <p className="tenant-status" role="status">Sending the confirmed write…</p>;
+  }
+  if (mutation.kind === "committed") {
+    return (
+      <p className="tenant-status" role="status">
+        Committed operation {mutation.receipt.operation}
+        {mutation.resourceRevision === null ? "" : ` (revision ${mutation.resourceRevision})`}.
+        {mutation.refreshError ? " The follow-up refresh failed; the committed receipt stands." : ""}
+      </p>
+    );
+  }
+  if (mutation.kind === "rejected") {
+    const notice = mutation.notice;
+    return (
+      <p className="tenant-status tenant-status--error" role="alert">
+        {notice.kind === "conflict"
+          ? "A conflict was detected. Review the latest state and confirm explicitly again; no automatic retry was performed."
+          : notice.kind === "forbidden"
+            ? "Your role cannot perform this write."
+            : notice.kind === "unauthenticated"
+              ? "Your session needs re-authentication before this write."
+              : notice.kind === "csrf"
+                ? "The request origin or anti-forgery token was rejected."
+                : notice.kind === "not-found"
+                  ? "The target no longer exists."
+                  : notice.kind === "account-changed"
+                    ? "The account changed during the write; nothing was applied to the new account."
+                    : notice.kind === "capability-disabled"
+                      ? "Policy management is not enabled."
+                      : "The write was rejected. Review the values and confirm explicitly again."}
+      </p>
+    );
+  }
+  return (
+    <section aria-labelledby="policy-unknown-title">
+      <h3 className="tenant-title tenant-title--small" id="policy-unknown-title">
         The write outcome is unknown
       </h3>
       <p className="tenant-status tenant-status--warning" role="status">

@@ -15,6 +15,16 @@ The source gate timeout increases from 25 to 40 minutes because the preceding
 verified gate took 24m14s. Three existing exact timeout assertions were aligned
 with that deliberate change; no assertions or gates were removed.
 
-This records static/source acceptance only. Actual combined-source nginx image,
-API/PostgreSQL and production-browser checks are pending, as is the full control
-phase. No deployment or financial enforcement is established by these checks.
+## Actual production image boundary checks
+
+Source `50b765651386eb0e4d76b47beeeacebecf8b4b0c` built four real nginx images:
+policy-only, policy-off, Arc plus policy, and no-API. All four entrypoint/template
+startup and `nginx -t` checks passed. Fifty-six actual request boundary checks
+passed across encoded route dispatch, unsupported methods, disabled/lookalike
+paths, query restrictions, capability credentials, and 16 KiB body enforcement.
+
+The isolated upstream was deliberately absent: forwarded requests returned 502,
+while rejected requests returned their expected boundary status. This verifies
+proxy dispatch/rejection, not successful API TLS or browser authentication.
+Actual combined-image API/browser checks and full control-phase acceptance are
+still pending. No deployment or financial enforcement is established here.
