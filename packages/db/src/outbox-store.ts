@@ -70,6 +70,8 @@ export type ClaimedOutboxEvent = {
   | { readonly resourceType: 'provider_credential'; readonly resourceId: string; readonly eventType: 'tenant.provider.credential.created' | 'tenant.provider.credential.revoked' }
   | { readonly resourceType: 'listing'; readonly resourceId: string; readonly eventType: 'market.listing.created' }
   | { readonly resourceType: 'listing_version'; readonly resourceId: string; readonly eventType: 'market.listing.version.created' }
+  | { readonly resourceType: 'budget_policy'; readonly resourceId: string; readonly eventType: 'control.policy.created' | 'control.policy.paused' | 'control.policy.resumed' | 'control.policy.revoked' }
+  | { readonly resourceType: 'budget_policy_revision'; readonly resourceId: string; readonly eventType: 'control.policy.revision.created' }
 );
 
 const ORG_ID = /^openarc:org:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -85,6 +87,14 @@ const LISTING_VERSION_RESOURCE = /^openarc:listing:[0-9a-f]{8}-[0-9a-f]{4}-[1-8]
 
 function isListingVersionResource(value: string): boolean {
   return value.length <= LISTING_VERSION_RESOURCE_MAX_LENGTH && LISTING_VERSION_RESOURCE.test(value);
+}
+
+const POLICY_ID = /^openarc:policy:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const POLICY_REVISION_RESOURCE_MAX_LENGTH = 160;
+const POLICY_REVISION_RESOURCE = /^openarc:policy:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@(?!1$)[1-9][0-9]{0,8}$/;
+
+function isPolicyRevisionResource(value: string): boolean {
+  return value.length <= POLICY_REVISION_RESOURCE_MAX_LENGTH && POLICY_REVISION_RESOURCE.test(value);
 }
 
 export interface ClaimInput {
@@ -346,6 +356,24 @@ export class OutboxStore {
       case 'listing_version|market.listing.version.created':
         if (!isListingVersionResource(resourceId)) fail('OUTBOX_STORE_UNAVAILABLE');
         return { ...base, resourceType: 'listing_version', resourceId, eventType: 'market.listing.version.created' };
+      case 'budget_policy|control.policy.created':
+      case 'budget_policy|control.policy.paused':
+      case 'budget_policy|control.policy.resumed':
+      case 'budget_policy|control.policy.revoked':
+        if (!POLICY_ID.test(resourceId)) fail('OUTBOX_STORE_UNAVAILABLE');
+        return {
+          ...base,
+          resourceType: 'budget_policy',
+          resourceId,
+          eventType: eventType as
+            | 'control.policy.created'
+            | 'control.policy.paused'
+            | 'control.policy.resumed'
+            | 'control.policy.revoked',
+        };
+      case 'budget_policy_revision|control.policy.revision.created':
+        if (!isPolicyRevisionResource(resourceId)) fail('OUTBOX_STORE_UNAVAILABLE');
+        return { ...base, resourceType: 'budget_policy_revision', resourceId, eventType: 'control.policy.revision.created' };
       default:
         fail('OUTBOX_STORE_UNAVAILABLE');
     }
