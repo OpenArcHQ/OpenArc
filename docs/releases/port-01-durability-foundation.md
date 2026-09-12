@@ -1,6 +1,8 @@
 # PORT-01 durability and tenant read contracts
 
-Status: schema4 component-accepted; combined release gate and publication pending.
+Status: schema4 and combined local release accepted; publication tracked separately.
+See [combined verification](port-01-tenant-combined.md). Historical component
+scope and counts below precede the read/write HTTP integration.
 Prepared September 12, 2026 (UTC). This is not a completed commerce port.
 
 ## Implemented scope

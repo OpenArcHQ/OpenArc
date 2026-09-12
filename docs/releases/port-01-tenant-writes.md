@@ -1,6 +1,8 @@
 # PORT-01 — durable tenant write HTTP surface
 
-September 12, 2026. Component accepted, full combined release pending.
+September 12, 2026. Component and combined local release accepted.
+See [combined verification](port-01-tenant-combined.md). Browser write UI and
+hosted activation remain separate; the counts below are component evidence.
 
 The default-off tenant write API exposes organization bootstrap, agent/provider
 creation and updates, membership changes, and two scoped mutation-status reads.

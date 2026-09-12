@@ -1,6 +1,8 @@
 # PORT-01 tenant access
 
-Status: API and shared contracts component-accepted; combined release pending.
+Status: API and shared contracts accepted in the combined local release.
+See [combined verification](port-01-tenant-combined.md) for the final scope and
+test results; component counts below describe the original read-only slice.
 Prepared September 12, 2026. This is not completion of the commerce port.
 
 Protected cookie-authenticated organization list/context, agent list and provider

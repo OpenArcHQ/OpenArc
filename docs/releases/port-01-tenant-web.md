@@ -1,7 +1,8 @@
 # PORT-01 — protected tenant console and production acceptance
 
 September 12, 2026. Component and isolated production-image acceptance passed;
-combined release pending. This is not whole-port or live-account readiness.
+combined local release also passed. See [combined verification](port-01-tenant-combined.md).
+This is not whole-port or live-account readiness.
 
 The supplied cobalt/gold visual system now frames a protected, read-only tenant
 console at `/app/overview`, `/app/agents` and `/app/provider`. Organization

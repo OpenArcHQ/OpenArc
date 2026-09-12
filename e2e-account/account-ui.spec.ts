@@ -415,6 +415,7 @@ test("cancels a wallet sign-in when the account changes during confirmation", as
     });
   });
   await page.route("**/v2/auth/wallets/login/options", async (route) => {
+    const issued = new Date();
     const message = [
       "http://localhost:5201 wants you to sign in with your Ethereum account:",
       "0xA0Cf798816D4b9b9866b5330EEa46a18382f251e",
@@ -425,8 +426,8 @@ test("cancels a wallet sign-in when the account changes during confirmation", as
       "Version: 1",
       "Chain ID: 5042002",
       "Nonce: 0123456789abcdef0123456789abcdef",
-      `Issued At: ${new Date().toISOString()}`,
-      `Expiration Time: ${new Date(Date.now() + 5 * 60 * 1000).toISOString()}`,
+      `Issued At: ${issued.toISOString()}`,
+      `Expiration Time: ${new Date(issued.getTime() + 5 * 60 * 1000).toISOString()}`,
     ].join("\n");
     await route.fulfill({
       status: 200,
