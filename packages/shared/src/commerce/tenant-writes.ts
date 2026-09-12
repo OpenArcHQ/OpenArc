@@ -48,13 +48,13 @@ export type CommerceTenantMutationId = z.infer<
  * rejected. This value is an HTTP header value only and deliberately does not
  * appear in any body, receipt/status or response DTO.
  */
-const IDEMPOTENCY_KEY_FINAL_ALPHABET = "AEIMQUYcgkosw048";
+const BASE64URL_FINAL_ALPHABET = "AEIMQUYcgkosw048";
 
 export const CommerceTenantIdempotencyKeySchema = z
   .string()
   .regex(
     new RegExp(
-      `^[A-Za-z0-9_-]{42}[${IDEMPOTENCY_KEY_FINAL_ALPHABET}](?![\\s\\S])`,
+      `^[A-Za-z0-9_-]{42}[${BASE64URL_FINAL_ALPHABET}](?![\\s\\S])`,
     ),
   );
 
