@@ -1,6 +1,7 @@
 import {
   API_ERRORS, API_MAX_REQUEST_BYTES, API_MAX_RESPONSE_BYTES, API_SCHEMA_VERSION,
   AGENT_REGISTRY_EVIDENCE_PATH, ARC_ERC8004,
+  COMMERCE_CAPABILITIES_PATH,
   ARC_ACCOUNT_SNAPSHOT_PATH, ARC_TESTNET, ARC_TRANSACTION_EVIDENCE_PATH,
   ArcAccountSnapshotEnvelopeSchema, ArcAccountSnapshotRequestSchema,
   ArcTransactionEvidenceEnvelopeSchema, ArcTransactionEvidenceRequestSchema,
@@ -34,6 +35,7 @@ import { registerMachineManagementRoutes } from "./machine/management-routes.js"
 import { registerMachineSessionRoutes, isMachineSessionFamilyPath } from "./machine/session-routes.js";
 import type { MachineManagementService } from "./machine/management-service.js";
 import type { MachineSessionService } from "./machine/session-service.js";
+import { registerCommerceCapabilities } from "./commerce/capabilities.js";
 import { ApiBoundaryError, apiErrorEnvelope, normalizeApiError } from "./http/errors.js";
 import { verifyBrowserOrigin, verifyPreflight } from "./http/origin.js";
 import { registerSourceRoute } from "./http/source-route.js";
@@ -120,6 +122,7 @@ function routeClass(url: string): RouteClass {
   if (isMachinePath(path)) return "auth";
   if (isTenantFamilyPath(path)) return "tenant";
   if (path === CAPABILITIES_PATH) return "capabilities";
+  if (path === COMMERCE_CAPABILITIES_PATH) return "capabilities";
   if (path === ARC_ACCOUNT_SNAPSHOT_PATH) return "arc_account";
   if (path === ARC_TRANSACTION_EVIDENCE_PATH) return "arc_transaction";
   if (path === AGENT_REGISTRY_EVIDENCE_PATH) return "agent_registry";
@@ -194,9 +197,11 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
         ? (cause as { code?: unknown }).code
         : null;
     const machineSurface = isMachinePath(rawPath);
+    const commerceCapabilitySurface = rawPath === COMMERCE_CAPABILITIES_PATH;
     const v2Surface =
       rawPath.startsWith("/v2/auth/") ||
       isTenantFamilyPath(rawPath) ||
+      commerceCapabilitySurface ||
       machineSurface;
     if (
       machineSurface &&
@@ -442,6 +447,32 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
         globalSourceUnitsPerDay: config.GLOBAL_SOURCE_UNITS_PER_DAY } },
     meta: { schemaVersion: API_SCHEMA_VERSION, requestId: request.id, buildSha: config.COMMIT_SHA },
   }));
+
+  // Public, credentialless capability registry. Only the five explicit
+  // deployment flags, the existing readiness callbacks, the build SHA and the
+  // exact app origin cross this boundary; the full config, secrets, DB URLs,
+  // role objects and private identities never do. This is metadata only and
+  // performs no automatic network/provider/RPC request.
+  registerCommerceCapabilities(app, {
+    flags: {
+      authEnabled: config.AUTH_ENABLED,
+      tenantReadsEnabled: config.TENANT_READS_ENABLED,
+      tenantWritesEnabled: config.TENANT_WRITES_ENABLED,
+      machineCredentialManagementEnabled:
+        config.MACHINE_CREDENTIAL_MANAGEMENT_ENABLED,
+      machineSessionExchangeEnabled: config.MACHINE_SESSION_EXCHANGE_ENABLED,
+    },
+    readiness: {
+      ...(authReady !== undefined ? { authReady } : {}),
+      ...(tenantReady !== undefined ? { tenantReady } : {}),
+      ...(machineReady !== undefined ? { machineReady } : {}),
+    },
+    buildSha: config.COMMIT_SHA,
+    appOrigin: config.APP_ORIGIN,
+    ...(tenantMaxResponseBytes !== undefined
+      ? { maxResponseBytes: tenantMaxResponseBytes }
+      : {}),
+  });
 
   if (config.ARC_OBSERVATION_ENABLED) {
     if (!sourceBudget || !arcAccountService || !arcTransactionService) {
