@@ -367,6 +367,11 @@ test("body-bearing reads are rejected before proxy and no disk buffering is conf
   for (const entry of allMarketLocations) {
     if (!/proxy_pass/u.test(entry.body)) continue;
     if (/if\s*\(\$request_method\s*!=\s*POST\)/u.test(entry.body)) continue;
+    // A mixed GET/POST parent dispatches POST to a named 16KiB write location,
+    // so its transport bound must admit that POST before dispatch (see the
+    // mixed-parent regression below). Its GET body guard is asserted there and
+    // the pure read locations still keep the 1k bound here.
+    if (/if\s*\(\$request_method\s*=\s*POST\)/u.test(entry.body)) continue;
     const direct = /if\s*\(\$http_transfer_encoding\s*!=\s*""\)\s*\{\s*return\s+400;\s*\}/u.test(entry.body);
     const viaBodyOk = /if\s*\(\$http_transfer_encoding\s*!=\s*""\)\s*\{\s*set\s+\$openarc_market_body_ok\s+0;\s*\}/u.test(entry.body) &&
       /if\s*\(\$openarc_market_body_ok\s*=\s*0\)\s*\{\s*return\s+400;\s*\}/u.test(entry.body);
@@ -381,6 +386,85 @@ test("body-bearing reads are rejected before proxy and no disk buffering is conf
   assert.match(read("apps/web/tenant_proxy_params"), /proxy_request_buffering\s+off;/u);
   assert.match(read("apps/web/tenant_write_proxy_params"), /proxy_request_buffering\s+off;/u);
   assert.ok(!/proxy_cache\b/u.test(catalog + listing + moderation), "must not add response caching");
+});
+
+test("mixed GET/POST parents admit the 16KiB POST pre-dispatch while reads stay 1k", () => {
+  // nginx evaluates `client_max_body_size` for the matched (parent) location
+  // BEFORE the legacy `if (...=POST) { return 418 }` error_page dispatch, so a
+  // parent that stayed at the 1k read bound would 413 every legitimate listing
+  // create/version-create body (e.g. the 1098-byte UI payload) before the
+  // 16KiB named location ever ran. Only the two MIXED GET/POST collection
+  // parents — the ones that dispatch a write verb — must therefore admit the
+  // maximum legitimate write body. This intentionally distinguishes them from
+  // the pure GET read locations further below, which keep the 1k no-body bound.
+  const mixedParents = listingLocations.filter((entry) => /if\s*\(\$request_method\s*=\s*POST\)/u.test(entry.body));
+  assert.equal(mixedParents.length, 2, "exactly two mixed GET/POST parents dispatch a write verb");
+  for (const entry of mixedParents) {
+    assert.match(entry.body, /client_max_body_size\s+16k;/u, `${entry.path} mixed parent must admit the 16KiB POST before dispatch`);
+    assert.ok(
+      !/client_max_body_size\s+1k;/u.test(entry.body),
+      `${entry.path} mixed parent must not keep the read-only 1k bound that 413s the POST`,
+    );
+    // The GET body guard must survive the larger transport bound: a GET with a
+    // body still trips the body_ok header/transfer checks and returns 400.
+    assert.match(entry.body, /if\s*\(\$openarc_market_body_ok\s*=\s*0\)\s*\{\s*return\s+400;\s*\}/u);
+    assert.match(entry.body, /if\s*\(\$http_transfer_encoding\s*!=\s*""\)\s*\{\s*set\s+\$openarc_market_body_ok\s+0;\s*\}/u);
+    assert.match(entry.body, /if\s*\(\$http_content_length\s*!=\s*""\)\s*\{\s*set\s+\$openarc_market_body_ok\s+0;\s*\}/u);
+    assert.match(entry.body, /if\s*\(\$http_content_length\s*=\s*"0"\)\s*\{\s*set\s+\$openarc_market_body_ok\s+1;\s*\}/u);
+    // Canonical registry example: a 1098-byte listing create (POST) and a 1098
+    // byte version create fit, while >16KiB must still be rejected by the bound.
+    assert.ok(1098 <= 16 * 1024, "canonical 1098-byte create fits the 16KiB parent bound");
+    assert.ok(1098 > 1024, "canonical 1098-byte create would fail the old 1k parent bound");
+    assert.ok(16 * 1024 < 128 * 1024, "the parent bound stays the documented 16KiB, not unbounded");
+  }
+  // The dispatch targets keep their own bounded 16KiB write limit.
+  for (const entry of listingLocations.filter((candidate) => candidate.path.startsWith("@"))) {
+    assert.match(entry.body, /client_max_body_size\s+16k;/u, `${entry.path} named write must stay 16KiB-bounded`);
+  }
+  // Existing read-only locations are unchanged: every pure GET parent keeps 1k.
+  for (const entry of [...listingLocations, ...moderationLocations, ...catalogLocations]) {
+    if (!/proxy_pass/u.test(entry.body)) continue;
+    if (entry.path.startsWith("@")) continue;
+    if (/if\s*\(\$request_method\s*=\s*POST\)/u.test(entry.body)) continue;
+    if (!/if\s*\(\$request_method\s*!=\s*GET\)/u.test(entry.body)) continue;
+    assert.match(entry.body, /client_max_body_size\s+1k;/u, `${entry.path} read-only location must keep the 1k bound`);
+  }
+});
+
+test("mixed GET/POST parent 16KiB bound reconstructs the actual 413 defect before named dispatch", () => {
+  // Regression for the production 413: a 1098-byte JSON listing-create. The
+  // exact failure mode is nginx rejecting in the PARENT location before the
+  // internal named POST location is entered. Reconstruct that ordering from
+  // the parsed directives: the mixed parent must both dispatch on POST and
+  // declare a transport bound strictly greater than the canonical payload.
+  const canonicalPayloadBytes = 1098;
+  for (const entry of listingLocations.filter((candidate) => /if\s*\(\$request_method\s*=\s*POST\)/u.test(candidate.body))) {
+    const dispatchPost = /if\s*\(\$request_method\s*=\s*POST\)\s*\{\s*return\s+418;\s*\}/u.test(entry.body);
+    assert.ok(dispatchPost, `${entry.path} must route its POST to the internal named location`);
+    const declared = entry.body.match(/client_max_body_size\s+(\d+)k;/u);
+    assert.ok(declared, `${entry.path} must declare a finite client_max_body_size`);
+    const parentBytes = Number(declared[1]) * 1024;
+    assert.ok(
+      parentBytes > canonicalPayloadBytes,
+      `${entry.path} parent bound ${parentBytes}B must exceed the canonical ${canonicalPayloadBytes}B payload`,
+    );
+    assert.ok(parentBytes >= 16 * 1024, `${entry.path} parent bound must admit the maximum legitimate 16KiB write`);
+    const target = entry.body.match(/error_page\s+418\s+=\s+(@[A-Za-z0-9_]+);/u);
+    assert.ok(target, `${entry.path} must name its internal dispatch target`);
+    const named = listingLocations.find((candidate) => candidate.path === target[1]);
+    assert.ok(named, `${entry.path} dispatch target must exist`);
+    assert.match(named.body, /client_max_body_size\s+16k;/u, `${named.path} must keep its 16KiB named bound`);
+  }
+  // No broad 16KiB relaxation leaked onto the pure GET reads.
+  const readOnlySizes = [...listingLocations, ...moderationLocations, ...catalogLocations]
+    .filter((entry) => /proxy_pass/u.test(entry.body) && !entry.path.startsWith("@") && !/if\s*\(\$request_method\s*=\s*POST\)/u.test(entry.body) && /if\s*\(\$request_method\s*!=\s*GET\)/u.test(entry.body))
+    .map((entry) => entry.body.match(/client_max_body_size\s+(\d+)k;/u))
+    .filter(Boolean)
+    .map((match) => match[1]);
+  assert.ok(readOnlySizes.length >= 10, "expected the untouched read-only locations");
+  for (const size of readOnlySizes) {
+    assert.equal(size, "1", "read-only locations must not be relaxed past the 1k no-body bound");
+  }
 });
 
 test("public params are credentialless with an explicit allowlist and no client proxy metadata", () => {
