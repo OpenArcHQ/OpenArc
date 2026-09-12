@@ -57,13 +57,24 @@ async function start(): Promise<void> {
           writeAuth: authRuntimeHandle!.service,
         })
       : undefined;
-    marketRuntimeHandle =
-      config.LISTING_MANAGEMENT_ENABLED
-        ? await startMarketRuntime({
-            marketDatabaseUrl: config.TENANT_DATABASE_URL as string,
-            auth: authRuntimeHandle!.service,
-          })
-        : undefined;
+    const marketEnabled =
+      config.MARKET_CATALOG_ENABLED ||
+      config.LISTING_MANAGEMENT_ENABLED ||
+      config.MARKET_MODERATION_ENABLED;
+    marketRuntimeHandle = marketEnabled
+      ? await startMarketRuntime({
+          marketDatabaseUrl: config.TENANT_DATABASE_URL as string,
+          catalogEnabled: config.MARKET_CATALOG_ENABLED,
+          listingManagementEnabled: config.LISTING_MANAGEMENT_ENABLED,
+          moderationEnabled: config.MARKET_MODERATION_ENABLED,
+          // The protected browser families need the auth seam; a catalog-only
+          // runtime gets none and never dereferences one.
+          ...(config.LISTING_MANAGEMENT_ENABLED ||
+          config.MARKET_MODERATION_ENABLED
+            ? { auth: authRuntimeHandle!.service }
+            : {}),
+        })
+      : undefined;
     const machineEnabled =
       config.MACHINE_CREDENTIAL_MANAGEMENT_ENABLED ||
       config.MACHINE_SESSION_EXCHANGE_ENABLED;
@@ -106,7 +117,18 @@ async function start(): Promise<void> {
               : {}) }
         : {}),
       ...(marketRuntimeHandle
-        ? { marketService: marketRuntimeHandle.service, marketReady: () => marketRuntimeHandle!.ready() }
+        ? {
+            ...(marketRuntimeHandle.service !== undefined
+              ? { marketService: marketRuntimeHandle.service }
+              : {}),
+            ...(marketRuntimeHandle.lifecycleService !== undefined
+              ? { marketLifecycleService: marketRuntimeHandle.lifecycleService }
+              : {}),
+            ...(marketRuntimeHandle.catalogService !== undefined
+              ? { marketCatalogService: marketRuntimeHandle.catalogService }
+              : {}),
+            marketReady: () => marketRuntimeHandle!.ready(),
+          }
         : {}),
       ...(machineRuntimeHandle
         ? {

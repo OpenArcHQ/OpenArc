@@ -52,6 +52,8 @@ const EnvironmentSchema = z.object({
     .regex(/^postgres(?:ql)?:\/\//u)
     .optional(),
   LISTING_MANAGEMENT_ENABLED: flag(),
+  MARKET_CATALOG_ENABLED: flag(),
+  MARKET_MODERATION_ENABLED: flag(),
   MACHINE_CREDENTIAL_MANAGEMENT_ENABLED: flag(),
   MACHINE_SESSION_EXCHANGE_ENABLED: flag(),
   MACHINE_CREDENTIAL_PEPPER_VERSION: pepperVersion().optional(),
@@ -154,6 +156,36 @@ const EnvironmentSchema = z.object({
     if (!config.TENANT_DATABASE_URL) {
       context.addIssue({ code: "custom", path: ["LISTING_MANAGEMENT_ENABLED"], message: "Listing management requires a dedicated restricted database URL" });
     }
+  }
+  // Independent marketplace families. Each has its OWN flag and only the
+  // gating it actually needs: catalog is public (no auth/tenant reads),
+  // moderation needs authentication, listing management needs auth + tenant
+  // reads. Every enabled family still requires the dedicated restricted
+  // TENANT_DATABASE_URL; TENANT_WRITES and machine flags are never required.
+  if (config.MARKET_CATALOG_ENABLED) {
+    if (!config.TENANT_DATABASE_URL) {
+      context.addIssue({ code: "custom", path: ["MARKET_CATALOG_ENABLED"], message: "Market catalog requires a dedicated restricted database URL" });
+    }
+  }
+  if (config.MARKET_MODERATION_ENABLED) {
+    if (!config.AUTH_ENABLED) {
+      context.addIssue({ code: "custom", path: ["MARKET_MODERATION_ENABLED"], message: "Moderation requires authentication" });
+    }
+    if (!config.TENANT_DATABASE_URL) {
+      context.addIssue({ code: "custom", path: ["MARKET_MODERATION_ENABLED"], message: "Moderation requires a dedicated restricted database URL" });
+    }
+  }
+  const marketFamilyEnabled =
+    config.MARKET_CATALOG_ENABLED ||
+    config.LISTING_MANAGEMENT_ENABLED ||
+    config.MARKET_MODERATION_ENABLED;
+  if (
+    marketFamilyEnabled &&
+    config.TENANT_DATABASE_URL !== undefined &&
+    config.AUTH_DATABASE_URL !== undefined &&
+    config.TENANT_DATABASE_URL === config.AUTH_DATABASE_URL
+  ) {
+    context.addIssue({ code: "custom", path: ["TENANT_DATABASE_URL"], message: "Marketplace families require a dedicated restricted role connection" });
   }
   const machineManagementEnabled = config.MACHINE_CREDENTIAL_MANAGEMENT_ENABLED;
   const machineExchangeEnabled = config.MACHINE_SESSION_EXCHANGE_ENABLED;

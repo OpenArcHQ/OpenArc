@@ -5,6 +5,7 @@ import {
   asMarketPool,
   AuthStore,
   createDatabasePool,
+  MarketLifecycleStore,
   MarketStore,
   MarketStoreError,
   migrate,
@@ -19,6 +20,7 @@ import type { AuthProofPort, AuthRuntime } from "../src/auth/ports.js";
 import type { AuthOriginConfig } from "../src/auth/proofs.js";
 import { loadConfig } from "../src/config.js";
 import type { MarketStorePort } from "../src/market/ports.js";
+import { MarketLifecycleService } from "../src/market/lifecycle-service.js";
 import { MarketService } from "../src/market/service.js";
 import { TenantReadService } from "../src/tenant/service.js";
 import {
@@ -320,6 +322,15 @@ async function buildApp(
   });
   const port = decorate ? decorate(store) : store;
   const marketService = new MarketService({ auth: authService, store: port });
+  // The listing flag requires the real lifecycle dependency at startup. This
+  // suite exercises the six draft routes; the lifecycle service/store are the
+  // real reviewed implementations over the same restricted market pool.
+  const lifecycleStore = new MarketLifecycleStore(asMarketPool(tenant));
+  await lifecycleStore.initialize();
+  const marketLifecycleService = new MarketLifecycleService({
+    auth: authService,
+    store: lifecycleStore,
+  });
   const tenantStore = new TenantStore(asTenantPool(tenant));
   await tenantStore.initialize();
   const readService = new TenantReadService({ auth: authService, store: tenantStore });
@@ -342,6 +353,7 @@ async function buildApp(
     tenantReadService: readService,
     tenantReady: async () => true,
     marketService,
+    marketLifecycleService,
     marketReady: async () => true,
   });
   return { instance, store };
@@ -732,6 +744,12 @@ describe("real-PG market read barrier and unknown outcome", () => {
       runtime: fakeRuntime(),
     });
     const marketService = new MarketService({ auth: authService, store });
+    const lifecycleStore = new MarketLifecycleStore(asMarketPool(tenant));
+    await lifecycleStore.initialize();
+    const marketLifecycleService = new MarketLifecycleService({
+      auth: authService,
+      store: lifecycleStore,
+    });
     const tenantStore = new TenantStore(asTenantPool(tenant));
     await tenantStore.initialize();
     const config = loadConfig({
@@ -754,6 +772,7 @@ describe("real-PG market read barrier and unknown outcome", () => {
       tenantReadService: new TenantReadService({ auth: authService, store: tenantStore }),
       tenantReady: async () => true,
       marketService,
+      marketLifecycleService,
       marketReady: async () => true,
     });
     const canary = "PRIVATE_CONTENT_CANARY";

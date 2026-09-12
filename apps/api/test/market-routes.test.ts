@@ -16,6 +16,7 @@ import type { AuthService } from "../src/auth/service.js";
 import { loadConfig } from "../src/config.js";
 import { MARKET_ROUTE_PREFIX, isForbiddenRequestTarget } from "../src/market/routes.js";
 import type { MarketService } from "../src/market/service.js";
+import type { MarketLifecycleService } from "../src/market/lifecycle-service.js";
 import type { TenantReadService } from "../src/tenant/service.js";
 
 /**
@@ -265,6 +266,10 @@ function harness(options: HarnessOptions = {}) {
           tenantReadService: {} as TenantReadService,
           tenantReady: async () => true,
           marketService: service as unknown as MarketService,
+          // The listing flag requires a lifecycle dependency at startup. This
+          // suite tests only the six draft routes, so a labelled synthetic port
+          // with no behavior stands in for the lifecycle service.
+          marketLifecycleService: {} as MarketLifecycleService,
           marketReady: async () => true,
           ...(options.maxResponseBytes !== undefined
             ? { marketMaxResponseBytes: options.maxResponseBytes }

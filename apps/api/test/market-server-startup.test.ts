@@ -7,8 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * these tests prove that resource acquisition happens under the SAME cleanup
  * try/finally, that a market start rejection closes the earlier auth+tenant
  * runtimes exactly once, that a later machine rejection closes the market
- * runtime too, and that listen failure/normal shutdown retain their behavior.
- * No real server, network, database or secret is constructed.
+ * runtime too, that listen failure/normal shutdown retain their behavior, and
+ * that all-off / catalog-only (AUTH false) / no-auth startups wire the market
+ * runtime with the correct explicit arguments. No real server, network,
+ * database or secret is constructed.
  */
 
 interface Handle {
@@ -16,6 +18,8 @@ interface Handle {
   closeCalls: number;
   order: string[];
 }
+
+type ServerConfig = Record<string, unknown>;
 
 const state = vi.hoisted(() => ({
   order: [] as string[],
@@ -29,14 +33,45 @@ const state = vi.hoisted(() => ({
   closeCalls: [] as string[],
   exitCalls: 0,
   closed: 0,
+  marketArgs: undefined as Record<string, unknown> | undefined,
+  createAppArgs: undefined as Record<string, unknown> | undefined,
+  marketStarts: 0,
+  config: {} as ServerConfig,
 }));
 
-function makeHandle(name: string): Handle {
-  const handle: Handle = {
-    name,
-    closeCalls: 0,
-    order: state.order,
+function defaultConfig(): ServerConfig {
+  return {
+    NODE_ENV: "test",
+    AUTH_ENABLED: true,
+    AUTH_DATABASE_URL: "postgres://openarc_auth_app:x@127.0.0.1:5432/openarc_auth_test",
+    AUTH_SECRET: "synthetic_auth_secret_for_market_startup_0123456789",
+    AUTH_RP_ID: "localhost",
+    AUTH_RATE_GLOBAL_PER_MINUTE: 60,
+    AUTH_RATE_PEER_PER_HOUR: 600,
+    AUTH_RATE_BINDING_PER_HOUR: 60,
+    AUTH_RATE_RECOVERY_PER_15MIN: 10,
+    APP_ORIGIN: "http://localhost:5183",
+    TENANT_READS_ENABLED: true,
+    TENANT_WRITES_ENABLED: false,
+    TENANT_DATABASE_URL: "postgres://openarc_tenant_app:y@127.0.0.1:5432/openarc_auth_test",
+    MARKET_CATALOG_ENABLED: false,
+    LISTING_MANAGEMENT_ENABLED: true,
+    MARKET_MODERATION_ENABLED: false,
+    MACHINE_CREDENTIAL_MANAGEMENT_ENABLED: true,
+    MACHINE_SESSION_EXCHANGE_ENABLED: false,
+    MACHINE_CREDENTIAL_PEPPER_VERSION: 1,
+    MACHINE_CREDENTIAL_PEPPER: "synthetic_pepper",
+    MACHINE_RATE_SECRET: "synthetic_rate_secret",
+    ARC_OBSERVATION_ENABLED: false,
+    REDIS_URL: undefined,
+    COMMIT_SHA: "0123456789abcdef0123456789abcdef01234567",
+    HOST: "127.0.0.1",
+    PORT: 0,
   };
+}
+
+function makeHandle(name: string): Handle {
+  const handle: Handle = { name, closeCalls: 0, order: state.order };
   state.handles.set(name, handle);
   return handle;
 }
@@ -75,12 +110,20 @@ vi.mock("../src/tenant/runtime.js", () => ({
 }));
 
 vi.mock("../src/market/runtime.js", () => ({
-  startMarketRuntime: async () => {
+  startMarketRuntime: async (options: Record<string, unknown>) => {
     state.order.push("market");
+    state.marketStarts += 1;
+    state.marketArgs = options;
     if (state.marketError) throw new Error("MARKET_START_FAILED");
     const handle = makeHandle("market");
+    const listing = options.listingManagementEnabled === true;
+    const moderation = options.moderationEnabled === true;
+    const catalog = options.catalogEnabled === true;
     return {
-      service: {},
+      // Mirrors the real runtime: only the enabled stores' services exist.
+      ...(listing ? { service: {} } : {}),
+      ...(listing || moderation ? { lifecycleService: {} } : {}),
+      ...(catalog ? { catalogService: {} } : {}),
       ready: async () => true,
       close: async () => {
         handle.closeCalls += 1;
@@ -108,8 +151,9 @@ vi.mock("../src/machine/runtime.js", () => ({
 }));
 
 vi.mock("../src/app.js", () => ({
-  createApp: () => {
+  createApp: (options: Record<string, unknown>) => {
     state.order.push("createApp");
+    state.createAppArgs = options;
     if (state.createAppError) throw new Error("CREATE_APP_FAILED");
     return {
       close: async () => {
@@ -124,32 +168,7 @@ vi.mock("../src/app.js", () => ({
 }));
 
 vi.mock("../src/config.js", () => ({
-  loadConfig: () => ({
-    NODE_ENV: "test",
-    AUTH_ENABLED: true,
-    AUTH_DATABASE_URL: "postgres://openarc_auth_app:x@127.0.0.1:5432/openarc_auth_test",
-    AUTH_SECRET: "synthetic_auth_secret_for_market_startup_0123456789",
-    AUTH_RP_ID: "localhost",
-    AUTH_RATE_GLOBAL_PER_MINUTE: 60,
-    AUTH_RATE_PEER_PER_HOUR: 600,
-    AUTH_RATE_BINDING_PER_HOUR: 60,
-    AUTH_RATE_RECOVERY_PER_15MIN: 10,
-    APP_ORIGIN: "http://localhost:5183",
-    TENANT_READS_ENABLED: true,
-    TENANT_WRITES_ENABLED: false,
-    TENANT_DATABASE_URL: "postgres://openarc_tenant_app:y@127.0.0.1:5432/openarc_auth_test",
-    LISTING_MANAGEMENT_ENABLED: true,
-    MACHINE_CREDENTIAL_MANAGEMENT_ENABLED: true,
-    MACHINE_SESSION_EXCHANGE_ENABLED: false,
-    MACHINE_CREDENTIAL_PEPPER_VERSION: 1,
-    MACHINE_CREDENTIAL_PEPPER: "synthetic_pepper",
-    MACHINE_RATE_SECRET: "synthetic_rate_secret",
-    ARC_OBSERVATION_ENABLED: false,
-    REDIS_URL: undefined,
-    COMMIT_SHA: "0123456789abcdef0123456789abcdef01234567",
-    HOST: "127.0.0.1",
-    PORT: 0,
-  }),
+  loadConfig: () => state.config,
 }));
 
 async function loadServer(): Promise<void> {
@@ -173,6 +192,10 @@ beforeEach(() => {
   state.closeCalls = [];
   state.exitCalls = 0;
   state.closed = 0;
+  state.marketArgs = undefined;
+  state.createAppArgs = undefined;
+  state.marketStarts = 0;
+  state.config = defaultConfig();
   signalHandlers = [];
   vi.spyOn(process, "once").mockImplementation(((event: string, handler: () => void) => {
     if (event === "SIGINT" || event === "SIGTERM") signalHandlers.push(handler);
@@ -248,6 +271,98 @@ describe("server startup resource ownership", () => {
     expect(closeCount("tenant")).toBe(1);
     expect(closeCount("market")).toBe(1);
     expect(closeCount("machine")).toBe(1);
+    expect(state.exitCalls).toBe(1);
+  });
+
+  it("passes explicit three booleans plus auth and wires the new services", async () => {
+    await loadServer();
+    expect(state.marketArgs).toMatchObject({
+      catalogEnabled: false,
+      listingManagementEnabled: true,
+      moderationEnabled: false,
+      marketDatabaseUrl: state.config.TENANT_DATABASE_URL,
+    });
+    expect(state.marketArgs?.auth).toBeDefined();
+    expect(state.createAppArgs?.marketService).toBeDefined();
+    expect(state.createAppArgs?.marketLifecycleService).toBeDefined();
+    expect(state.createAppArgs?.marketCatalogService).toBeUndefined();
+    // No lingering process listeners beyond the two shutdown handlers.
+    expect(signalHandlers).toHaveLength(2);
+  });
+
+  it("does not start the market runtime when all three market flags are off", async () => {
+    state.config.LISTING_MANAGEMENT_ENABLED = false;
+    state.config.MARKET_CATALOG_ENABLED = false;
+    state.config.MARKET_MODERATION_ENABLED = false;
+    state.config.MACHINE_CREDENTIAL_MANAGEMENT_ENABLED = false;
+    await loadServer();
+    expect(state.marketStarts).toBe(0);
+    expect(state.order).toEqual(["auth", "tenant", "createApp", "listen"]);
+    expect(state.createAppArgs?.marketReady).toBeUndefined();
+    expect(state.createAppArgs?.marketService).toBeUndefined();
+    signalHandlers[0]?.();
+    await vi.waitFor(() => {
+      expect(state.exitCalls).toBe(1);
+    });
+    expect(closeCount("auth")).toBe(1);
+    expect(closeCount("tenant")).toBe(1);
+  });
+
+  it("starts a catalog-only, AUTH-false runtime without an auth port or services", async () => {
+    state.config.AUTH_ENABLED = false;
+    state.config.TENANT_READS_ENABLED = false;
+    state.config.TENANT_WRITES_ENABLED = false;
+    state.config.LISTING_MANAGEMENT_ENABLED = false;
+    state.config.MARKET_CATALOG_ENABLED = true;
+    state.config.MARKET_MODERATION_ENABLED = false;
+    state.config.MACHINE_CREDENTIAL_MANAGEMENT_ENABLED = false;
+    state.config.MACHINE_SESSION_EXCHANGE_ENABLED = false;
+    await loadServer();
+    expect(state.order).toEqual(["market", "createApp", "listen"]);
+    expect(state.marketArgs).toMatchObject({
+      catalogEnabled: true,
+      listingManagementEnabled: false,
+      moderationEnabled: false,
+    });
+    // Catalog-only must not receive (or dereference) an auth seam.
+    expect(state.marketArgs?.auth).toBeUndefined();
+    expect(state.createAppArgs?.marketCatalogService).toBeDefined();
+    expect(state.createAppArgs?.marketService).toBeUndefined();
+    expect(state.createAppArgs?.marketLifecycleService).toBeUndefined();
+    expect(state.createAppArgs?.authService).toBeUndefined();
+    expect(state.createAppArgs?.tenantReadService).toBeUndefined();
+    signalHandlers[0]?.();
+    await vi.waitFor(() => {
+      expect(state.exitCalls).toBe(1);
+    });
+    expect(closeCount("market")).toBe(1);
+  });
+
+  it("starts a moderation-only runtime with auth but no tenant/listing service", async () => {
+    state.config.TENANT_READS_ENABLED = false;
+    state.config.LISTING_MANAGEMENT_ENABLED = false;
+    state.config.MARKET_MODERATION_ENABLED = true;
+    state.config.MACHINE_CREDENTIAL_MANAGEMENT_ENABLED = false;
+    await loadServer();
+    expect(state.marketArgs).toMatchObject({
+      catalogEnabled: false,
+      listingManagementEnabled: false,
+      moderationEnabled: true,
+    });
+    expect(state.marketArgs?.auth).toBeDefined();
+    expect(state.createAppArgs?.marketLifecycleService).toBeDefined();
+    expect(state.createAppArgs?.marketService).toBeUndefined();
+    expect(state.createAppArgs?.marketCatalogService).toBeUndefined();
+  });
+
+  it("tears down every acquired runtime when createApp itself rejects", async () => {
+    state.createAppError = true;
+    await loadServer();
+    expect(closeCount("auth")).toBe(1);
+    expect(closeCount("tenant")).toBe(1);
+    expect(closeCount("market")).toBe(1);
+    expect(closeCount("machine")).toBe(1);
+    expect(state.closed).toBe(0);
     expect(state.exitCalls).toBe(1);
   });
 });
