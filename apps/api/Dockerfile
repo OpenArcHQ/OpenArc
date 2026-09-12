@@ -7,12 +7,14 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/config/package.json packages/config/package.json
+COPY packages/db/package.json packages/db/package.json
 RUN pnpm install --frozen-lockfile
 
 COPY apps/api apps/api
 COPY packages/shared packages/shared
 COPY packages/config packages/config
-RUN pnpm --filter @openarc/shared build && pnpm --filter @openarc/api build
+COPY packages/db packages/db
+RUN pnpm --filter @openarc/db build && pnpm --filter @openarc/shared build && pnpm --filter @openarc/api build
 RUN pnpm --filter @openarc/api deploy --prod /prod/api
 
 FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runtime

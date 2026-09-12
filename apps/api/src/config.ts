@@ -15,6 +15,18 @@ const EnvironmentSchema = z.object({
   AGENT_REGISTRY_ENABLED: flag(),
   AGENT_JOBS_ENABLED: flag(),
   GATEWAY_EVIDENCE_ENABLED: flag(),
+  AUTH_ENABLED: flag(),
+  AUTH_DATABASE_URL: z
+    .string()
+    .max(4096)
+    .regex(/^postgres(?:ql)?:\/\//u)
+    .optional(),
+  AUTH_SECRET: secret().optional(),
+  AUTH_RP_ID: z.string().min(1).max(253).optional(),
+  AUTH_RATE_GLOBAL_PER_MINUTE: z.coerce.number().int().min(1).max(100_000).default(600),
+  AUTH_RATE_PEER_PER_HOUR: z.coerce.number().int().min(1).max(100_000).default(120),
+  AUTH_RATE_BINDING_PER_HOUR: z.coerce.number().int().min(1).max(100_000).default(120),
+  AUTH_RATE_RECOVERY_PER_15MIN: z.coerce.number().int().min(1).max(10_000).default(5),
   ARC_TESTNET_RPC_URL: z.literal(ARC_TESTNET.rpcHttp).default(ARC_TESTNET.rpcHttp),
   ARC_TESTNET_EXPLORER_URL: z.literal(ARC_TESTNET.explorerOrigin).default(ARC_TESTNET.explorerOrigin),
   REDIS_URL: z.url({ protocol: /^rediss?$/u }).max(1024).optional(),
@@ -38,9 +50,37 @@ const EnvironmentSchema = z.object({
       context.addIssue({ code: "custom", path: ["METRICS_TOKEN"], message: "A metrics secret is required" });
     }
   }
-  const operatorSecrets = [config.ABUSE_LIMIT_SECRET, config.SOURCE_PROXY_SECRET, config.METRICS_TOKEN].filter(Boolean);
+  const operatorSecrets = [config.ABUSE_LIMIT_SECRET, config.SOURCE_PROXY_SECRET, config.METRICS_TOKEN, config.AUTH_SECRET].filter(Boolean);
   if (new Set(operatorSecrets).size !== operatorSecrets.length) {
     context.addIssue({ code: "custom", message: "Operator secrets must be distinct" });
+  }
+  if (config.AUTH_ENABLED) {
+    if (!config.AUTH_DATABASE_URL) {
+      context.addIssue({ code: "custom", path: ["AUTH_DATABASE_URL"], message: "Authentication requires a dedicated database URL" });
+    }
+    if (!config.AUTH_SECRET) {
+      context.addIssue({ code: "custom", path: ["AUTH_SECRET"], message: "Authentication requires a dedicated operator secret" });
+    }
+    if (!config.AUTH_RP_ID) {
+      context.addIssue({ code: "custom", path: ["AUTH_RP_ID"], message: "Authentication requires an exact relying-party id" });
+    } else {
+      const rpId = config.AUTH_RP_ID;
+      if (rpId.includes("*") || rpId.includes("/") || rpId.startsWith(".") || rpId.endsWith(".")) {
+        context.addIssue({ code: "custom", path: ["AUTH_RP_ID"], message: "AUTH_RP_ID must be an exact hostname" });
+      }
+      let hostname: string | null = null;
+      try {
+        hostname = new URL(config.APP_ORIGIN).hostname;
+      } catch {
+        hostname = null;
+      }
+      if (hostname !== null && hostname !== rpId) {
+        context.addIssue({ code: "custom", path: ["AUTH_RP_ID"], message: "AUTH_RP_ID must equal the APP_ORIGIN hostname" });
+      }
+    }
+    if (config.NODE_ENV !== "production" && !config.APP_ORIGIN.startsWith("http://localhost") && !config.APP_ORIGIN.startsWith("http://127.0.0.1")) {
+      context.addIssue({ code: "custom", path: ["APP_ORIGIN"], message: "Authentication development origin must be loopback" });
+    }
   }
   if (config.GATEWAY_EVIDENCE_ENABLED) {
     if (!config.AGENT_JOBS_ENABLED) {

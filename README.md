@@ -19,9 +19,11 @@ reported, what was observed and what remains unresolved—without treating a
 successful transfer as proof of authorization or service delivery.
 
 **Current status:** the legacy investigation app is on controlled Testnet staging.
-The new marketplace/control/proof/privacy specification is adopted; its first
-shared contract slice is implemented, while database/auth and frontend integration
-remain ahead. Legacy milestone checks do not mean the commerce product is done.
+The new marketplace/control/proof/privacy specification is adopted. Its shared
+contracts, durable account service, passkey/wallet sign-in and supplied public
+design are implemented; organization authorization and the commerce workflows
+remain under development. Account access defaults off. Legacy milestone checks
+do not mean the commerce product is done.
 OpenArc does not support mainnet. See the
 [commerce transition and build order](docs/engineering/commerce-transition.md).
 
@@ -35,6 +37,8 @@ OpenArc does not support mainnet. See the
 | Payment evidence | Compare imported x402 metadata with separately requested Gateway status and Arc batch evidence. |
 | Investigations | Search records, review exceptions and inspect explicitly linked evidence in graph and list views. |
 | Redacted exports | Preview bounded investigation reports with private fields omitted by default. |
+| Minimal-record account access | Optional passkeys or wallet login, server-side session revocation and recovery codes; no required name or email. Sign-in is not permission to pay. |
+| Supplied public design | Preview the supplied visual system, local video, technical docs and FAQ at `/design`, without replacing the existing evidence workspace. |
 
 Features default off. Local imports and investigations need no live source;
 connector-enabled builds require explicit approval before each source lookup.
@@ -52,8 +56,9 @@ for prerequisites and limits.
 
 ## Trust boundaries
 
-- **Read-only, not an execution layer.** No wallet-key custody, transaction
-  signing, payment broadcasting or enforcement of another agent's policy.
+- **No financial execution yet.** No wallet-key custody, transaction signing,
+  payment broadcasting or enforcement of another agent's policy. Optional wallet
+  login requests an authentication signature only; it cannot authorize payment.
 - **Evidence is not endorsement.** Imported reports are unauthenticated claims.
   Registry entries do not establish trust; matching batch inclusion does not
   establish individual settlement or resource fulfillment.
@@ -63,6 +68,9 @@ for prerequisites and limits.
 - **Lookups cross a privacy boundary.** Approved inputs leave the browser through
   the API. The API does not persist workspace or evidence bodies; this is not a
   promise that hosting infrastructure retains no metadata.
+- **Minimal records are not zero retention.** Account access retains credential
+  public keys/IDs, pseudonymous bindings and necessary security records. Guest
+  access remains separate; no email or personal-name field is required.
 - **Testnet only.** No mainnet compatibility, independent security certification,
   or Circle/Arc endorsement is claimed. External network and protocol costs are
   not represented as free.
@@ -74,6 +82,7 @@ for prerequisites and limits.
 | `apps/web` | React/TypeScript UI, WebCrypto vault, IndexedDB, consent and investigations. |
 | `apps/api` | Fastify/TypeScript API, fixed Testnet destinations, validation and bounded reads. |
 | `packages/shared` | Versioned schemas, reconciliation, policy evaluation and fail-closed network configuration. |
+| `packages/db` | PostgreSQL migrations, restricted runtime roles and durable account/session/recovery state. |
 | Redis | Shared abuse and source-budget counters; not a server-side workspace vault. |
 | Release tooling | Chromium/WebKit journeys, production-image tests, dependency/license checks, image scans and SBOMs. |
 

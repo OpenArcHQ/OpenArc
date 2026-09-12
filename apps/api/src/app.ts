@@ -22,6 +22,10 @@ import type { AgentRegistryService } from "./arc/agent-registry-service.js";
 import type { JobService } from "./arc/job-service.js";
 import type { GatewayTransferService } from "./gateway/transfer-service.js";
 import type { ArcTransactionService } from "./arc/transaction-service.js";
+import { authCookieNames } from "./auth/cookies.js";
+import { AUTH_ERRORS, AuthApiError, authErrorEnvelope } from "./auth/errors.js";
+import { AUTH_ROUTE_PATHS, registerAuthRoutes } from "./auth/routes.js";
+import type { AuthService } from "./auth/service.js";
 import { ApiBoundaryError, apiErrorEnvelope, normalizeApiError } from "./http/errors.js";
 import { verifyBrowserOrigin, verifyPreflight } from "./http/origin.js";
 import { registerSourceRoute } from "./http/source-route.js";
@@ -50,6 +54,8 @@ export interface CreateAppOptions {
   agentRegistryService?: AgentRegistryService;
   jobService?: JobService;
   gatewayTransferService?: GatewayTransferService;
+  authService?: AuthService;
+  authReady?: () => Promise<boolean>;
 }
 
 const disabledPaths = [
@@ -57,10 +63,11 @@ const disabledPaths = [
 ] as const;
 
 function routeClass(url: string): RouteClass {
-  const path = url.split("?", 1)[0];
+  const path = url.split("?", 1)[0] ?? url;
   if (path === "/healthz") return "health";
   if (path === "/readyz") return "readiness";
   if (path === "/metrics") return "metrics";
+  if ((AUTH_ROUTE_PATHS as readonly string[]).includes(path)) return "auth";
   if (path === CAPABILITIES_PATH) return "capabilities";
   if (path === ARC_ACCOUNT_SNAPSHOT_PATH) return "arc_account";
   if (path === ARC_TRANSACTION_EVIDENCE_PATH) return "arc_transaction";
@@ -72,7 +79,8 @@ function routeClass(url: string): RouteClass {
 }
 
 export function createApp({ config, logger = config.NODE_ENV !== "test", logSink, metrics = new AggregateMetrics(),
-  sourceBudget, arcAccountService, arcTransactionService, agentRegistryService, jobService, gatewayTransferService }: CreateAppOptions): FastifyInstance {
+  sourceBudget, arcAccountService, arcTransactionService, agentRegistryService, jobService, gatewayTransferService,
+  authService, authReady }: CreateAppOptions): FastifyInstance {
   // Framework request/error logging is disabled, including parser failures.
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: API_MAX_REQUEST_BYTES,
     requestIdHeader: false, genReqId: () => randomUUID(), exposeHeadRoutes: false,
@@ -102,17 +110,50 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
     }
   });
 
-  const sendError = (request: FastifyRequest, reply: FastifyReply, error: ApiBoundaryError) => {
+  const sendError = (request: FastifyRequest, reply: FastifyReply, cause: unknown) => {
+    if (cause instanceof AuthApiError) {
+      failures.set(request, cause.metricsCode);
+      if (cause.retryAfterSeconds !== undefined) reply.header("Retry-After", String(cause.retryAfterSeconds));
+      return reply.code(cause.status).send(authErrorEnvelope(cause, request.id, config.COMMIT_SHA));
+    }
+    const authPath = (request.url.split("?", 1)[0] ?? request.url).startsWith("/v2/auth/");
+    if (authPath && !(cause instanceof ApiBoundaryError && cause.code === "NOT_FOUND")) {
+      // Parser, body-limit, media, unexpected and response-schema failures on
+      // the account surface must still return a strict v2 envelope with a
+      // correct status and no raw cause or caller data.
+      const normalized = normalizeApiError(cause);
+      const mapped =
+        normalized.code === "REQUEST_TOO_LARGE"
+          ? AUTH_ERRORS.tooLarge()
+          : normalized.code === "UNSUPPORTED_MEDIA_TYPE"
+            ? AUTH_ERRORS.unsupportedMedia()
+            : normalized.code === "INVALID_REQUEST"
+              ? AUTH_ERRORS.invalidRequest()
+              : AUTH_ERRORS.internal();
+      failures.set(request, mapped.metricsCode);
+      return reply
+        .code(mapped.status)
+        .send(authErrorEnvelope(mapped, request.id, config.COMMIT_SHA));
+    }
+    const error = normalizeApiError(cause);
     failures.set(request, error.code);
     if (error.retryAfterSeconds !== undefined) reply.header("Retry-After", String(error.retryAfterSeconds));
     return reply.code(API_ERRORS[error.code].status).send(apiErrorEnvelope(error, request.id, config.COMMIT_SHA));
   };
-  app.setErrorHandler((cause, request, reply) => sendError(request, reply, normalizeApiError(cause)));
+  app.setErrorHandler((cause, request, reply) => sendError(request, reply, cause));
   app.setNotFoundHandler((request, reply) => sendError(request, reply, new ApiBoundaryError("NOT_FOUND")));
 
   const build = { service: "openarc-api", version: "0.0.0", commitSha: config.COMMIT_SHA } as const;
   app.get("/healthz", async () => ({ status: "ok" as const, ...build }));
   app.get("/readyz", async (_request, reply) => {
+    if (config.AUTH_ENABLED) {
+      const authReadyResult = authReady ? await authReady().catch(() => false) : false;
+      if (!authReadyResult) {
+        return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
+          checks: { configuration: "up", sourceRoutes: config.ARC_OBSERVATION_ENABLED ? "enabled" : "disabled",
+            redis: config.ARC_OBSERVATION_ENABLED ? "not_checked" : "not_required", authDatabase: "down" }, ...build });
+      }
+    }
     if (config.ARC_OBSERVATION_ENABLED) {
       const redisReady = sourceBudget ? await sourceBudget.ready(AbortSignal.timeout(750)) : false;
       if (!redisReady) return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
@@ -121,8 +162,30 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
         checks: { configuration: "up", sourceRoutes: "enabled", redis: "up" }, ...build };
     }
     return { ok: true as const, status: "ready" as const,
-      checks: { configuration: "up", sourceRoutes: "disabled", redis: "not_required" }, ...build };
+      checks: { configuration: "up", sourceRoutes: "disabled", redis: "not_required",
+        ...(config.AUTH_ENABLED ? { authDatabase: "up" as const } : {}) }, ...build };
   });
+
+  if (config.AUTH_ENABLED) {
+    if (!authService) throw new Error("Auth dependencies are unavailable");
+    const secureCookies = config.APP_ORIGIN.startsWith("https://");
+    registerAuthRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(secureCookies),
+      service: authService,
+      buildSha: config.COMMIT_SHA,
+      enabled: true,
+    });
+  } else {
+    registerAuthRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(false),
+      // A disabled registration never invokes the service.
+      service: authService as AuthService,
+      buildSha: config.COMMIT_SHA,
+      enabled: false,
+    });
+  }
 
   app.all(CAPABILITIES_PATH, { onRequest: async (request, reply) => {
     if (!config.API_BOUNDARY_ENABLED) throw new ApiBoundaryError("FEATURE_DISABLED");

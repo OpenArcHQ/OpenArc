@@ -1,4 +1,6 @@
 import { createApp } from "./app.js";
+import { authCookieNames } from "./auth/cookies.js";
+import { startAuthRuntime, type StartedAuthRuntime } from "./auth/runtime.js";
 import { ArcAccountService } from "./arc/account-service.js";
 import { AgentRegistryService } from "./arc/agent-registry-service.js";
 import { JobService } from "./arc/job-service.js";
@@ -14,6 +16,27 @@ import { GatewayTransferService } from "./gateway/transfer-service.js";
 async function start(): Promise<void> {
   const config = loadConfig();
   const metrics = new AggregateMetrics();
+  const authRuntime: StartedAuthRuntime | undefined = config.AUTH_ENABLED
+    ? await startAuthRuntime({
+        authDatabaseUrl: config.AUTH_DATABASE_URL as string,
+        authSecret: config.AUTH_SECRET as string,
+        appOrigin: config.APP_ORIGIN,
+        rpId: config.AUTH_RP_ID as string,
+        environment: config.NODE_ENV === "production" ? "production" : "development",
+        secureCookies: config.APP_ORIGIN.startsWith("https://"),
+        cookieNames: authCookieNames(config.APP_ORIGIN.startsWith("https://")),
+        rateLimits: {
+          globalLimit: config.AUTH_RATE_GLOBAL_PER_MINUTE,
+          globalWindowSeconds: 60,
+          peerLimit: config.AUTH_RATE_PEER_PER_HOUR,
+          peerWindowSeconds: 3600,
+          bindingLimit: config.AUTH_RATE_BINDING_PER_HOUR,
+          bindingWindowSeconds: 3600,
+          recoveryLimit: config.AUTH_RATE_RECOVERY_PER_15MIN,
+          recoveryWindowSeconds: 900,
+        },
+      })
+    : undefined;
   const redis = config.ARC_OBSERVATION_ENABLED && config.REDIS_URL ? await connectBudgetRedis(config.REDIS_URL) : undefined;
   const sourceBudget = redis && config.ABUSE_LIMIT_SECRET ? new SourceBudget(redis, {
     secret: config.ABUSE_LIMIT_SECRET,
@@ -27,6 +50,9 @@ async function start(): Promise<void> {
     maxResponseBytes: config.SOURCE_MAX_RESPONSE_BYTES,
   })) : undefined;
   const app = createApp({ config, metrics,
+    ...(authRuntime
+      ? { authService: authRuntime.service, authReady: () => authRuntime.ready() }
+      : {}),
     ...(config.GATEWAY_EVIDENCE_ENABLED ? { gatewayTransferService: new GatewayTransferService(new BoundedGatewayClient({
       timeoutMs: config.SOURCE_TIMEOUT_MS, maxResponseBytes: config.SOURCE_MAX_RESPONSE_BYTES,
     })) } : {}),
@@ -36,6 +62,7 @@ async function start(): Promise<void> {
       ...(config.AGENT_JOBS_ENABLED ? { jobService: new JobService(rpc) } : {}) } : {}) });
   const shutdown = async (): Promise<void> => {
     await app.close();
+    await authRuntime?.close();
     if (redis?.isOpen) redis.destroy();
     process.exit(0);
   };
