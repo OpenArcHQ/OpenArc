@@ -23,6 +23,21 @@ import {
 import { machineCredentialEnabled, tenantMutationEnabled, tenantReadsEnabled } from "./availability.js";
 import { listingManagementEnabledFromEnv } from "./listing-availability.js";
 import { policyManagementEnabledFromEnv } from "./policy-availability.js";
+import { commerceSessionsEnabledFromEnv } from "./session-availability.js";
+import { parseSessionRoute, type SessionRoute } from "./session-routes.js";
+import {
+  SessionController,
+  initialSessionControllerState,
+  renderSessionState,
+  suppressStaleSessionContext,
+  type SessionAgentSelection,
+  type SessionControllerState,
+  type SessionReadCoordinator,
+} from "./session-controller.js";
+import { SessionListPanel } from "./SessionListPanel.js";
+import { SessionIssuePanel, SessionMutationView } from "./SessionIssuePanel.js";
+import { SessionStatusPanel } from "./SessionStatusPanel.js";
+import { PolicyClient, readPolicyManagementCapability } from "./policy-client.js";
 import { TenantMutationPanel } from "./TenantMutationPanel.js";
 import { MachineCredentialPanel } from "./MachineCredentialPanel.js";
 import { ListingListPanel } from "./ListingListPanel.js";
@@ -70,6 +85,7 @@ import {
 import tenantCssUrl from "./tenant.css?url";
 import listingCssUrl from "./market-listing.css?url";
 import policyCssUrl from "./control-policy.css?url";
+import sessionCssUrl from "./commerce-session.css?url";
 
 /**
  * Protected organization workspace.
@@ -87,13 +103,16 @@ type AppPath =
   | "/app/provider/listings"
   | "/app/provider/listings/new"
   | "/app/budgets"
-  | "/app/budgets/new";
+  | "/app/budgets/new"
+  | "/app/sessions"
+  | "/app/sessions/new";
 
 type WorkspacePath =
   | AppPath
   | "/app"
   | { readonly kind: "listing-detail"; readonly listingId: string }
   | { readonly kind: "policy-detail"; readonly policyId: string }
+  | { readonly kind: "session-detail"; readonly sessionId: string }
   | "unknown";
 
 function useTenantStyles(): void {
@@ -133,6 +152,19 @@ function usePolicyStyles(active: boolean): void {
   }, [active]);
 }
 
+/** Mounts the scoped commerce-session stylesheet for the feature lifetime only. */
+function useSessionStyles(active: boolean): void {
+  useEffect(() => {
+    if (!active) return;
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = sessionCssUrl;
+    link.dataset.sessionStyle = "true";
+    document.head.append(link);
+    return () => link.remove();
+  }, [active]);
+}
+
 function currentPath(): WorkspacePath {
   if (typeof window === "undefined") return "/app";
   const raw = window.location.pathname.replace(/\/+$/u, "") || "/";
@@ -153,6 +185,14 @@ function currentPath(): WorkspacePath {
     const policy = parsePolicyRoute(raw);
     if (policy === null) return "unknown";
     if (policy.kind === "detail") return { kind: "policy-detail", policyId: policy.policyId };
+  }
+  if (raw.startsWith("/app/sessions")) {
+    const session = parseSessionRoute(raw);
+    if (session === null) return "unknown";
+    if (session.kind === "roots") return "/app/sessions";
+    if (session.kind === "new") return "/app/sessions/new";
+    if (session.kind === "detail") return { kind: "session-detail", sessionId: session.sessionId };
+    return "unknown";
   }
   if (raw.startsWith("/app/")) return "unknown";
   return "unknown";
@@ -191,6 +231,20 @@ function isPolicyWorkspacePath(path: WorkspacePath): boolean {
   return policyRouteOf(path) !== null;
 }
 
+/** The route object for a session workspace path, or null when not session. */
+function sessionRouteOf(path: WorkspacePath): SessionRoute | null {
+  if (path === "/app/sessions") return { kind: "roots" };
+  if (path === "/app/sessions/new") return { kind: "new" };
+  if (typeof path === "object" && path.kind === "session-detail") {
+    return { kind: "detail", sessionId: path.sessionId };
+  }
+  return null;
+}
+
+function isSessionWorkspacePath(path: WorkspacePath): boolean {
+  return sessionRouteOf(path) !== null;
+}
+
 export default function TenantApp() {
   const enabled = useMemo(() => tenantReadsEnabled() && accountAccessEnabled(), []);
   const writesEnabled = useMemo(
@@ -219,6 +273,11 @@ export default function TenantApp() {
   // Vault, wallet and session flags: it has its own server authority and its
   // own credentialless capability probe. All defaults false.
   const policyEnabled = useMemo(() => policyManagementEnabledFromEnv(), []);
+  // The commerce-session surface is independent of tenant writes, machine,
+  // listing, policy, Vault, wallet and market flags: it has its own server
+  // authority and its own separate PUBLIC credentialless capability probe. All
+  // defaults false, so a disabled deployment makes ZERO session requests.
+  const sessionsEnabled = useMemo(() => commerceSessionsEnabledFromEnv(), []);
   const [state, setState] = useState<TenantViewControllerState>(initialTenantState);
   const [mutationState, setMutationState] = useState<TenantMutationState>(initialTenantMutationState);
   const [machineState, setMachineState] = useState<MachineConsoleState>(initialMachineConsoleState);
@@ -229,6 +288,13 @@ export default function TenantApp() {
   const [listingBaseVersion, setListingBaseVersion] = useState<CommerceListingOwnerVersion | null>(null);
   const [policyState, setPolicyState] = useState<PolicyControllerState>(initialPolicyControllerState);
   const [policyCreating, setPolicyCreating] = useState(false);
+  const [sessionState, setSessionState] = useState<SessionControllerState>(initialSessionControllerState);
+  const [sessionSelectedAgent, setSessionSelectedAgent] = useState<string | null>(null);
+  const [sessionPolicyOptions, setSessionPolicyOptions] = useState<readonly { policyId: string; status: string }[]>([]);
+  const [sessionPolicyStatus, setSessionPolicyStatus] = useState<"none" | "loading" | "ready" | "error">("none");
+  const [sessionPolicyNext, setSessionPolicyNext] = useState<string | null>(null);
+  const sessionPolicyControllerRef = useRef<AbortController | null>(null);
+  const sessionPolicyGenerationRef = useRef(0);
   // A monotonic generation that forces the policy create editor to REMOUNT
   // (and therefore reinitialize every useState field) on an external privacy
   // boundary: hidden/pagehide. Account/organization/role changes are already
@@ -236,6 +302,10 @@ export default function TenantApp() {
   // render the context changes. The generation is committed inside the same
   // flushSync as the controller clear, so no previous form frame is painted.
   const [policyFormGeneration, setPolicyFormGeneration] = useState(0);
+  // Monotonic privacy generation that remounts the session form/secret subtree
+  // on an external hidden/pagehide boundary, committed inside the same
+  // flushSync as the controller clear so no previous form frame is painted.
+  const [sessionFormGeneration, setSessionFormGeneration] = useState(0);
   const [selectedProfile, setSelectedProfile] = useState<MachineCredentialTarget | null>(null);
   const [path, setPath] = useState<WorkspacePath>(currentPath);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -248,17 +318,40 @@ export default function TenantApp() {
   const machineControllerRef = useRef<MachineCredentialController | null>(null);
   const listingControllerRef = useRef<ListingController | null>(null);
   const policyControllerRef = useRef<PolicyController | null>(null);
+  const sessionControllerRef = useRef<SessionController | null>(null);
+  const sessionSelectedAgentRef = useRef<string | null>(null);
   const boundMachineContextRef = useRef<MachineRenderContext | null>(null);
   const boundListingContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
   const boundPolicyContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
+  const boundSessionContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
   const listingOpenRef = useRef<((listingId: string) => void) | null>(null);
   const policyOpenRef = useRef<((policyId: string) => void) | null>(null);
   const accountRef = useRef<AccountFlowController | null>(null);
   const known = isKnownPath(path);
 
+  // Aborts any in-flight optional policy-picker page and clears its bounded
+  // options. Safe to call on any privacy/context boundary; it makes no request.
+  const invalidateSessionPolicies = useCallback(() => {
+    sessionPolicyGenerationRef.current += 1;
+    sessionPolicyControllerRef.current?.abort();
+    sessionPolicyControllerRef.current = null;
+    setSessionPolicyOptions([]);
+    setSessionPolicyStatus("none");
+    setSessionPolicyNext(null);
+  }, []);
+
+  // The effective selected agent mirrors the issue panel: an explicit selection
+  // or the first active agent of the current organization. The picker load and
+  // the controller both bind to exactly this agent.
+  const firstActiveAgentId =
+    state.agents.items.find((item) => item.status === "active")?.agentId ?? null;
+  const sessionEffectiveAgentId = sessionSelectedAgent ?? firstActiveAgentId;
+  const accountId = state.principal.accountId;
+
   useTenantStyles();
   useListingStyles(listingEnabled);
   usePolicyStyles(policyEnabled);
+  useSessionStyles(sessionsEnabled);
 
   useEffect(() => {
     const onPopState = () => setPath(currentPath());
@@ -360,6 +453,49 @@ export default function TenantApp() {
         })
       : null;
     policyControllerRef.current = policyController;
+    // The commerce-session controller is constructed ONLY when its own flag and
+    // all prerequisites are enabled. It mounts no request until a protected
+    // session route initializes the independent public credentialless capability
+    // gate, and it never depends on tenant-write, machine, listing, policy,
+    // Vault, wallet or market flags. With it off, ZERO session/capability
+    // requests are made. It never puts a machine bearer or commerce-session
+    // token into this browser.
+    const sessionReads: SessionReadCoordinator = {
+      currentOrganizationId: () => controller.currentOrganizationId(),
+      currentRole: () => controller.currentRole(),
+      currentAccountId: () =>
+        account.state.session.signedIn ? account.state.session.accountId : null,
+      abortPendingReads: () => controller.abortPendingReads(),
+      selectedActiveAgent: (): SessionAgentSelection | null => {
+        const selectedId = sessionSelectedAgentRef.current;
+        const items = controller.state.agents.items;
+        if (selectedId !== null) {
+          const selected = items.find((item) => item.agentId === selectedId);
+          return selected !== undefined && selected.status === "active"
+            ? { agentId: selected.agentId, status: selected.status }
+            : null;
+        }
+        const firstActive = items.find((item) => item.status === "active");
+        return firstActive === undefined
+          ? null
+          : { agentId: firstActive.agentId, status: firstActive.status };
+      },
+      reloadAfterCommit: async () => {
+        // Session revisions are independent of the tenant read sections. A
+        // context reload here would transiently clear the authoritative role and
+        // erase the just-committed receipt, so no tenant reload is performed.
+      },
+    };
+    const sessionController = sessionsEnabled
+      ? new SessionController({
+          account,
+          reads: sessionReads,
+          onState: setSessionState,
+          // Deliberately NOT auto-navigating after a fresh issue: the one-time
+          // handoff must remain on the issue panel for exactly one reveal.
+        })
+      : null;
+    sessionControllerRef.current = sessionController;
     const onVisibility = () => {
       if (document.visibilityState === "hidden") {
         // The hidden boundary is external and synchronous: a browser may
@@ -374,7 +510,10 @@ export default function TenantApp() {
           machineController?.clear();
           listingController?.clear();
           policyController?.clear();
+          sessionController?.clear();
           setPolicyFormGeneration((value) => value + 1);
+          setSessionFormGeneration((value) => value + 1);
+          invalidateSessionPolicies();
         });
       }
     };
@@ -385,7 +524,10 @@ export default function TenantApp() {
         machineController?.clear();
         listingController?.clear();
         policyController?.clear();
+        sessionController?.clear();
         setPolicyFormGeneration((value) => value + 1);
+        setSessionFormGeneration((value) => value + 1);
+        invalidateSessionPolicies();
       });
     };
     document.addEventListener("visibilitychange", onVisibility);
@@ -399,14 +541,16 @@ export default function TenantApp() {
       machineController?.dispose();
       listingController?.dispose();
       policyController?.dispose();
+      sessionController?.dispose();
       if (controllerRef.current === controller) controllerRef.current = null;
       if (writeControllerRef.current === writeController) writeControllerRef.current = null;
       if (machineControllerRef.current === machineController) machineControllerRef.current = null;
       if (listingControllerRef.current === listingController) listingControllerRef.current = null;
       if (policyControllerRef.current === policyController) policyControllerRef.current = null;
+      if (sessionControllerRef.current === sessionController) sessionControllerRef.current = null;
       if (accountRef.current === account) accountRef.current = null;
     };
-  }, [enabled, known, writesEnabled, machineEnabled, listingEnabled, policyEnabled]);
+  }, [enabled, known, writesEnabled, machineEnabled, listingEnabled, policyEnabled, sessionsEnabled, invalidateSessionPolicies]);
 
   // Clear the create/version selection when leaving the listing subtree.
   useEffect(() => {
@@ -424,12 +568,27 @@ export default function TenantApp() {
     policyControllerRef.current?.clearSensitive();
   }, [path]);
 
+  // Clear the session selection/secret when leaving the session subtree.
+  useEffect(() => {
+    if (isSessionWorkspacePath(path)) return;
+    sessionSelectedAgentRef.current = null;
+    setSessionSelectedAgent(null);
+    sessionControllerRef.current?.clear();
+    invalidateSessionPolicies();
+  }, [path, invalidateSessionPolicies]);
+
+  // A selected-agent change invalidates the picker binding and aborts any
+  // in-flight policy page so a late response cannot repopulate options for the
+  // previous agent.
+  useEffect(() => {
+    invalidateSessionPolicies();
+  }, [sessionSelectedAgent, firstActiveAgentId, invalidateSessionPolicies]);
+
   // A signed-in identity change must never expose a previous account's
   // committed confirmation. The receipt belongs to the account that produced
   // it; a signed-out/expired transition (for example a self-demotion that
   // revoked this session) keeps the same account's committed evidence on
   // screen. Hidden/logout/navigation clears run separately in the flow.
-  const accountId = state.principal.accountId;
   const lastAccountRef = useRef<string | null>(null);
   useEffect(() => {
     if (accountId === null) return;
@@ -451,6 +610,9 @@ export default function TenantApp() {
       policyControllerRef.current?.clear();
       setPolicyCreating(false);
       setSelectedProfile(null);
+      sessionSelectedAgentRef.current = null;
+      setSessionSelectedAgent(null);
+      sessionControllerRef.current?.clear();
     }
   }, [accountId]);
 
@@ -464,6 +626,7 @@ export default function TenantApp() {
     // its role before the machine early-return below.
     listingControllerRef.current?.reconcileRole(role);
     policyControllerRef.current?.reconcileRole(role);
+    sessionControllerRef.current?.reconcileRole(role);
     const machineController = machineControllerRef.current;
     if (machineController === null) return;
     // Role is authoritative from the current server context. Reconcile it
@@ -484,7 +647,11 @@ export default function TenantApp() {
     listingControllerRef.current?.clear();
     policyControllerRef.current?.clear();
     setPolicyCreating(false);
-  }, [organizationId]);
+    sessionSelectedAgentRef.current = null;
+    setSessionSelectedAgent(null);
+    sessionControllerRef.current?.clear();
+    invalidateSessionPolicies();
+  }, [organizationId, invalidateSessionPolicies]);
 
   // Initialize the listing controller only for a protected listing route. This
   // effect is declared AFTER the organization/role reconciliation effects so it
@@ -513,6 +680,37 @@ export default function TenantApp() {
     // profile and never a new endpoint).
     if (route.kind === "new") void controllerRef.current?.loadAgents();
   }, [path, policyEnabled, organizationId, role, accountId]);
+
+  // Initialize the session controller only for a protected session route. The
+  // public credentialless capability probe runs first; when it is not
+  // `enabled`, no session request is made and an honest unavailable state is
+  // rendered. The issue form needs the EXISTING current-organization agent read
+  // state, so it is loaded once for the new route (never a machine profile and
+  // never a new endpoint).
+  useEffect(() => {
+    const sessionController = sessionControllerRef.current;
+    if (sessionController === null) return;
+    const route = sessionRouteOf(path);
+    if (route === null) return;
+    void sessionController.initialize(route);
+    if (route.kind === "new") void controllerRef.current?.loadAgents();
+  }, [path, sessionsEnabled, organizationId, role, accountId]);
+
+  // After the render where the session context is current, record the bound
+  // account/organization/role so the NEXT transition render suppresses
+  // synchronously before any child can read a stale draft, receipt or secret.
+  useEffect(() => {
+    if (
+      sessionControllerRef.current === null ||
+      !isSessionWorkspacePath(path) ||
+      organizationId === null ||
+      accountId === null
+    ) {
+      boundSessionContextRef.current = null;
+      return;
+    }
+    boundSessionContextRef.current = { accountId, organizationId, role };
+  }, [path, organizationId, accountId, role]);
 
   // After the render where the machine context is current, record the bound
   // context so the NEXT transition render can suppress synchronously. When the
@@ -625,6 +823,14 @@ export default function TenantApp() {
         { accountId, organizationId, role },
       ));
 
+  const suppressSession =
+    sessionControllerRef.current !== null &&
+    (suppressPriorMutation ||
+      suppressStaleSessionContext(
+        boundSessionContextRef.current,
+        { accountId, organizationId, role },
+      ));
+
   // The policy create editor is keyed by its FULL bound context plus the
   // external privacy generation. A context change remounts it in the SAME
   // render (so no stale caps/allowlists/expiry/agent selection survive), and a
@@ -632,6 +838,13 @@ export default function TenantApp() {
   // remount happens before the next paint. This is a privacy guard only: it
   // never derives server authority.
   const policyFormKey = `${accountId ?? "anon"}|${organizationId ?? "none"}|${role ?? "none"}|${policyFormGeneration}`;
+
+  // The session issue/list subtree is keyed by its FULL bound context so a
+  // context change remounts it and no typed policy id or one-time secret can
+  // survive a same-route organization/role transition.
+  const sessionFormKey = `${accountId ?? "anon"}|${organizationId ?? "none"}|${role ?? "none"}|${
+    sessionSelectedAgent ?? "none"
+  }|${path === "/app/sessions/new" ? "new" : "list"}|${sessionFormGeneration}`;
 
   useEffect(() => {
     if (!drawerOpen) return;
@@ -689,10 +902,13 @@ export default function TenantApp() {
     writeControllerRef.current?.clear();
     listingControllerRef.current?.clearSensitive();
     policyControllerRef.current?.clearSensitive();
+    sessionControllerRef.current?.clear();
     setListingCreating(false);
     setListingProviderId(null);
     setListingBaseVersion(null);
     setPolicyCreating(false);
+    sessionSelectedAgentRef.current = null;
+    setSessionSelectedAgent(null);
     setMutationState(initialTenantMutationState());
     setDrawerOpen(false);
     window.history.pushState(null, "", next);
@@ -720,6 +936,85 @@ export default function TenantApp() {
   useEffect(() => {
     policyOpenRef.current = openPolicy;
   }, [openPolicy]);
+
+  const openSession = useCallback((sessionId: string) => {
+    const route = parseSessionRoute(`/app/sessions/${encodeURIComponent(sessionId)}`);
+    if (route === null || route.kind !== "detail") return;
+    setDrawerOpen(false);
+    window.history.pushState(null, "", `/app/sessions/${encodeURIComponent(route.sessionId)}`);
+    setPath({ kind: "session-detail", sessionId: route.sessionId });
+  }, []);
+  const openSessionCreate = useCallback(() => {
+    navigate("/app/sessions/new");
+  }, [navigate]);
+
+  // Bounded current-organization policy picker via the accepted PolicyClient
+  // directly. It runs ONLY when the existing policy UI and capability are
+  // enabled; with policy off it makes NO policy request and the manual field
+  // stays usable. The picker binds the active policy to the selected agent's
+  // current organization and never borrows a stale org.
+  // The picker is an OPTIONAL, frozen dependency. It runs ONLY when the policy
+  // UI is enabled AND the independent policy capability is `enabled` (a
+  // credentialless probe). It binds each option to the selected current-org
+  // active agent and REPLACES the bounded page instead of accumulating pages.
+  // With policy off (or capability not enabled) it makes NO policy request and
+  // the manual canonical policy ID stays usable.
+  const loadSessionPolicies = useCallback(
+    async (cursor: string | null, selectedAgentId: string | null) => {
+      if (!policyEnabled) return;
+      const organizationId = controllerRef.current?.currentOrganizationId() ?? null;
+      if (organizationId === null || selectedAgentId === null) return;
+      sessionPolicyGenerationRef.current += 1;
+      const generation = sessionPolicyGenerationRef.current;
+      sessionPolicyControllerRef.current?.abort();
+      const abort = new AbortController();
+      sessionPolicyControllerRef.current = abort;
+      setSessionPolicyStatus("loading");
+      try {
+        // A bounded keyed same-paint remount already cleared the previous page;
+        // this replaces it (no unbounded accumulation across pages).
+        const capability = await readPolicyManagementCapability(abort.signal);
+        if (abort.signal.aborted || generation !== sessionPolicyGenerationRef.current) return;
+        if (capability !== "enabled") {
+          setSessionPolicyOptions([]);
+          setSessionPolicyNext(null);
+          setSessionPolicyStatus("none");
+          return;
+        }
+        const page = await new PolicyClient().listRoots(
+          { organizationId, ...(cursor === null ? {} : { afterPolicyId: cursor }), limit: 50 },
+          abort.signal,
+        );
+        if (abort.signal.aborted || generation !== sessionPolicyGenerationRef.current) return;
+        if (controllerRef.current?.currentOrganizationId() !== organizationId) return;
+        if (controllerRef.current?.currentRole() !== role) return;
+        setSessionPolicyOptions(
+          page.items
+            .filter(
+              (item) =>
+                item.subjectAgentId === selectedAgentId &&
+                item.status === "active" &&
+                item.organizationId === organizationId,
+            )
+            .map((item) => ({ policyId: item.policyId, status: item.status })),
+        );
+        setSessionPolicyNext(page.nextCursor);
+        setSessionPolicyStatus("ready");
+      } catch {
+        if (abort.signal.aborted || generation !== sessionPolicyGenerationRef.current) return;
+        setSessionPolicyOptions([]);
+        setSessionPolicyNext(null);
+        setSessionPolicyStatus("error");
+      }
+    },
+    [policyEnabled, role],
+  );
+
+  const loadMoreSessionPolicies = useCallback(() => {
+    const cursor = sessionPolicyNext;
+    if (cursor === null) return;
+    void loadSessionPolicies(cursor, sessionEffectiveAgentId);
+  }, [loadSessionPolicies, sessionPolicyNext, sessionEffectiveAgentId]);
 
   const selectOrganization = useCallback(
     (organizationId: string) => {
@@ -749,7 +1044,9 @@ export default function TenantApp() {
         : typeof path === "object"
           ? path.kind === "policy-detail"
             ? "/app/budgets"
-            : "/app/provider/listings"
+            : path.kind === "session-detail"
+              ? "/app/sessions"
+              : "/app/provider/listings"
           : path;
 
   return (
@@ -876,6 +1173,24 @@ export default function TenantApp() {
             }}
             onCancelPolicyCreate={() => setPolicyCreating(false)}
             onOpenPolicy={openPolicy}
+            sessionsEnabled={sessionsEnabled}
+            sessionState={renderSessionState(suppressSession, sessionState)}
+            sessionController={suppressSession ? null : sessionControllerRef.current}
+            sessionSelectedAgentId={sessionSelectedAgent}
+            onSelectSessionAgent={(agentId) => {
+              sessionSelectedAgentRef.current = agentId;
+              setSessionSelectedAgent(agentId);
+              sessionControllerRef.current?.selectAgent(agentId);
+            }}
+            policyPickerEnabled={policyEnabled}
+            policyOptions={sessionPolicyOptions}
+            policyOptionsStatus={sessionPolicyStatus}
+            hasNextPolicies={sessionPolicyNext !== null}
+            onLoadPolicies={() => void loadSessionPolicies(null, sessionEffectiveAgentId)}
+            onLoadMorePolicies={() => void loadMoreSessionPolicies()}
+            onOpenSession={openSession}
+            onStartSessionIssue={openSessionCreate}
+            sessionFormKey={sessionFormKey}
           />
         </main>
 
@@ -910,6 +1225,7 @@ function Rail(props: RailProps) {
     { path: "/app/provider", label: "Provider" },
     { path: "/app/provider/listings", label: "Listings" },
     { path: "/app/budgets", label: "Budgets" },
+    { path: "/app/sessions", label: "Sessions" },
   ];
   return (
     <nav
@@ -1041,6 +1357,20 @@ interface WorkspaceProps {
   onStartPolicyCreate: () => void;
   onCancelPolicyCreate: () => void;
   onOpenPolicy: (policyId: string) => void;
+  sessionsEnabled: boolean;
+  sessionState: SessionControllerState;
+  sessionController: SessionController | null;
+  sessionSelectedAgentId: string | null;
+  onSelectSessionAgent: (agentId: string | null) => void;
+  policyPickerEnabled: boolean;
+  policyOptions: readonly { policyId: string; status: string }[];
+  policyOptionsStatus: "none" | "loading" | "ready" | "error";
+  hasNextPolicies: boolean;
+  onLoadPolicies: () => void;
+  onLoadMorePolicies: () => void;
+  onOpenSession: (sessionId: string) => void;
+  onStartSessionIssue: () => void;
+  sessionFormKey: string;
 }
 
 function Workspace(props: WorkspaceProps) {
@@ -1077,6 +1407,14 @@ function Workspace(props: WorkspaceProps) {
     // constructed and the section is honestly unavailable. With the flag on the
     // controller's independent capability gate decides the rendered state.
     if (!props.policyEnabled) return <NotAvailable onNavigate={props.onNavigate} />;
+  }
+
+  const sessionRoute = sessionRouteOf(props.path);
+  if (sessionRoute !== null) {
+    // A session route is known (not "unknown"): with the flag off nothing was
+    // constructed and the section is honestly unavailable. With the flag on the
+    // controller's independent public capability gate decides the rendered state.
+    if (!props.sessionsEnabled) return <NotAvailable onNavigate={props.onNavigate} />;
   }
 
   if (state.refreshRequired && principal.status === "signed-in" && state.organizations.status === "none") {
@@ -1262,6 +1600,29 @@ function Workspace(props: WorkspaceProps) {
         onStartCreate={props.onStartPolicyCreate}
         onCancelCreate={props.onCancelPolicyCreate}
         onOpenPolicy={props.onOpenPolicy}
+      />
+    );
+  }
+
+  if (sessionRoute !== null) {
+    return (
+      <SessionWorkspace
+        key={`session-context:${props.sessionFormKey}`}
+        route={sessionRoute}
+        state={props.sessionState}
+        controller={props.sessionController}
+        tenantController={props.controller}
+        selectedAgentId={props.sessionSelectedAgentId}
+        onSelectAgent={props.onSelectSessionAgent}
+        policyPickerEnabled={props.policyPickerEnabled}
+        policyOptions={props.policyOptions}
+        policyOptionsStatus={props.policyOptionsStatus}
+        hasNextPolicies={props.hasNextPolicies}
+        onLoadPolicies={props.onLoadPolicies}
+        onLoadMorePolicies={props.onLoadMorePolicies}
+        onOpenSession={props.onOpenSession}
+        onStartIssue={props.onStartSessionIssue}
+        onNavigate={props.onNavigate}
       />
     );
   }
@@ -1936,6 +2297,167 @@ function PolicyWorkspace(props: {
         <PolicyDetailView state={props.state} controller={controller} onNavigate={undefined} />
       )}
     </div>
+  );
+}
+
+/**
+ * Protected commerce-session workspace.
+ *
+ * Owner/operator on a current non-recovery account may read and write; viewers,
+ * providers and unknown/recovery get a clear no-access state and no request or
+ * control. The independent public capability gate is rendered honestly:
+ * `checking` is a status and `unavailable` is never fake empty data. No wallet
+ * is connected, no money is reserved and no purchase is made.
+ */
+function SessionWorkspace(props: {
+  route: SessionRoute;
+  state: SessionControllerState;
+  controller: SessionController | null;
+  tenantController: TenantController | null;
+  selectedAgentId: string | null;
+  onSelectAgent: (agentId: string | null) => void;
+  policyPickerEnabled: boolean;
+  policyOptions: readonly { policyId: string; status: string }[];
+  policyOptionsStatus: "none" | "loading" | "ready" | "error";
+  hasNextPolicies: boolean;
+  onLoadPolicies: () => void;
+  onLoadMorePolicies: () => void;
+  onOpenSession: (sessionId: string) => void;
+  onStartIssue: () => void;
+  onNavigate: (path: AppPath) => void;
+}) {
+  const controller = props.controller;
+  if (props.state.capability === "unknown" || props.state.capability === "checking") {
+    return <p className="tenant-status" role="status">Checking commerce-session availability…</p>;
+  }
+  if (props.state.capability === "unavailable") {
+    return (
+      <section aria-labelledby="session-unavailable-title">
+        <p className="tenant-eyebrow">COMMERCE SESSIONS</p>
+        <h1 className="tenant-title" id="session-unavailable-title">
+          Commerce sessions are not available in this deployment
+        </h1>
+        <p className="tenant-status tenant-status--warning" role="status">
+          The public session capability manifest does not enable commerce sessions here. No session
+          request was made and no empty list is implied.
+        </p>
+      </section>
+    );
+  }
+  // Owner/operator only. Viewers, providers, unknown and recovery accounts get a
+  // clear no-access state and NO request or control. Viewer readonly access is
+  // never inferred here.
+  if (!props.state.canRead) {
+    return <SessionNoAccess />;
+  }
+  const agents =
+    props.tenantController?.state.agents.items.map((agent) => ({
+      agentId: agent.agentId,
+      displayName: agent.displayName,
+      status: agent.status,
+    })) ?? [];
+  const agentsStatus = props.tenantController?.state.agents.status ?? "none";
+  const onLoadAgents = () => void props.tenantController?.loadAgents();
+  const issuePanel = (
+    <SessionIssuePanel
+      state={props.state}
+      controller={controller}
+      agents={agents}
+      agentsStatus={agentsStatus}
+      onLoadAgents={onLoadAgents}
+      policyPickerEnabled={props.policyPickerEnabled}
+      policyOptions={props.policyOptions}
+      policyOptionsStatus={props.policyOptionsStatus}
+      hasNextPolicies={props.hasNextPolicies}
+      onLoadPolicies={props.onLoadPolicies}
+      onLoadMorePolicies={props.onLoadMorePolicies}
+      selectedAgentId={props.selectedAgentId}
+      onSelectAgent={props.onSelectAgent}
+      onIssue={(input) => controller?.beginIssue(input)}
+      onDismissSecret={() => controller?.dismissSecret()}
+      onCopySecret={(secret) => {
+        // Clipboard only on an explicit user click; never automatic.
+        void navigator.clipboard?.writeText(secret).catch(() => undefined);
+      }}
+      onCancel={() => controller?.cancel()}
+      onConfirm={() => void controller?.confirm()}
+      onCheckStatus={() => void controller?.checkStatus()}
+      onNavigateDetail={props.onOpenSession}
+    />
+  );
+  return (
+    <div className="tenant-sessions">
+      <p className="tenant-eyebrow">COMMERCE SESSIONS</p>
+      <h1 className="tenant-title">Sessions</h1>
+      <p className="tenant-status tenant-status--warning" role="status">
+        These are one-time, short-lived handoffs for an existing same-agent authenticated client.
+        They do not connect or sign a wallet, reserve money or make purchases.
+      </p>
+      {props.route.kind === "detail" ? (
+        <>
+          {/*
+            The DETAIL route for a session also renders the shared mutation view
+            so a revoke confirm/cancel, a committed receipt or an unknown-outcome
+            status recovery is never invisible. Fresh issue delivery stays on the
+            new/list panel only and is never auto-navigated away.
+          */}
+          <SessionMutationView
+            mutation={props.state.mutation}
+            availableOnce={props.state.availableOnce}
+            handoffExpiresAt={
+              props.state.mutation.kind === "committed"
+                ? props.state.mutation.committed.handoffExpiresAt
+                : null
+            }
+            controller={controller}
+            onDismissSecret={() => controller?.dismissSecret()}
+            onCopySecret={(secret) => {
+              void navigator.clipboard?.writeText(secret).catch(() => undefined);
+            }}
+            onCancel={() => controller?.cancel()}
+            onConfirm={() => void controller?.confirm()}
+            onCheckStatus={() => void controller?.checkStatus()}
+          />
+          <SessionStatusPanel
+            state={props.state}
+            controller={controller}
+            sessionId={props.route.sessionId}
+            onBack={() => props.onNavigate("/app/sessions")}
+          />
+        </>
+      ) : props.route.kind === "new" ? (
+        issuePanel
+      ) : (
+        <>
+          {issuePanel}
+          <SessionListPanel
+            state={props.state}
+            controller={controller}
+            onOpenSession={props.onOpenSession}
+            onStartIssue={props.onStartIssue}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+function SessionNoAccess() {
+  return (
+    <section aria-labelledby="session-no-access-title">
+      <p className="tenant-eyebrow">NOT ALLOWED</p>
+      <h1 className="tenant-title" id="session-no-access-title">
+        You do not have access to commerce sessions
+      </h1>
+      <p className="tenant-status tenement-status--warning" role="status">
+        Only a current owner or operator on a non-recovery account may read or write commerce
+        sessions. Viewers, providers, unknown roles and recovery sign-in get no access. No request
+        was made and no readonly access is inferred.
+      </p>
+      <div className="tenant-actions">
+        <a className="tenant-button" href="/app/overview">Back to overview</a>
+      </div>
+    </section>
   );
 }
 
