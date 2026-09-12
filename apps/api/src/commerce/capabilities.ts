@@ -61,6 +61,30 @@ const ALLOWED_CLIENT_HEADER_NAMES: ReadonlySet<string> = new Set([
   "x-openarc-client",
 ]);
 
+/**
+ * Untrusted, informational proxy metadata inserted by a SECOND edge (Railway)
+ * after nginx has already stripped the incoming transport headers. These are
+ * not authoritative for anything: they are ignored, never trusted, persisted,
+ * echoed, logged, used as requestId/principal/client identity, involved in
+ * routing/origin checks or readiness, and their contents are deliberately not
+ * validated because they have no semantics on this route. Existing server
+ * limits bound the total header count. The exact six documented Railway names
+ * plus the two standard proxy metadata names are allowed; there is NO wildcard
+ * `x-railway`/`x-forwarded` allowance and no debug-header special treatment.
+ */
+const IGNORED_TRANSPORT_HEADERS: ReadonlySet<string> = new Set([
+  // Documented Railway second-edge request headers.
+  "x-real-ip",
+  "x-forwarded-proto",
+  "x-forwarded-host",
+  "x-railway-edge",
+  "x-request-start",
+  "x-railway-request-id",
+  // Standard opaque proxy metadata, not authorization.
+  "x-forwarded-for",
+  "forwarded",
+]);
+
 /** The five explicit flags app.ts may pass. Never the full config object. */
 export interface CommerceCapabilityFlags {
   readonly authEnabled: boolean;
@@ -168,11 +192,18 @@ function enforceNoDuplicateCriticalHeaders(request: FastifyRequest): void {
  * client metadata (cookies, credentials, CSRF, idempotency, unknown client
  * headers) fails closed. Duplicate wire occurrences of critical names are
  * already rejected before this normalized check.
+ *
+ * `IGNORED_TRANSPORT_HEADERS` is the ONLY relaxation: it admits the untrusted
+ * informational metadata that a second proxy edge may append. Authoritative
+ * security inputs remain Origin, Fetch-Site and the credential/CSRF/
+ * idempotency headers, which are still enforced below regardless of any proxy
+ * metadata present.
  */
 function enforceAllowedHeaders(request: FastifyRequest): void {
   for (const name of Object.keys(request.headers)) {
     if (ALLOWED_CLIENT_HEADER_NAMES.has(name)) continue;
     if (PUBLIC_CRITICAL_HEADERS.has(name)) continue;
+    if (IGNORED_TRANSPORT_HEADERS.has(name)) continue;
     if (name === "host" || name === "accept" || name === "accept-encoding" ||
       name === "accept-language" || name === "user-agent" || name === "connection" ||
       name === "sec-fetch-site" ||
