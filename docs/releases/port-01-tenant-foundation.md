@@ -1,6 +1,6 @@
 # PORT-01 tenant foundation
 
-Status: accepted component tests and review; combined release gate pending.
+Status: accepted locally, including the combined release and account/database gates.
 Prepared September 12, 2026 (UTC). This is a backend foundation, not a completed
 commerce port or an enabled staging account/tenant service.
 
@@ -61,6 +61,16 @@ transitive elevated-role refusal, and deterministic lock-wait expiry. Synthetic
 fixtures only: no user wallet, real funds, hosted database or production data.
 
 ## Previously published frontend/account release
+
+The complete private source gate on `ab76bb325d76b5f0ec8481c838dda9d9362bde66`
+passed 923 unit/integration tests (345 shared, 81 database, 299 API, 198 web),
+152 development-browser tests, dependency audit, license checks, lint, typecheck
+and build. The resulting image was then used for a separate sequential gate:
+16 account deployment checks, 128 database PostgreSQL tests, 5 API/PostgreSQL
+tests and 27 account-browser tests, all passed. The image manifest is
+`sha256:e348a3174484abde010a7113b4b99bdb06b75d0eaecd2c31899193b83c3ac72b`.
+Only this evidence document changed after that source gate. These are local
+results; they do not claim a public CI result or hosted tenant deployment.
 
 Public commit `f9c37922a1cd911e2d1d80e1e5d2c693328140fd` passed
 [public source CI](https://github.com/OpenArcHQ/OpenArc/actions/runs/34665166139),
