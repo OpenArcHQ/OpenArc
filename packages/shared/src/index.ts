@@ -30,3 +30,4 @@ export * from "./commerce/market.js";
 export * from "./commerce/market-capabilities.js";
 export * from "./commerce/control-policy.js";
 export * from "./commerce/control-policy-wire.js";
+export * from "./commerce/control-capabilities.js";
