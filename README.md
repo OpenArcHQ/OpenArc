@@ -1,6 +1,6 @@
 # OpenArc marketing and technical product package
 
-Status: **M09 complete on controlled staging; M10 public Testnet hardening next**
+Status: **legacy investigation app on controlled staging; commerce port in progress**
 Prepared: **2026-08-15; Arc and Gateway sources reviewed 2026-09-06**
 
 OpenArc is the proposed private intelligence, policy, and investigation layer for
@@ -12,9 +12,9 @@ agent acted.
 Nothing in this package is a claim that OpenArc is publicly launched, endorsed by Circle or
 Arc, available on Arc mainnet, or able to enforce another wallet's policies.
 
-Arc has announced public mainnet for September 16, 2026. OpenArc remains pinned
-to Arc Testnet until official mainnet endpoints, contract addresses, capability
-parity, and a separately reviewed mainnet release exist.
+OpenArc remains pinned to Arc Testnet. A launch-date expectation does not enable
+mainnet: official endpoints, contract addresses, capability parity and a separately
+reviewed mainnet release are required first.
 
 ![OpenArc concept logo](assets/openarc-logo.jpeg)
 
@@ -34,10 +34,12 @@ parity, and a separately reviewed mainnet release exist.
 
 ## Current implementation
 
-The supplied commerce specification is now the target. The first shared taxonomy
-and privacy-contract slice is implemented; the full marketplace, database/auth,
-financial controls and frontend transition remain in progress. Milestone results
-below describe the legacy investigation product, not supplied S-M00–S-M09.
+The supplied commerce specification is now the target. Shared contracts, durable
+account/session/recovery foundations, passkey/wallet login and the supplied public
+design are implemented. Organization authorization, marketplace, financial
+controls and the protected frontend transition remain in progress. Account access
+defaults off. Milestone results below describe the legacy investigation product,
+not supplied S-M00–S-M09.
 See [commerce transition and build order](docs/engineering/commerce-transition.md).
 
 Milestones 00–09 are complete: foundation, evidence engine, encrypted local
@@ -77,7 +79,9 @@ not public-launch or mainnet approval.
   failed, and refunded cases as an accessible chronological list plus an exact
   graph summary. The encrypted workspace uses browser-local WebCrypto and
   IndexedDB. Source-enabled builds require explicit consent per API lookup;
-  approval is encrypted before contact. There are no wallet-signing or analytics calls.
+  approval is encrypted before contact. These legacy flows make no wallet-signing
+  or analytics calls. The separate optional account route can request a wallet
+  login signature, never a transaction or payment authorization.
 - `.github/workflows/release-gates.yml`, production Dockerfiles, Chromium and
   WebKit journeys, license/audit checks, image scans, and SBOM generation form
   the initial verification boundary.

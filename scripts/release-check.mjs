@@ -314,10 +314,13 @@ if (!webDockerfile.includes("ARG VITE_AGENT_REGISTRY_ENABLED=false")) {
 }
 
 const nginxSource = await readFile(path.join(root, "apps/web/nginx.conf"), "utf8");
-for (const directive of ["connect-src 'none'", "worker-src 'none'", "media-src 'none'"]) {
+for (const directive of ["connect-src 'none'", "worker-src 'none'", "media-src 'self'"]) {
   if (!nginxSource.includes(directive)) {
     failures.push(`M02 web CSP is missing local-only directive: ${directive}`);
   }
+}
+if (/media-src[^;]*\s(?:https?:|data:|blob:|\*)/u.test(nginxSource)) {
+  failures.push("M02 web CSP media-src must remain local-only without remote/wildcard/data/blob sources");
 }
 
 const packageSource = await readFile(path.join(root, "package.json"), "utf8");

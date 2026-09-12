@@ -11,9 +11,12 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:unit": "vitest run -c vitest.config.ts",
+    "test:postgres": "vitest run -c vitest.postgres.config.ts"
   },
   "dependencies": {
+    "@openarc/db": "workspace:*",
     "@openarc/shared": "workspace:*",
     "@redis/client": "6.2.1",
     "@simplewebauthn/server": "14.0.1",

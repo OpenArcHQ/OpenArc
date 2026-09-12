@@ -14,6 +14,11 @@ COPY packages/shared packages/shared
 COPY packages/config packages/config
 COPY assets assets
 
+# The supplied public docs render canonical markdown via ?raw imports. Copy only
+# these three engineering documents into the matching repository path; no other
+# docs, private notes, archives or release records are included in the image.
+COPY docs/engineering/openarc-engineering-source-of-truth.md docs/engineering/openarc-backend-architecture.md docs/engineering/openarc-frontend-architecture.md docs/engineering/
+
 ARG COMMIT_SHA=local
 ARG VITE_ENCRYPTED_WORKSPACE_ENABLED=false
 ARG VITE_API_BOUNDARY_ENABLED=false
@@ -33,6 +38,10 @@ ARG VITE_INVESTIGATIONS_ENABLED=false
 ENV VITE_INVESTIGATIONS_ENABLED=${VITE_INVESTIGATIONS_ENABLED}
 RUN if [ "${VITE_INVESTIGATIONS_ENABLED}" = "true" ] && [ "${VITE_ENCRYPTED_WORKSPACE_ENABLED}" != "true" ]; then exit 1; fi
 ENV VITE_GENERIC_AGENT_IMPORT_ENABLED=${VITE_GENERIC_AGENT_IMPORT_ENABLED}
+ARG VITE_ACCOUNT_ACCESS_ENABLED=false
+ENV VITE_ACCOUNT_ACCESS_ENABLED=${VITE_ACCOUNT_ACCESS_ENABLED}
+RUN case "${VITE_ACCOUNT_ACCESS_ENABLED}" in true|false) ;; *) echo 'VITE_ACCOUNT_ACCESS_ENABLED must be exactly true or false' >&2; exit 1 ;; esac
+RUN if [ "${VITE_ACCOUNT_ACCESS_ENABLED}" = "true" ] && [ "${VITE_API_BOUNDARY_ENABLED}" != "true" ]; then echo 'VITE_ACCOUNT_ACCESS_ENABLED=true requires VITE_API_BOUNDARY_ENABLED=true' >&2; exit 1; fi
 RUN if [ "${VITE_GENERIC_AGENT_IMPORT_ENABLED}" = "true" ] && [ "${VITE_ENCRYPTED_WORKSPACE_ENABLED}" != "true" ]; then exit 1; fi
 RUN if [ "${VITE_GATEWAY_EVIDENCE_ENABLED}" = "true" ] && [ "${VITE_AGENT_JOBS_ENABLED}" != "true" ]; then exit 1; fi
 RUN if [ "${VITE_AGENT_JOBS_ENABLED}" = "true" ] && [ "${VITE_AGENT_REGISTRY_ENABLED}" != "true" ]; then exit 1; fi
@@ -55,8 +64,11 @@ RUN apk add --no-cache \
 ARG VITE_API_BOUNDARY_ENABLED=false
 ARG VITE_ARC_OBSERVATION_ENABLED=false
 ARG VITE_AGENT_REGISTRY_ENABLED=false
-COPY apps/web/nginx.conf apps/web/nginx-api.conf apps/web/nginx-arc.conf apps/web/proxy_params apps/web/validate-m04-runtime-env.sh /tmp/openarc-nginx/
+ARG VITE_ACCOUNT_ACCESS_ENABLED=false
+COPY apps/web/nginx.conf apps/web/nginx-api.conf apps/web/nginx-arc.conf apps/web/proxy_params apps/web/auth_proxy_params apps/web/nginx-account-locations.conf apps/web/nginx-account-disabled.conf apps/web/validate-m04-runtime-env.sh /tmp/openarc-nginx/
 RUN set -eu; \
+    case "${VITE_ACCOUNT_ACCESS_ENABLED}" in true|false) ;; *) echo 'VITE_ACCOUNT_ACCESS_ENABLED must be exactly true or false' >&2; exit 1 ;; esac; \
+    if [ "${VITE_ACCOUNT_ACCESS_ENABLED}" = "true" ] && [ "${VITE_API_BOUNDARY_ENABLED}" != "true" ]; then echo 'VITE_ACCOUNT_ACCESS_ENABLED=true requires VITE_API_BOUNDARY_ENABLED=true' >&2; exit 1; fi; \
     if [ "${VITE_API_BOUNDARY_ENABLED}" = "true" ]; then \
       mkdir -p /etc/nginx/templates; \
       if [ "${VITE_AGENT_REGISTRY_ENABLED}" = "true" ] && [ "${VITE_ARC_OBSERVATION_ENABLED}" != "true" ]; then exit 1; fi; \
@@ -66,6 +78,12 @@ RUN set -eu; \
         chmod 755 /docker-entrypoint.d/05-openarc-m04-env.sh; \
       else \
         cp /tmp/openarc-nginx/nginx-api.conf /etc/nginx/templates/default.conf.template; \
+      fi; \
+      if [ "${VITE_ACCOUNT_ACCESS_ENABLED}" = "true" ]; then \
+        cp /tmp/openarc-nginx/nginx-account-locations.conf /etc/nginx/templates/openarc-auth-locations.inc.template; \
+        cp /tmp/openarc-nginx/auth_proxy_params /etc/nginx/auth_proxy_params; \
+      else \
+        cp /tmp/openarc-nginx/nginx-account-disabled.conf /etc/nginx/templates/openarc-auth-locations.inc.template; \
       fi; \
       cp /tmp/openarc-nginx/proxy_params /etc/nginx/proxy_params; \
       rm -f /etc/nginx/conf.d/default.conf; \

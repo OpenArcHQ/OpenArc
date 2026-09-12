@@ -1,11 +1,44 @@
 import { ARC_TESTNET } from "@openarc/shared";
-import { useEffect, useState } from "react";
+import { Component, lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 
 import type { BuildInfo } from "@openarc/shared";
 
 import { FixtureExplorer } from "./evidence/FixtureExplorer.js";
 import { investigationsEnabled, genericAgentImportEnabled, gatewayEvidenceEnabled, agentJobsEnabled, agentRegistryEnabled, apiBoundaryEnabled, arcObservationEnabled, encryptedWorkspaceEnabled } from "./app/availability.js";
 import { VaultWorkspace } from "./vault/VaultWorkspace.js";
+
+const SuppliedDesignApp = lazy(() => import("./supplied/DesignApp.js"));
+const AccountPage = lazy(() => import("./account/AccountPage.js"));
+
+interface DesignErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface DesignErrorBoundaryState {
+  failed: boolean;
+}
+
+class DesignErrorBoundary extends Component<DesignErrorBoundaryProps, DesignErrorBoundaryState> {
+  override state: DesignErrorBoundaryState = { failed: false };
+
+  static getDerivedStateFromError(): DesignErrorBoundaryState {
+    return { failed: true };
+  }
+
+  override render() {
+    if (this.state.failed) {
+      return (
+        <main className="supplied-fallback" role="alert">
+          <h1>The design preview could not load.</h1>
+          <p>
+            The rest of this build is unaffected. Return to the <a href="/">evidence workspace</a>.
+          </p>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 interface AppProps {
   build: BuildInfo;
@@ -40,6 +73,36 @@ export function App({ build }: AppProps) {
       setPath("/");
     }
   }, [path, workspaceEnabled]);
+
+  if (path === "/design" || path.startsWith("/design/")) {
+    return (
+      <DesignErrorBoundary>
+        <Suspense
+          fallback={
+            <main className="supplied-fallback" role="status">
+              Loading the design preview…
+            </main>
+          }
+        >
+          <SuppliedDesignApp />
+        </Suspense>
+      </DesignErrorBoundary>
+    );
+  }
+
+  if (path === "/account" || path.startsWith("/account/")) {
+    return (
+      <Suspense
+        fallback={
+          <main className="supplied-fallback" role="status">
+            Loading account…
+          </main>
+        }
+      >
+        <AccountPage />
+      </Suspense>
+    );
+  }
 
   if (path === "/workspace" && workspaceEnabled) return <VaultWorkspace build={build} />;
 
