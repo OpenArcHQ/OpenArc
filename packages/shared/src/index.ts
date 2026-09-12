@@ -35,3 +35,4 @@ export * from "./commerce/control-session.js";
 export * from "./commerce/control-session-capabilities.js";
 export * from "./commerce/control-budget.js";
 export * from "./commerce/control-action.js";
+export * from "./commerce/control-grant.js";
