@@ -31,6 +31,10 @@ export default defineConfig({
       proxy: {
         "/v1/private": { target: process.env.OPENARC_DEV_API_ORIGIN, changeOrigin: false },
         "/v2/auth": { target: process.env.OPENARC_DEV_API_ORIGIN, changeOrigin: false },
+        "/v1/operator/organizations": {
+          target: process.env.OPENARC_DEV_API_ORIGIN,
+          changeOrigin: false,
+        },
       },
     } : {}),
   },
