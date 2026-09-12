@@ -9,10 +9,11 @@ import type { ClaimedOutboxEvent } from '@openarc/db';
  * providers, sign or broadcast, reconcile evidence, or claim any commerce side
  * effect. Future projection handlers are a separate phase.
  *
- * The registry is a fixed, closed union of ten resourceType+eventType pairs
+ * The registry is a fixed, closed union of twelve resourceType+eventType pairs
  * already accepted by ClaimedOutboxEvent (the original six plus four
- * notification-only credential events). There are no dynamic callbacks, user
- * URLs or plugin handlers, and the original event is never JSON-logged.
+ * notification-only credential events and two market listing events). There
+ * are no dynamic callbacks, user URLs or plugin handlers, and the original
+ * event is never JSON-logged.
  */
 
 export const INVALID_EVENT_MESSAGE = 'Durable notification event is invalid.';
@@ -45,7 +46,9 @@ export type NotificationEventKey =
   | 'agent_credential|tenant.agent.credential.created'
   | 'agent_credential|tenant.agent.credential.revoked'
   | 'provider_credential|tenant.provider.credential.created'
-  | 'provider_credential|tenant.provider.credential.revoked';
+  | 'provider_credential|tenant.provider.credential.revoked'
+  | 'listing|market.listing.created'
+  | 'listing_version|market.listing.version.created';
 
 export type NotificationHandlerRegistry = Readonly<
   Record<NotificationEventKey, NotificationHandler>
@@ -62,6 +65,8 @@ export const NOTIFICATION_EVENT_KEYS: readonly NotificationEventKey[] = [
   'agent_credential|tenant.agent.credential.revoked',
   'provider_credential|tenant.provider.credential.created',
   'provider_credential|tenant.provider.credential.revoked',
+  'listing|market.listing.created',
+  'listing_version|market.listing.version.created',
 ];
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -70,6 +75,14 @@ const AGENT_ID = /^openarc:agent:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab]
 const PROVIDER_ID = /^openarc:provider:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ACCOUNT_ID = /^openarc:account:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CREDENTIAL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const LISTING_ID = /^openarc:listing:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+// Internal version resource: canonical listing id + '@' + canonical version >= 2.
+const LISTING_VERSION_RESOURCE_MAX_LENGTH = 128;
+const LISTING_VERSION_RESOURCE = /^openarc:listing:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@(?!1$)[1-9][0-9]{0,8}$/;
+
+function isListingVersionResource(value: string): boolean {
+  return value.length <= LISTING_VERSION_RESOURCE_MAX_LENGTH && LISTING_VERSION_RESOURCE.test(value);
+}
 const DECIMAL = /^(0|[1-9][0-9]*)$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -170,6 +183,12 @@ export function validateNotification(raw: unknown): ClaimedOutboxEvent {
     case 'provider_credential|tenant.provider.credential.revoked':
       if (!CREDENTIAL_ID.test(resourceId)) throw new InvalidEventError();
       break;
+    case 'listing|market.listing.created':
+      if (!LISTING_ID.test(resourceId)) throw new InvalidEventError();
+      break;
+    case 'listing_version|market.listing.version.created':
+      if (!isListingVersionResource(resourceId)) throw new InvalidEventError();
+      break;
     default:
       throw new InvalidEventError();
   }
@@ -192,10 +211,12 @@ const DEFAULT_HANDLERS: Record<NotificationEventKey, NotificationHandler> = {
   'agent_credential|tenant.agent.credential.revoked': consume,
   'provider_credential|tenant.provider.credential.created': consume,
   'provider_credential|tenant.provider.credential.revoked': consume,
+  'listing|market.listing.created': consume,
+  'listing_version|market.listing.version.created': consume,
 };
 
 /**
- * Build the fixed ten-entry registry. Overrides are a controlled test seam for
+ * Build the fixed twelve-entry registry. Overrides are a controlled test seam for
  * bounded async handlers; they only replace an existing allowlisted key.
  */
 export function createHandlerRegistry(

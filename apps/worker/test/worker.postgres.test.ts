@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   CredentialStore,
+  MarketStore,
   OutboxStore,
   TenantStore,
   createDatabasePool,
@@ -17,6 +18,7 @@ import {
   workerUrl,
 } from '../../../packages/db/test/postgres-fixture.js';
 import { WorkerLoop, type WorkerLogRecord } from '../src/worker.js';
+import { createHandlerRegistry, eventKeyOf, validateNotification } from '../src/handlers.js';
 
 /**
  * Real PostgreSQL acceptance for the bounded tenant notification worker.
@@ -435,5 +437,94 @@ describe('worker role consumes durable tenant notifications', () => {
       'tenant.provider.credential.revoked',
     ]);
     expect(states.rows.every((row) => row.state === 'completed')).toBe(true);
+  });
+
+  it('consumes the two new market listing notification events', async () => {
+    const seed = 30;
+    const account = accountId(seed);
+    await admin.query(
+      'INSERT INTO openarc_auth.accounts (account_id, user_handle) VALUES ($1, $2)',
+      [account, userHandle(seed)],
+    );
+    const hash = sha256(`session:${seed}`);
+    await admin.query(
+      "INSERT INTO openarc_auth.sessions (token_hash, account_id, method, expires_at) VALUES ($1, $2, 'passkey', now() + interval '1 hour')",
+      [hash, account],
+    );
+    const org = orgId(seed);
+    await admin.query(
+      "INSERT INTO openarc_tenant.organizations (organization_id, display_name, created_by) VALUES ($1, 'Worker Org', $2)",
+      [org, account],
+    );
+    await admin.query(
+      "INSERT INTO openarc_tenant.memberships (organization_id, account_id, role, status) VALUES ($1, $2, 'owner', 'active')",
+      [org, account],
+    );
+    const provider = `openarc:provider:${uuid(seed + 1)}`;
+    await admin.query(
+      "INSERT INTO openarc_tenant.providers (organization_id, provider_id, display_name) VALUES ($1, $2, 'Worker Provider')",
+      [org, provider],
+    );
+    const marketContent = {
+      kind: 'api',
+      title: 'Worker Listing',
+      description: 'A bounded worker listing description',
+      manifest: {
+        schemaVersion: 'openarc.listing-manifest.v1',
+        inputSchemaDigest: `sha256:${'1'.repeat(64)}`,
+        outputSchemaDigest: `sha256:${'2'.repeat(64)}`,
+      },
+      price: {
+        amount: {
+          schemaVersion: 'openarc.usdc-amount.v1',
+          networkId: 'eip155:5042002',
+          asset: 'USDC',
+          atomicAmount: '1000000',
+          representation: 'erc20',
+          decimals: 6,
+        },
+        pricingModel: 'fixed',
+      },
+      evidenceContract: {
+        schemaVersion: 'openarc.receipt-contract.v1',
+        receiptType: 'receipt.v1',
+        receiptSchemaDigest: `sha256:${'3'.repeat(64)}`,
+        deliveryFields: ['payload'],
+      },
+      endpointContract: { origin: 'https://api.example.com', path: '/v1/run' },
+      termsRevision: 'terms-v1',
+      privacySummary: 'We store nothing.',
+      paymentLane: 'unavailable',
+      availability: { status: 'available', rateLimitPerMinute: '60' },
+    };
+    const market = new MarketStore(tenant);
+    const draft = await market.createListingDraft(hash, org, provider, marketContent, {
+      idempotencyKey: base64Key(30),
+      mutationId: mutationId(30),
+    });
+    await market.createListingVersion(
+      hash,
+      org,
+      draft.receipt.resourceId,
+      { expectedLatestVersion: '1', content: marketContent },
+      { idempotencyKey: base64Key(31), mutationId: mutationId(31) },
+    );
+
+    await outbox.initialize();
+    const claimed = await outbox.claim({ limit: 50 });
+    const marketEvents = claimed.filter(
+      (event) => event.resourceType === 'listing' || event.resourceType === 'listing_version',
+    );
+    expect(marketEvents.map((event) => event.eventType).sort()).toEqual([
+      'market.listing.created',
+      'market.listing.version.created',
+    ]);
+    const registry = createHandlerRegistry();
+    for (const event of marketEvents) {
+      const key = eventKeyOf(event);
+      expect(validateNotification(event)).toEqual(event);
+      await registry[key](event, { signal: new AbortController().signal });
+      expect((await outbox.complete(event.eventId, event.leaseGeneration)).applied).toBe(true);
+    }
   });
 });
