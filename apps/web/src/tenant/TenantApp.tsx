@@ -17,8 +17,20 @@ import {
   type TenantViewControllerState,
   initialTenantState,
 } from "./tenant-controller.js";
-import { tenantMutationEnabled, tenantReadsEnabled } from "./availability.js";
+import { machineCredentialEnabled, tenantMutationEnabled, tenantReadsEnabled } from "./availability.js";
 import { TenantMutationPanel } from "./TenantMutationPanel.js";
+import { MachineCredentialPanel } from "./MachineCredentialPanel.js";
+import {
+  MachineCredentialController,
+  initialMachineConsoleState,
+  initialMachineCredentialListState,
+  suppressStaleMachineContext,
+  type MachineConsoleState,
+  type MachineCredentialListState,
+  type MachineCredentialTarget,
+  type MachineReadCoordinator,
+  type MachineRenderContext,
+} from "./machine-controller.js";
 import {
   TenantWriteController,
   initialTenantMutationState,
@@ -80,8 +92,21 @@ export default function TenantApp() {
       ),
     [],
   );
+  const machineEnabled = useMemo(
+    () =>
+      machineCredentialEnabled(
+        import.meta.env.VITE_MACHINE_CREDENTIAL_MANAGEMENT_ENABLED,
+        import.meta.env.VITE_TENANT_WRITES_ENABLED,
+        import.meta.env.VITE_TENANT_READS_ENABLED,
+        import.meta.env.VITE_ACCOUNT_ACCESS_ENABLED,
+      ),
+    [],
+  );
   const [state, setState] = useState<TenantViewControllerState>(initialTenantState);
   const [mutationState, setMutationState] = useState<TenantMutationState>(initialTenantMutationState);
+  const [machineState, setMachineState] = useState<MachineConsoleState>(initialMachineConsoleState);
+  const [machineList, setMachineList] = useState<MachineCredentialListState>(initialMachineCredentialListState);
+  const [selectedProfile, setSelectedProfile] = useState<MachineCredentialTarget | null>(null);
   const [path, setPath] = useState<AppPath | "/app" | "unknown">(currentPath);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -90,6 +115,8 @@ export default function TenantApp() {
   const restoreFocusRef = useRef(false);
   const controllerRef = useRef<TenantController | null>(null);
   const writeControllerRef = useRef<TenantWriteController | null>(null);
+  const machineControllerRef = useRef<MachineCredentialController | null>(null);
+  const boundMachineContextRef = useRef<MachineRenderContext | null>(null);
   const accountRef = useRef<AccountFlowController | null>(null);
   const known = isKnownPath(path);
 
@@ -123,16 +150,42 @@ export default function TenantApp() {
         })
       : null;
     writeControllerRef.current = writeController;
+    // The machine credential console is constructed ONLY when its own flag and
+    // all four prerequisites are enabled. With it off, no machine client,
+    // controller, panel, profile-selection control or machine request exists and
+    // the surface is byte-identical to the accepted build. It never uses a
+    // machine browser session or bearer transport.
+    const machineReads: MachineReadCoordinator = {
+      currentOrganizationId: () => controller.currentOrganizationId(),
+      currentRole: () => controller.currentRole(),
+      currentAccountId: () => account.state.session.signedIn ? account.state.session.accountId : null,
+      abortPendingReads: () => controller.abortPendingReads(),
+      reloadAfterCommit: async (kind) => {
+        await controller.reloadAfterCommit(kind === "agent" ? "agents" : "providers");
+      },
+    };
+    const machineController = machineEnabled
+      ? new MachineCredentialController({
+          account,
+          reads: machineReads,
+          isProfileActive: (kind, profileId) => profileIsActive(controller, kind, profileId),
+          onState: setMachineState,
+          onListState: setMachineList,
+        })
+      : null;
+    machineControllerRef.current = machineController;
     const onVisibility = () => {
       if (document.visibilityState === "hidden") {
         setDrawerOpen(false);
         controller.onHidden();
         writeController?.clear();
+        machineController?.clear();
       }
     };
     const onPageHide = () => {
       controller.onHidden();
       writeController?.clear();
+      machineController?.clear();
     };
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("pagehide", onPageHide);
@@ -142,11 +195,13 @@ export default function TenantApp() {
       window.removeEventListener("pagehide", onPageHide);
       controller.dispose();
       writeController?.dispose();
+      machineController?.dispose();
       if (controllerRef.current === controller) controllerRef.current = null;
       if (writeControllerRef.current === writeController) writeControllerRef.current = null;
+      if (machineControllerRef.current === machineController) machineControllerRef.current = null;
       if (accountRef.current === account) accountRef.current = null;
     };
-  }, [enabled, known, writesEnabled]);
+  }, [enabled, known, writesEnabled, machineEnabled]);
 
   // A signed-in identity change must never expose a previous account's
   // committed confirmation. The receipt belongs to the account that produced
@@ -165,8 +220,52 @@ export default function TenantApp() {
       lastAccountRef.current = accountId;
       writeControllerRef.current?.clear();
       setMutationState(initialTenantMutationState());
+      machineControllerRef.current?.clear();
+      setMachineState(initialMachineConsoleState());
+      setMachineList(initialMachineCredentialListState());
+      setSelectedProfile(null);
     }
   }, [accountId]);
+
+  // An explicit profile selection binds the machine controller to exactly that
+  // profile. A change of organization, role or profile clears the previous
+  // context's list, receipt and one-time secret through the controller.
+  const organizationId = state.selectedOrganizationId;
+  const role: CommerceHumanRole | null = state.context?.access.role ?? null;
+  useEffect(() => {
+    const machineController = machineControllerRef.current;
+    if (machineController === null) return;
+    // Role is authoritative from the current server context. Reconcile it
+    // explicitly (before reselection) so an owner->viewer->owner round trip
+    // clears a same-profile secret/receipt/list instead of resurrecting it once
+    // the synchronous render guard releases.
+    machineController.reconcileRole(role);
+    machineController.select(selectedProfile);
+  }, [selectedProfile, organizationId, role, accountId]);
+
+  // Organization change clears an explicit profile selection so no credential
+  // panel is shown for a stale profile.
+  useEffect(() => {
+    setSelectedProfile(null);
+  }, [organizationId]);
+
+  // After the render where the machine context is current, record the bound
+  // context so the NEXT transition render can suppress synchronously. When the
+  // controller is cleared/absent the bound context is null.
+  useEffect(() => {
+    const machineController = machineControllerRef.current;
+    if (machineController === null || selectedProfile === null || organizationId === null || accountId === null) {
+      boundMachineContextRef.current = null;
+      return;
+    }
+    boundMachineContextRef.current = {
+      accountId,
+      organizationId,
+      role,
+      kind: selectedProfile.kind,
+      profileId: selectedProfile.profileId,
+    };
+  }, [selectedProfile, organizationId, accountId, role]);
 
   // Synchronous privacy guard: effects run after render, so the effect above
   // alone would paint one stale frame of account A's receipt/form for account
@@ -182,6 +281,24 @@ export default function TenantApp() {
     initialTenantMutationState,
   );
   const renderedWriteController = suppressPriorMutation ? null : writeControllerRef.current;
+
+  // Synchronous machine context guard. The credential console may hold a
+  // one-time secret and a receipt bound to an exact account/organization/role
+  // and profile. `boundMachineContextRef` is the context the controller was last
+  // bound to; it is updated in an effect, so during a transition render the ref
+  // still names the OLD context and the guard suppresses synchronously before
+  // any child can read stale state. Effects alone would paint one stale frame.
+  const currentMachineContext: MachineRenderContext = {
+    accountId,
+    organizationId,
+    role,
+    kind: selectedProfile?.kind ?? null,
+    profileId: selectedProfile?.profileId ?? null,
+  };
+  const suppressMachine =
+    machineControllerRef.current !== null &&
+    (suppressPriorMutation ||
+      suppressStaleMachineContext(boundMachineContextRef.current, currentMachineContext));
 
   useEffect(() => {
     if (!drawerOpen) return;
@@ -338,7 +455,16 @@ export default function TenantApp() {
         </header>
 
         <main id="tenant-main" className="tenant-content" tabIndex={-1}>
+          {/*
+            Keyed subtree + synchronous guard: while the machine context is
+            suppressed the immediate subtree is keyed to the new context AND the
+            machine props are null, so no credential state, secret or list can
+            be read by a child during the transition render.
+          */}
           <Workspace
+            key={`machine-context:${suppressMachine ? "suppressed" : `${organizationId ?? "none"}/${
+              selectedProfile?.kind ?? "none"
+            }/${selectedProfile?.profileId ?? "none"}`}`}
             path={path}
             state={state}
             selectedId={selectedId}
@@ -348,12 +474,19 @@ export default function TenantApp() {
             controller={controllerRef.current}
             writeController={renderedWriteController}
             mutationState={renderedMutationState}
+            machineController={suppressMachine ? null : machineControllerRef.current}
+            machineState={suppressMachine ? initialMachineConsoleState() : machineState}
+            machineList={suppressMachine ? initialMachineCredentialListState() : machineList}
+            onSelectProfile={setSelectedProfile}
+            machineEnabled={machineEnabled}
           />
         </main>
 
         <footer className="tenant-footer">
           <span className="tenant-mono">
-            {writesEnabled
+            {machineEnabled
+              ? `NON-CUSTODIAL · NO PAYMENTS · MACHINE CREDENTIALS · ${ARC_TESTNET.caip2}`
+              : writesEnabled
               ? `NON-CUSTODIAL · NO PAYMENTS · ${ARC_TESTNET.caip2}`
               : `NON-CUSTODIAL · READ-ONLY WORKSPACE · ${ARC_TESTNET.caip2}`}
           </span>
@@ -485,6 +618,11 @@ interface WorkspaceProps {
   controller: TenantController | null;
   writeController: TenantWriteController | null;
   mutationState: TenantMutationState;
+  machineController: MachineCredentialController | null;
+  machineState: MachineConsoleState;
+  machineList: MachineCredentialListState;
+  onSelectProfile: (target: MachineCredentialTarget | null) => void;
+  machineEnabled: boolean;
 }
 
 function Workspace(props: WorkspaceProps) {
@@ -667,6 +805,11 @@ function Workspace(props: WorkspaceProps) {
           controller={props.controller}
           writeController={props.writeController}
           organizationId={props.selectedId}
+          machineController={props.machineController}
+          machineState={props.machineState}
+          machineList={props.machineList}
+          onSelectProfile={props.onSelectProfile}
+          machineEnabled={props.machineEnabled}
         />
       );
     case "/app/provider":
@@ -677,6 +820,11 @@ function Workspace(props: WorkspaceProps) {
           controller={props.controller}
           writeController={props.writeController}
           organizationId={props.selectedId}
+          machineController={props.machineController}
+          machineState={props.machineState}
+          machineList={props.machineList}
+          onSelectProfile={props.onSelectProfile}
+          machineEnabled={props.machineEnabled}
         />
       );
     default:
@@ -769,9 +917,15 @@ function AgentPanel(props: {
   controller: TenantController | null;
   writeController: TenantWriteController | null;
   organizationId: string;
+  machineController: MachineCredentialController | null;
+  machineState: MachineConsoleState;
+  machineList: MachineCredentialListState;
+  onSelectProfile: (target: MachineCredentialTarget | null) => void;
+  machineEnabled: boolean;
 }) {
   if (!canReadAgents(props.role)) return <RoleNotAllowed role={props.role} action="agents" />;
   const { agents } = props.state;
+  const selected = props.machineList.target;
   return (
     <section aria-labelledby="tenant-agents-title">
       <p className="tenant-eyebrow">AGENTS</p>
@@ -796,7 +950,19 @@ function AgentPanel(props: {
       {agents.status === "ready" && agents.items.length === 0 ? (
         <p className="tenant-empty">No agents in this organization.</p>
       ) : null}
-      {agents.items.length > 0 ? <ProfileTable kind="agent" items={agents.items} /> : null}
+      {agents.items.length > 0 ? (
+        <ProfileTable
+          kind="agent"
+          items={agents.items}
+          machineEnabled={props.machineEnabled && (props.role === "owner" || props.role === "operator")}
+          selectedProfileId={selected?.kind === "agent" ? selected.profileId : null}
+          onSelectProfile={(profileId) =>
+            props.onSelectProfile(
+              profileId === null ? null : { kind: "agent", profileId },
+            )
+          }
+        />
+      ) : null}
       <Pagination
         status={agents.status}
         hasNext={agents.nextCursor !== null}
@@ -804,6 +970,17 @@ function AgentPanel(props: {
         onNext={() => void props.controller?.loadNextAgents()}
         onFirst={() => void props.controller?.loadAgents()}
       />
+      {props.machineEnabled &&
+      selected?.kind === "agent" &&
+      props.machineController !== null &&
+      (props.role === "owner" || props.role === "operator") ? (
+        <MachineCredentialPanel
+          controller={props.machineController}
+          role={props.role}
+          target={selected}
+          credentials={props.machineList}
+        />
+      ) : null}
       {props.role === "owner" || props.role === "operator" ? (
         <TenantMutationPanel
           controller={props.writeController}
@@ -821,9 +998,15 @@ function ProviderPanel(props: {
   controller: TenantController | null;
   writeController: TenantWriteController | null;
   organizationId: string;
+  machineController: MachineCredentialController | null;
+  machineState: MachineConsoleState;
+  machineList: MachineCredentialListState;
+  onSelectProfile: (target: MachineCredentialTarget | null) => void;
+  machineEnabled: boolean;
 }) {
   if (!canReadProviders(props.role)) return <RoleNotAllowed role={props.role} action="providers" />;
   const { providers } = props.state;
+  const selected = props.machineList.target;
   return (
     <section aria-labelledby="tenant-providers-title">
       <p className="tenant-eyebrow">PROVIDER</p>
@@ -850,7 +1033,19 @@ function ProviderPanel(props: {
       {providers.status === "ready" && providers.items.length === 0 ? (
         <p className="tenant-empty">No providers in this organization.</p>
       ) : null}
-      {providers.items.length > 0 ? <ProfileTable kind="provider" items={providers.items} /> : null}
+      {providers.items.length > 0 ? (
+        <ProfileTable
+          kind="provider"
+          items={providers.items}
+          machineEnabled={props.machineEnabled && props.role === "owner"}
+          selectedProfileId={selected?.kind === "provider" ? selected.profileId : null}
+          onSelectProfile={(profileId) =>
+            props.onSelectProfile(
+              profileId === null ? null : { kind: "provider", profileId },
+            )
+          }
+        />
+      ) : null}
       <Pagination
         status={providers.status}
         hasNext={providers.nextCursor !== null}
@@ -858,6 +1053,17 @@ function ProviderPanel(props: {
         onNext={() => void props.controller?.loadNextProviders()}
         onFirst={() => void props.controller?.loadProviders()}
       />
+      {props.machineEnabled &&
+      selected?.kind === "provider" &&
+      props.machineController !== null &&
+      props.role === "owner" ? (
+        <MachineCredentialPanel
+          controller={props.machineController}
+          role={props.role}
+          target={selected}
+          credentials={props.machineList}
+        />
+      ) : null}
       {props.role === "owner" ? (
         <TenantMutationPanel
           controller={props.writeController}
@@ -871,7 +1077,13 @@ function ProviderPanel(props: {
 
 type ProfileItems = TenantViewControllerState["agents"]["items"] | TenantViewControllerState["providers"]["items"];
 
-function ProfileTable(props: { kind: "agent" | "provider"; items: ProfileItems }) {
+function ProfileTable(props: {
+  kind: "agent" | "provider";
+  items: ProfileItems;
+  machineEnabled: boolean;
+  selectedProfileId: string | null;
+  onSelectProfile: (profileId: string | null) => void;
+}) {
   const isAgent = props.kind === "agent";
   return (
     <div className="tenant-table-wrap">
@@ -884,6 +1096,7 @@ function ProfileTable(props: { kind: "agent" | "provider"; items: ProfileItems }
             <th scope="col">{isAgent ? "Agent ID" : "Provider ID"}</th>
             <th scope="col">Created</th>
             <th scope="col">Updated</th>
+            {props.machineEnabled ? <th scope="col">Credentials</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -906,6 +1119,29 @@ function ProfileTable(props: { kind: "agent" | "provider"; items: ProfileItems }
                 <td className="tenant-mono">{id}</td>
                 <td className="tenant-mono">{parsed.data.createdAt}</td>
                 <td className="tenant-mono">{parsed.data.updatedAt}</td>
+                {props.machineEnabled ? (
+                  <td>
+                    {props.selectedProfileId === id ? (
+                      <button
+                        type="button"
+                        className="tenant-button tenant-button--primary"
+                        aria-pressed="true"
+                        onClick={() => props.onSelectProfile(null)}
+                      >
+                        Close credentials
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="tenant-button"
+                        aria-pressed="false"
+                        onClick={() => props.onSelectProfile(id)}
+                      >
+                        Manage credentials
+                      </button>
+                    )}
+                  </td>
+                ) : null}
               </tr>
             );
           })}
@@ -1025,6 +1261,27 @@ function roleLabel(role: CommerceHumanRole): string {
     case "viewer":
       return "Viewer";
   }
+}
+
+/**
+ * Reads the addressed profile's status from the bounded read controller so an
+ * issue for an inactive (suspended/revoked/retired) profile is refused before
+ * any request. An unknown profile is treated as inactive.
+ */
+function profileIsActive(
+  controller: TenantController,
+  kind: "agent" | "provider",
+  profileId: string,
+): boolean {
+  const state = controller.state;
+  if (kind === "agent") {
+    return state.agents.items.some(
+      (item) => item.agentId === profileId && item.status === "active",
+    );
+  }
+  return state.providers.items.some(
+    (item) => item.providerId === profileId && item.status === "active",
+  );
 }
 
 export type { TenantFetch };
