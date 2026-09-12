@@ -317,6 +317,7 @@ describe('durability migration and readiness', () => {
       '0001_auth',
       '0002_tenants',
       '0003_durability',
+      '0004_durable_tenant_mutations',
     ]);
     const helpers = await admin.query<{ proname: string; owner: string }>(
       `SELECT p.proname, r.rolname AS owner
@@ -329,9 +330,19 @@ describe('durability migration and readiness', () => {
     expect(helpers.rows.map((row) => row.proname)).toEqual([
       'claim_outbox_jobs',
       'commit_agent_create',
+      'commit_agent_update',
+      'commit_membership_set',
+      'commit_organization_create',
+      'commit_provider_create',
+      'commit_provider_update',
       'complete_outbox_job',
       'fail_outbox_job',
+      'is_canonical_display_name',
+      'is_canonical_org_id',
+      'lock_membership_set',
       'read_agent_mutation_status',
+      'read_organization_mutation_status',
+      'read_tenant_mutation_status',
     ]);
     expect(helpers.rows.every((row) => row.owner === 'openarc_migrator')).toBe(true);
     const identities = await admin.query<{ proname: string; args: string; prosecdef: boolean; config: string[] }>(

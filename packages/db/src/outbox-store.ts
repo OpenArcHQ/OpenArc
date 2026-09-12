@@ -53,18 +53,25 @@ export interface OutboxPool {
   connect(): Promise<OutboxClient>;
 }
 
-export interface ClaimedOutboxEvent {
+export type ClaimedOutboxEvent = {
   readonly eventId: string;
   readonly organizationId: string;
   readonly mutationId: string;
-  readonly resourceType: 'agent';
-  readonly resourceId: string;
-  readonly eventType: 'tenant.agent.created';
   readonly payloadVersion: 1;
   readonly leaseGeneration: string;
   readonly leaseUntil: string;
   readonly attemptCount: number;
-}
+} & (
+  | { readonly resourceType: 'organization'; readonly resourceId: string; readonly eventType: 'tenant.organization.created' }
+  | { readonly resourceType: 'agent'; readonly resourceId: string; readonly eventType: 'tenant.agent.created' | 'tenant.agent.updated' }
+  | { readonly resourceType: 'provider'; readonly resourceId: string; readonly eventType: 'tenant.provider.created' | 'tenant.provider.updated' }
+  | { readonly resourceType: 'membership'; readonly resourceId: string; readonly eventType: 'tenant.membership.set' }
+);
+
+const ORG_ID = /^openarc:org:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const AGENT_ID = /^openarc:agent:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const PROVIDER_ID = /^openarc:provider:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const ACCOUNT_ID = /^openarc:account:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export interface ClaimInput {
   readonly limit?: number;
@@ -261,23 +268,49 @@ export class OutboxStore {
     lease_until: Date;
     attempt_count: number;
   }): ClaimedOutboxEvent {
-    if (row.resource_type !== 'agent') fail('OUTBOX_STORE_UNAVAILABLE');
-    if (row.event_type !== 'tenant.agent.created') fail('OUTBOX_STORE_UNAVAILABLE');
     if (row.payload_version !== 1) fail('OUTBOX_STORE_UNAVAILABLE');
     const generation = requireString(row.lease_generation);
     if (!DECIMAL.test(generation)) fail('OUTBOX_STORE_UNAVAILABLE');
-    return {
+    const base = {
       eventId: requireEventId(row.event_id),
       organizationId: requireString(row.organization_id),
       mutationId: requireEventId(row.mutation_id),
-      resourceType: 'agent',
-      resourceId: requireString(row.resource_id),
-      eventType: 'tenant.agent.created',
-      payloadVersion: 1,
+      payloadVersion: 1 as const,
       leaseGeneration: generation,
       leaseUntil: requireDate(row.lease_until).toISOString(),
       attemptCount: requireCount(row.attempt_count),
     };
+    const resourceId = requireString(row.resource_id);
+    const eventType = requireString(row.event_type);
+    const key = `${row.resource_type}|${eventType}`;
+    switch (key) {
+      case 'organization|tenant.organization.created':
+        if (!ORG_ID.test(resourceId)) fail('OUTBOX_STORE_UNAVAILABLE');
+        return { ...base, resourceType: 'organization', resourceId, eventType: 'tenant.organization.created' };
+      case 'agent|tenant.agent.created':
+      case 'agent|tenant.agent.updated':
+        if (!AGENT_ID.test(resourceId)) fail('OUTBOX_STORE_UNAVAILABLE');
+        return {
+          ...base,
+          resourceType: 'agent',
+          resourceId,
+          eventType: eventType as 'tenant.agent.created' | 'tenant.agent.updated',
+        };
+      case 'provider|tenant.provider.created':
+      case 'provider|tenant.provider.updated':
+        if (!PROVIDER_ID.test(resourceId)) fail('OUTBOX_STORE_UNAVAILABLE');
+        return {
+          ...base,
+          resourceType: 'provider',
+          resourceId,
+          eventType: eventType as 'tenant.provider.created' | 'tenant.provider.updated',
+        };
+      case 'membership|tenant.membership.set':
+        if (!ACCOUNT_ID.test(resourceId)) fail('OUTBOX_STORE_UNAVAILABLE');
+        return { ...base, resourceType: 'membership', resourceId, eventType: 'tenant.membership.set' };
+      default:
+        fail('OUTBOX_STORE_UNAVAILABLE');
+    }
   }
 
   async #withTransaction<T>(work: (client: OutboxClient) => Promise<T>): Promise<T> {
