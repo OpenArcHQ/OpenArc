@@ -15,6 +15,7 @@ import {
   CommerceListingPublicVersionSchema,
   CommerceListingVersionSchema,
 } from "./listing.js";
+import { CommerceMarketLifecycleMutationReceiptSchema } from "./market-lifecycle.js";
 import { CommerceTenantMutationIdSchema } from "./tenant-writes.js";
 
 /**
@@ -581,6 +582,7 @@ export const CommerceMarketMutationReceiptSchema = z
       resourceId: CommerceMarketVersionResourceIdSchema,
       committedAt: IsoTimestampSchema,
     }),
+    ...CommerceMarketLifecycleMutationReceiptSchema.options,
   ])
   .superRefine((receipt, ctx) => {
     if (
