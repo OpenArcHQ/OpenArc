@@ -2033,9 +2033,25 @@ BEGIN
     FROM openarc_durable.idempotency_records r
    WHERE r.organization_id = organization_id AND r.mutation_id = mutation_id
      AND r.actor_account_id = v_actor AND r.status = 'committed'
+     -- Exact presented session-context binding: the recorded digest must equal
+     -- sha256(domain || ':' || session_hash) for THIS presenting human session
+     -- and the row's operation, byte-for-byte with TS
+     -- digestCommerceSessionHumanContext. A different LIVE session for the same
+     -- account can never recover the receipt from account identity or session
+     -- liveness alone. Exchange is a MACHINE context and is deliberately NOT
+     -- readable through this human reader.
+     AND r.session_context_digest = encode(
+       sha256(convert_to(
+         (CASE r.operation
+            WHEN 'control.commerce_session.issue' THEN 'openarc.control.commerce_session.issue.session.v1'
+            WHEN 'control.commerce_session.revoke' THEN 'openarc.control.commerce_session.revoke.session.v1'
+          END) || ':' || human_session_hash,
+         'UTF8'
+       )),
+       'hex'
+     )
      AND r.operation IN (
        'control.commerce_session.issue',
-       'control.commerce_session.exchange',
        'control.commerce_session.revoke'
      );
   v_found := FOUND;

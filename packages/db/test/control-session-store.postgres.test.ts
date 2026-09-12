@@ -1134,6 +1134,85 @@ describe('status, list and mutation status projections', () => {
     expect(agentForeign).toEqual({ status: 'not_found' });
   });
 
+  it('hides a committed issue/revoke receipt from a second LIVE session of the SAME account', async () => {
+    const owner = await seedOwner(440);
+    const machine = await seedMachine(owner, 440);
+    // A SECOND live, non-recovery session for account A: same account, same
+    // organization, unexpired. Account identity and liveness are NOT sufficient:
+    // the reader binds the exact requesting human-session context digest.
+    const second = await seedSession(4401, owner.account);
+
+    await store.issueCommerceSession(owner.hash, owner.org, issueInput(machine, 440), {
+      idempotencyKey: key(440),
+      mutationId: mutationId(440),
+    });
+    const issueOriginal = await store.getHumanCommerceSessionMutationStatus(
+      owner.hash,
+      owner.org,
+      mutationId(440),
+    );
+    expect(issueOriginal.status).toBe('committed');
+    const issueSecond = await store.getHumanCommerceSessionMutationStatus(
+      second,
+      owner.org,
+      mutationId(440),
+    );
+    expect(issueSecond).toEqual({ status: 'not_found' });
+
+    const revoked = await store.revokeCommerceSession(owner.hash, owner.org, mutationId(440), {
+      idempotencyKey: key(441),
+      mutationId: mutationId(441),
+    });
+    expect(revoked.receipt.resourceId).toBe(mutationId(440));
+    const revokeOriginal = await store.getHumanCommerceSessionMutationStatus(
+      owner.hash,
+      owner.org,
+      mutationId(441),
+    );
+    expect(revokeOriginal.status).toBe('committed');
+    const revokeSecond = await store.getHumanCommerceSessionMutationStatus(
+      second,
+      owner.org,
+      mutationId(441),
+    );
+    expect(revokeSecond).toEqual({ status: 'not_found' });
+
+    // The original session can still read both of its own receipts.
+    expect(
+      (await store.getHumanCommerceSessionMutationStatus(owner.hash, owner.org, mutationId(440))).status,
+    ).toBe('committed');
+    expect(
+      (await store.getHumanCommerceSessionMutationStatus(owner.hash, owner.org, mutationId(441))).status,
+    ).toBe('committed');
+  });
+
+  it('never exposes an exchange receipt through the human mutation-status reader', async () => {
+    const owner = await seedOwner(450);
+    const machine = await seedMachine(owner, 450);
+    await store.issueCommerceSession(owner.hash, owner.org, issueInput(machine, 450), {
+      idempotencyKey: key(450),
+      mutationId: mutationId(450),
+    });
+    await store.exchangeCommerceSession(
+      machine.tokenHash,
+      issueInput(machine, 450).handoffHash,
+      { tokenHash: sha256('token:450'), hashVersion: 1 },
+      { idempotencyKey: key(451), mutationId: mutationId(451) },
+    );
+    // Exchange is a MACHINE context. The SAME requesting human session that
+    // drove the issue must NOT be able to recover the exchange receipt through
+    // the human reader, even though the recorded actor account matches.
+    const humanView = await store.getHumanCommerceSessionMutationStatus(
+      owner.hash,
+      owner.org,
+      mutationId(451),
+    );
+    expect(humanView).toEqual({ status: 'not_found' });
+    // The exact agent machine session legitimately recovers it.
+    const agentView = await store.getAgentCommerceSessionMutationStatus(machine.tokenHash, mutationId(451));
+    expect(agentView.status).toBe('committed');
+  });
+
   it('rejects malformed inputs before any SQL authority call', async () => {
     const owner = await seedOwner(430);
     const machine = await seedMachine(owner, 430);
