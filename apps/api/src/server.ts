@@ -4,6 +4,7 @@ import { startAuthRuntime, type StartedAuthRuntime } from "./auth/runtime.js";
 import { startTenantRuntime, type StartedTenantRuntime } from "./tenant/runtime.js";
 import { startMarketRuntime, type StartedMarketRuntime } from "./market/runtime.js";
 import { startMachineRuntime, type StartedMachineRuntime } from "./machine/runtime.js";
+import { startControlRuntime, type StartedControlRuntime } from "./control/runtime.js";
 import { ArcAccountService } from "./arc/account-service.js";
 import { AgentRegistryService } from "./arc/agent-registry-service.js";
 import { JobService } from "./arc/job-service.js";
@@ -23,6 +24,7 @@ async function start(): Promise<void> {
   let tenantRuntimeHandle: StartedTenantRuntime | undefined;
   let marketRuntimeHandle: StartedMarketRuntime | undefined;
   let machineRuntimeHandle: StartedMachineRuntime | undefined;
+  let controlRuntimeHandle: StartedControlRuntime | undefined;
   let redis: Awaited<ReturnType<typeof connectBudgetRedis>> | undefined;
   let sourceBudget: SourceBudget | undefined;
   let rpc: ArcRpcClient | undefined;
@@ -94,6 +96,12 @@ async function start(): Promise<void> {
           managementAuth: authRuntimeHandle!.service,
         })
       : undefined;
+    controlRuntimeHandle = config.POLICY_MANAGEMENT_ENABLED
+      ? await startControlRuntime({
+          policyDatabaseUrl: config.TENANT_DATABASE_URL as string,
+          auth: authRuntimeHandle!.service,
+        })
+      : undefined;
     redis = config.ARC_OBSERVATION_ENABLED && config.REDIS_URL ? await connectBudgetRedis(config.REDIS_URL) : undefined;
     sourceBudget = redis && config.ABUSE_LIMIT_SECRET ? new SourceBudget(redis, {
       secret: config.ABUSE_LIMIT_SECRET,
@@ -137,6 +145,12 @@ async function start(): Promise<void> {
             machineReady: () => machineRuntimeHandle!.ready(),
           }
         : {}),
+      ...(controlRuntimeHandle
+        ? {
+            policyManagementService: controlRuntimeHandle.service,
+            policyReady: () => controlRuntimeHandle!.ready(),
+          }
+        : {}),
       ...(config.GATEWAY_EVIDENCE_ENABLED ? { gatewayTransferService: new GatewayTransferService(new BoundedGatewayClient({
         timeoutMs: config.SOURCE_TIMEOUT_MS, maxResponseBytes: config.SOURCE_MAX_RESPONSE_BYTES,
       })) } : {}),
@@ -151,6 +165,7 @@ async function start(): Promise<void> {
       await tenantRuntimeHandle?.close();
       await marketRuntimeHandle?.close();
       await machineRuntimeHandle?.close();
+      await controlRuntimeHandle?.close();
       if (redis?.isOpen) redis.destroy();
       process.exit(0);
     };
@@ -165,6 +180,7 @@ async function start(): Promise<void> {
     await tenantRuntimeHandle?.close().catch(() => undefined);
     await marketRuntimeHandle?.close().catch(() => undefined);
     await machineRuntimeHandle?.close().catch(() => undefined);
+    await controlRuntimeHandle?.close().catch(() => undefined);
     if (redis?.isOpen) redis.destroy();
     throw error;
   }

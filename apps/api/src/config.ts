@@ -54,6 +54,7 @@ const EnvironmentSchema = z.object({
   LISTING_MANAGEMENT_ENABLED: flag(),
   MARKET_CATALOG_ENABLED: flag(),
   MARKET_MODERATION_ENABLED: flag(),
+  POLICY_MANAGEMENT_ENABLED: flag(),
   MACHINE_CREDENTIAL_MANAGEMENT_ENABLED: flag(),
   MACHINE_SESSION_EXCHANGE_ENABLED: flag(),
   MACHINE_CREDENTIAL_PEPPER_VERSION: pepperVersion().optional(),
@@ -186,6 +187,24 @@ const EnvironmentSchema = z.object({
     config.TENANT_DATABASE_URL === config.AUTH_DATABASE_URL
   ) {
     context.addIssue({ code: "custom", path: ["TENANT_DATABASE_URL"], message: "Marketplace families require a dedicated restricted role connection" });
+  }
+  // Policy management is an INDEPENDENT protected browser family. It requires
+  // authentication and the dedicated restricted TENANT_DATABASE_URL, but it is
+  // deliberately independent of tenant HTTP reads/writes, marketplace,
+  // machine, moderation and financial flags. A shared auth/tenant connection
+  // would erase the restricted-role boundary, so the URLs must differ.
+  if (config.POLICY_MANAGEMENT_ENABLED) {
+    if (!config.AUTH_ENABLED) {
+      context.addIssue({ code: "custom", path: ["POLICY_MANAGEMENT_ENABLED"], message: "Policy management requires authentication" });
+    }
+    if (!config.TENANT_DATABASE_URL) {
+      context.addIssue({ code: "custom", path: ["POLICY_MANAGEMENT_ENABLED"], message: "Policy management requires a dedicated restricted database URL" });
+    } else if (
+      config.AUTH_DATABASE_URL !== undefined &&
+      config.TENANT_DATABASE_URL === config.AUTH_DATABASE_URL
+    ) {
+      context.addIssue({ code: "custom", path: ["TENANT_DATABASE_URL"], message: "Policy management requires a dedicated restricted role connection" });
+    }
   }
   const machineManagementEnabled = config.MACHINE_CREDENTIAL_MANAGEMENT_ENABLED;
   const machineExchangeEnabled = config.MACHINE_SESSION_EXCHANGE_ENABLED;

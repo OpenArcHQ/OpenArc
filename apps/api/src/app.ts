@@ -2,6 +2,7 @@ import {
   API_ERRORS, API_MAX_REQUEST_BYTES, API_MAX_RESPONSE_BYTES, API_SCHEMA_VERSION,
   AGENT_REGISTRY_EVIDENCE_PATH, ARC_ERC8004,
   COMMERCE_CAPABILITIES_PATH,
+  CONTROL_CAPABILITIES_PATH,
   ARC_ACCOUNT_SNAPSHOT_PATH, ARC_TESTNET, ARC_TRANSACTION_EVIDENCE_PATH,
   ArcAccountSnapshotEnvelopeSchema, ArcAccountSnapshotRequestSchema,
   ArcTransactionEvidenceEnvelopeSchema, ArcTransactionEvidenceRequestSchema,
@@ -44,6 +45,9 @@ import type { MachineManagementService } from "./machine/management-service.js";
 import type { MachineSessionService } from "./machine/session-service.js";
 import { registerCommerceCapabilities } from "./commerce/capabilities.js";
 import { registerMarketplaceCapabilities } from "./commerce/marketplace-capabilities.js";
+import { registerControlCapabilities } from "./commerce/control-capabilities.js";
+import { registerPolicyRoutes, CONTROL_ROUTE_PREFIX } from "./control/routes.js";
+import type { PolicyService } from "./control/service.js";
 import { ApiBoundaryError, apiErrorEnvelope, normalizeApiError } from "./http/errors.js";
 import { verifyBrowserOrigin, verifyPreflight } from "./http/origin.js";
 import { registerSourceRoute } from "./http/source-route.js";
@@ -86,6 +90,8 @@ export interface CreateAppOptions {
   machineManagementService?: MachineManagementService;
   machineSessionService?: MachineSessionService;
   machineReady?: () => Promise<boolean>;
+  policyManagementService?: PolicyService;
+  policyReady?: () => Promise<boolean>;
 }
 
 const disabledPaths = [
@@ -163,6 +169,18 @@ function isMachinePath(path: string): boolean {
   return isMachineManagementPath(path) || isMachineSessionFamilyPath(path);
 }
 
+/**
+ * The exact bounded protected control policy family is the route root or the
+ * root plus a slash. A bare `startsWith` would capture lookalike paths such as
+ * `/v2/control/organizationsXYZ`, so those keep the ordinary legacy 404.
+ */
+function isControlFamilyPath(path: string): boolean {
+  return (
+    path === CONTROL_ROUTE_PREFIX ||
+    path.startsWith(`${CONTROL_ROUTE_PREFIX}/`)
+  );
+}
+
 function routeClass(url: string): RouteClass {
   const path = url.split("?", 1)[0] ?? url;
   if (path === "/healthz") return "health";
@@ -180,9 +198,13 @@ function routeClass(url: string): RouteClass {
   // coarse `tenant` label; still no raw path or new label is introduced.
   if (isModeratorFamilyPath(path)) return "tenant";
   if (isPublicMarketFamilyPath(path)) return "tenant";
+  // The protected control policy family maps to the EXISTING coarse `tenant`
+  // metrics label; no new route class or label is introduced.
+  if (isControlFamilyPath(path)) return "tenant";
   if (path === CAPABILITIES_PATH) return "capabilities";
   if (path === COMMERCE_CAPABILITIES_PATH) return "capabilities";
   if (path === MARKETPLACE_CAPABILITIES_PATH) return "capabilities";
+  if (path === CONTROL_CAPABILITIES_PATH) return "capabilities";
   if (path === ARC_ACCOUNT_SNAPSHOT_PATH) return "arc_account";
   if (path === ARC_TRANSACTION_EVIDENCE_PATH) return "arc_transaction";
   if (path === AGENT_REGISTRY_EVIDENCE_PATH) return "agent_registry";
@@ -197,7 +219,8 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
   authService, authReady, tenantReadService, tenantReady,
   tenantWriteService, tenantMaxResponseBytes,
   marketService, marketLifecycleService, marketCatalogService, marketReady, marketMaxResponseBytes,
-  machineManagementService, machineSessionService, machineReady }: CreateAppOptions): FastifyInstance {
+  machineManagementService, machineSessionService, machineReady,
+  policyManagementService, policyReady }: CreateAppOptions): FastifyInstance {
   // Framework request/error logging is disabled, including parser failures.
   // `frameworkErrors` receives errors raised before the normal request
   // lifecycle (notably `FST_ERR_BAD_URL` from the router) which otherwise
@@ -260,11 +283,14 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
     const machineSurface = isMachinePath(rawPath);
     const commerceCapabilitySurface =
       rawPath === COMMERCE_CAPABILITIES_PATH ||
-      rawPath === MARKETPLACE_CAPABILITIES_PATH;
+      rawPath === MARKETPLACE_CAPABILITIES_PATH ||
+      rawPath === CONTROL_CAPABILITIES_PATH;
+    const controlSurface = isControlFamilyPath(rawPath);
     const v2Surface =
       rawPath.startsWith("/v2/auth/") ||
       isTenantFamilyPath(rawPath) ||
       isMarketplaceFamilyPath(rawPath) ||
+      controlSurface ||
       commerceCapabilitySurface ||
       machineSurface;
     if (
@@ -291,6 +317,21 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
       // family root stays on the bounded v2 surface: a fixed envelope with no
       // raw URL echo. Lookalike prefixes are deliberately not matched, so they
       // keep their legacy behavior.
+      const mapped = new AuthApiError("FEATURE_DISABLED", 404, "NOT_FOUND");
+      failures.set(request, mapped.metricsCode);
+      return reply
+        .code(mapped.status)
+        .send(authErrorEnvelope(mapped, request.id, config.COMMIT_SHA));
+    }
+    if (
+      controlSurface &&
+      cause instanceof ApiBoundaryError &&
+      cause.code === "NOT_FOUND"
+    ) {
+      // An unknown or currently-disabled path under the EXACT control family
+      // root stays on the bounded v2 surface: a fixed envelope with no raw URL
+      // echo. Lookalike prefixes are deliberately not matched, so they keep
+      // their legacy behavior.
       const mapped = new AuthApiError("FEATURE_DISABLED", 404, "NOT_FOUND");
       failures.set(request, mapped.metricsCode);
       return reply
@@ -345,6 +386,7 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
     config.MARKET_CATALOG_ENABLED ||
     config.LISTING_MANAGEMENT_ENABLED ||
     config.MARKET_MODERATION_ENABLED;
+  const policyEnabled = config.POLICY_MANAGEMENT_ENABLED;
   app.get("/healthz", async () => ({ status: "ok" as const, ...build }));
   app.get("/readyz", async (_request, reply) => {
     if (config.AUTH_ENABLED) {
@@ -385,6 +427,19 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
             machineDatabase: "down" }, ...build });
       }
     }
+    if (policyEnabled) {
+      const policyReadyResult = policyReady ? await policyReady().catch(() => false) : false;
+      if (!policyReadyResult) {
+        return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
+          checks: { configuration: "up", sourceRoutes: config.ARC_OBSERVATION_ENABLED ? "enabled" : "disabled",
+            redis: config.ARC_OBSERVATION_ENABLED ? "not_checked" : "not_required",
+            ...(config.AUTH_ENABLED ? { authDatabase: "up" as const } : {}),
+            ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}),
+            ...(marketEnabled ? { marketDatabase: "up" as const } : {}),
+            ...(machineEnabled ? { machineDatabase: "up" as const } : {}),
+            policyDatabase: "down" }, ...build });
+      }
+    }
     if (config.ARC_OBSERVATION_ENABLED) {
       const redisReady = sourceBudget ? await sourceBudget.ready(AbortSignal.timeout(750)) : false;
       if (!redisReady) return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
@@ -394,14 +449,16 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
         checks: { configuration: "up", sourceRoutes: "enabled", redis: "up",
           ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}),
           ...(marketEnabled ? { marketDatabase: "up" as const } : {}),
-          ...(machineEnabled ? { machineDatabase: "up" as const } : {}) }, ...build };
+          ...(machineEnabled ? { machineDatabase: "up" as const } : {}),
+          ...(policyEnabled ? { policyDatabase: "up" as const } : {}) }, ...build };
     }
     return { ok: true as const, status: "ready" as const,
       checks: { configuration: "up", sourceRoutes: "disabled", redis: "not_required",
         ...(config.AUTH_ENABLED ? { authDatabase: "up" as const } : {}),
         ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}),
         ...(marketEnabled ? { marketDatabase: "up" as const } : {}),
-        ...(machineEnabled ? { machineDatabase: "up" as const } : {}) }, ...build };
+        ...(machineEnabled ? { machineDatabase: "up" as const } : {}),
+        ...(policyEnabled ? { policyDatabase: "up" as const } : {}) }, ...build };
   });
 
   if (config.AUTH_ENABLED) {
@@ -584,6 +641,33 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
     });
   }
 
+  if (config.POLICY_MANAGEMENT_ENABLED) {
+    if (!policyManagementService) {
+      throw new Error("Policy management dependencies are unavailable");
+    }
+    registerPolicyRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(config.APP_ORIGIN.startsWith("https://")),
+      service: policyManagementService,
+      buildSha: config.COMMIT_SHA,
+      enabled: true,
+      ...(tenantMaxResponseBytes !== undefined
+        ? { maxResponseBytes: tenantMaxResponseBytes }
+        : {}),
+    });
+  } else {
+    // Default-off registers NO control route; the request keeps the framework's
+    // ordinary 404 instead of a simulated disabled response.
+    registerPolicyRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(false),
+      // A disabled registration never invokes the service.
+      service: policyManagementService as PolicyService,
+      buildSha: config.COMMIT_SHA,
+      enabled: false,
+    });
+  }
+
   app.all(CAPABILITIES_PATH, { onRequest: async (request, reply) => {
     if (!config.API_BOUNDARY_ENABLED) throw new ApiBoundaryError("FEATURE_DISABLED");
     if (request.url.includes("?") || (request.headers["content-length"] !== undefined && request.headers["content-length"] !== "0") || request.headers["transfer-encoding"] !== undefined) {
@@ -666,6 +750,32 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
     appOrigin: config.APP_ORIGIN,
     ...(marketMaxResponseBytes !== undefined
       ? { maxResponseBytes: marketMaxResponseBytes }
+      : {}),
+  });
+
+  // Public, credentialless control capability registry. It ALWAYS registers,
+  // even with the flag off, and returns the accepted one-family / ten-route
+  // manifest. Only the enable flag, the AUTH_ENABLED gating flag and the
+  // readiness callbacks actually required cross this boundary; the full config,
+  // secrets, DB URLs and private identities never do. The family is independent
+  // of tenant HTTP reads: the accepted policy store readiness composes the
+  // restricted tenant database base readiness, so no separate tenant flag or
+  // callback is passed. Availability is not authorization and no
+  // execution/spend claim is made. It performs ZERO database or readiness calls
+  // while the flag is off.
+  registerControlCapabilities(app, {
+    flags: {
+      authEnabled: config.AUTH_ENABLED,
+      policyManagementEnabled: config.POLICY_MANAGEMENT_ENABLED,
+    },
+    readiness: {
+      ...(authReady !== undefined ? { authReady } : {}),
+      ...(policyReady !== undefined ? { policyReady } : {}),
+    },
+    buildSha: config.COMMIT_SHA,
+    appOrigin: config.APP_ORIGIN,
+    ...(tenantMaxResponseBytes !== undefined
+      ? { maxResponseBytes: tenantMaxResponseBytes }
       : {}),
   });
 
