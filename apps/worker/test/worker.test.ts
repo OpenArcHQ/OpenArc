@@ -94,6 +94,36 @@ const SIX_CASES: readonly EventCase[] = [
     eventType: 'tenant.provider.credential.revoked',
     resourceId: '00000000-0000-4000-8000-000000000019',
   },
+  {
+    resourceType: 'listing',
+    eventType: 'market.listing.created',
+    resourceId: 'openarc:listing:00000000-0000-4000-8000-000000000020',
+  },
+  {
+    resourceType: 'listing_version',
+    eventType: 'market.listing.version.created',
+    resourceId: 'openarc:listing:00000000-0000-4000-8000-000000000021@2',
+  },
+  {
+    resourceType: 'listing_version',
+    eventType: 'market.listing.origin_review.recorded',
+    resourceId: 'openarc:listing:00000000-0000-4000-8000-000000000022@1',
+  },
+  {
+    resourceType: 'listing_version',
+    eventType: 'market.listing.version.published',
+    resourceId: 'openarc:listing:00000000-0000-4000-8000-000000000023@1',
+  },
+  {
+    resourceType: 'listing_version',
+    eventType: 'market.listing.version.paused',
+    resourceId: 'openarc:listing:00000000-0000-4000-8000-000000000024@1',
+  },
+  {
+    resourceType: 'listing_version',
+    eventType: 'market.listing.version.retired',
+    resourceId: 'openarc:listing:00000000-0000-4000-8000-000000000025@1',
+  },
 ];
 
 function eventFor(item: EventCase): ClaimedOutboxEvent {
@@ -274,7 +304,7 @@ describe('worker configuration', () => {
 });
 
 describe('notification handler registry', () => {
-  it('dispatches exactly the ten allowlisted events', async () => {
+  it('dispatches exactly the twelve allowlisted events', async () => {
     const registry = createHandlerRegistry();
     expect(Object.keys(registry).sort()).toEqual([...NOTIFICATION_EVENT_KEYS].sort());
     for (const item of SIX_CASES) {
@@ -303,11 +333,81 @@ describe('notification handler registry', () => {
     expect(await Promise.resolve(registry['agent|tenant.agent.created'])).toBeTypeOf('function');
   });
 
+  it('accepts version 1 only for lifecycle events and denies created@1', () => {
+    const listingId = 'openarc:listing:00000000-0000-4000-8000-000000000030';
+    for (const eventType of [
+      'market.listing.origin_review.recorded',
+      'market.listing.version.published',
+      'market.listing.version.paused',
+      'market.listing.version.retired',
+    ]) {
+      const event = baseEvent({
+        resourceType: 'listing_version',
+        eventType,
+        resourceId: `${listingId}@1`,
+      });
+      expect(() => validateNotification(event)).not.toThrow();
+    }
+    // The legacy create event still requires version >= 2.
+    const created = baseEvent({
+      resourceType: 'listing_version',
+      eventType: 'market.listing.version.created',
+      resourceId: `${listingId}@1`,
+    });
+    expect(() => validateNotification(created)).toThrow(InvalidEventError);
+  });
+
   it('derives an ack identity only for well-formed ids', () => {
     const event = baseEvent();
     expect(ackIdentityOf(event)).toEqual({ eventId: event.eventId, leaseGeneration: '1' });
     const longGeneration = baseEvent({ leaseGeneration: '1'.repeat(30) });
     expect(ackIdentityOf(longGeneration)).toBeNull();
+  });
+
+  it('rejects malformed listing and version-resource grammars', () => {
+    const badListingIds = [
+      'openarc:listing:00000000-0000-0000-8000-000000000020', // version nibble 0
+      'openarc:listing:00000000-0000-4000-7000-000000000020', // variant 7
+      'openarc:listing:00000000-0000-4000-8000-00000000002', // short
+    ];
+    for (const resourceId of badListingIds) {
+      expect(() =>
+        validateNotification(
+          baseEvent({ resourceType: 'listing', eventType: 'market.listing.created', resourceId }),
+        ),
+      ).toThrow(InvalidEventError);
+    }
+    const goodListing = 'openarc:listing:00000000-0000-4000-8000-000000000020';
+    const badVersionResources = [
+      `${goodListing}@1`, // version 1 is the draft root, never a version resource
+      `${goodListing}@0`,
+      `${goodListing}@01`,
+      'openarc:listing:00000000-0000-0000-8000-000000000020@2',
+      'openarc:listing:00000000-0000-4000-8000-000000000020@' + '2'.repeat(20),
+      `${goodListing}@2@3`,
+      `${'a'.repeat(130)}@2`,
+    ];
+    for (const resourceId of badVersionResources) {
+      expect(() =>
+        validateNotification(
+          baseEvent({
+            resourceType: 'listing_version',
+            eventType: 'market.listing.version.created',
+            resourceId,
+          }),
+        ),
+      ).toThrow(InvalidEventError);
+    }
+    const goodVersion = `${goodListing}@2`;
+    expect(
+      validateNotification(
+        baseEvent({
+          resourceType: 'listing_version',
+          eventType: 'market.listing.version.created',
+          resourceId: goodVersion,
+        }),
+      ),
+    ).toBeTruthy();
   });
 });
 

@@ -18,14 +18,12 @@ onchain observations into an inspectable evidence trail. Distinguish what was
 reported, what was observed and what remains unresolved—without treating a
 successful transfer as proof of authorization or service delivery.
 
-**Current status:** the legacy investigation app is on controlled Testnet staging.
-The new marketplace/control/proof/privacy specification is adopted. Its shared
-contracts, durable account service, passkey/wallet sign-in and supplied public
-design are implemented; organization authorization and the commerce workflows
-remain under development. Account access defaults off. Legacy milestone checks
-do not mean the commerce product is done.
-OpenArc does not support mainnet. See the
-[commerce transition and build order](docs/engineering/commerce-transition.md).
+**Current status:** the legacy investigation app remains on controlled Testnet
+staging. PORT00 and PORT01 are accepted; PORT02 is implemented in the integrated
+source and undergoing final production-browser and release validation; PORT03–PORT09
+are not implemented. Hosted account enrollment and new marketplace features
+remain disabled, and purchases are unavailable. OpenArc does not support mainnet.
+See the [commerce transition and build order](docs/engineering/commerce-transition.md).
 
 ## Capabilities
 
@@ -37,7 +35,9 @@ OpenArc does not support mainnet. See the
 | Payment evidence | Compare imported x402 metadata with separately requested Gateway status and Arc batch evidence. |
 | Investigations | Search records, review exceptions and inspect explicitly linked evidence in graph and list views. |
 | Redacted exports | Preview bounded investigation reports with private fields omitted by default. |
-| Minimal-record account access | Optional passkeys or wallet login, server-side session revocation and recovery codes; no required name or email. Sign-in is not permission to pay. |
+| Minimal-record account access | Optional passkeys or wallet login, server-side session revocation and recovery codes; no required name or email. Sign-in is authentication only and is not permission to pay. |
+| Marketplace source preview | Public allowlisted catalog, provider profiles, search and pagination, plus draft/version management and independent origin review. Purchases remain unavailable and flags are required. |
+| Tenant and agent scope | Separate public, organization and provider-minimal tenant scopes; role-based read/write and scoped machine sessions for agent/provider credentials. |
 | Supplied public design | Preview the supplied visual system, local video, technical docs and FAQ at `/design`, without replacing the existing evidence workspace. |
 
 Features default off. Local imports and investigations need no live source;
@@ -69,8 +69,14 @@ for prerequisites and limits.
   the API. The API does not persist workspace or evidence bodies; this is not a
   promise that hosting infrastructure retains no metadata.
 - **Minimal records are not zero retention.** Account access retains credential
-  public keys/IDs, pseudonymous bindings and necessary security records. Guest
-  access remains separate; no email or personal-name field is required.
+  public keys/IDs, pseudonymous bindings and necessary security records. Passkey
+  use keeps minimal records and is not a zero-retention path. Guest access
+  remains separate; no email or personal-name field is required.
+- **Metadata review is not authority.** Listing review by an independent
+  moderator is independent origin-metadata moderation, not a security
+  endorsement or execution authority; provider self-review is not permitted.
+  Purchases are unavailable; reference-sum artifacts are contract or synthetic
+  fixtures, not a working service, payment or retrieval path.
 - **Testnet only.** No mainnet compatibility, independent security certification,
   or Circle/Arc endorsement is claimed. External network and protocol costs are
   not represented as free.

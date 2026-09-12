@@ -68,6 +68,8 @@ export type ClaimedOutboxEvent = {
   | { readonly resourceType: 'membership'; readonly resourceId: string; readonly eventType: 'tenant.membership.set' }
   | { readonly resourceType: 'agent_credential'; readonly resourceId: string; readonly eventType: 'tenant.agent.credential.created' | 'tenant.agent.credential.revoked' }
   | { readonly resourceType: 'provider_credential'; readonly resourceId: string; readonly eventType: 'tenant.provider.credential.created' | 'tenant.provider.credential.revoked' }
+  | { readonly resourceType: 'listing'; readonly resourceId: string; readonly eventType: 'market.listing.created' }
+  | { readonly resourceType: 'listing_version'; readonly resourceId: string; readonly eventType: 'market.listing.version.created' }
 );
 
 const ORG_ID = /^openarc:org:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -75,6 +77,15 @@ const AGENT_ID = /^openarc:agent:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab]
 const PROVIDER_ID = /^openarc:provider:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ACCOUNT_ID = /^openarc:account:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CREDENTIAL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const LISTING_ID = /^openarc:listing:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+// Internal version resource: canonical listing id + '@' + canonical version >= 2
+// (version 1 is the draft root). Length is bounded before any split/coercion.
+const LISTING_VERSION_RESOURCE_MAX_LENGTH = 128;
+const LISTING_VERSION_RESOURCE = /^openarc:listing:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@(?!1$)[1-9][0-9]{0,8}$/;
+
+function isListingVersionResource(value: string): boolean {
+  return value.length <= LISTING_VERSION_RESOURCE_MAX_LENGTH && LISTING_VERSION_RESOURCE.test(value);
+}
 
 export interface ClaimInput {
   readonly limit?: number;
@@ -329,6 +340,12 @@ export class OutboxStore {
           resourceId,
           eventType: eventType as 'tenant.provider.credential.created' | 'tenant.provider.credential.revoked',
         };
+      case 'listing|market.listing.created':
+        if (!LISTING_ID.test(resourceId)) fail('OUTBOX_STORE_UNAVAILABLE');
+        return { ...base, resourceType: 'listing', resourceId, eventType: 'market.listing.created' };
+      case 'listing_version|market.listing.version.created':
+        if (!isListingVersionResource(resourceId)) fail('OUTBOX_STORE_UNAVAILABLE');
+        return { ...base, resourceType: 'listing_version', resourceId, eventType: 'market.listing.version.created' };
       default:
         fail('OUTBOX_STORE_UNAVAILABLE');
     }

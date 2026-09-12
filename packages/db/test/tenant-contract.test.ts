@@ -23,6 +23,8 @@ describe('tenant migration manifest', () => {
       '0003_durability',
       '0004_durable_tenant_mutations',
       '0005_machine_credentials',
+      '0006_market',
+      '0007_market_lifecycle',
     ]);
     const auth = migrations[0];
     expect(auth?.sql).toContain('CREATE TABLE openarc_auth.accounts');

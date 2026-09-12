@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:openarc:reference-provider:input:v1",
+  "title": "OpenArc Testnet reference sum input",
+  "description": "Strict input for the first-party OpenArc Testnet-only deterministic reference sum API. Schema version openarc.reference-input.v1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "a", "b"],
+  "properties": {
+    "schemaVersion": {
+      "const": "openarc.reference-input.v1"
+    },
+    "a": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "b": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    }
+  }
+}

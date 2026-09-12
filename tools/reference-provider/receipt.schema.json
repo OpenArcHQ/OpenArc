@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:openarc:reference-provider:receipt:v1",
+  "title": "OpenArc Testnet reference delivery receipt",
+  "description": "Provider assertion for one deterministic reference sum delivery. This is NOT chain settlement, a quality proof, user authorization, a signature, or retrieval success. It embeds no raw input or output. Property names use the lowercase snake_case identifier grammar required by the listing evidence contract; no camelCase alias mapping exists.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "delivery_id",
+    "listing_id",
+    "listing_version",
+    "input_digest",
+    "output_digest",
+    "delivered_at"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "openarc.reference-receipt.v1",
+      "maxLength": 28
+    },
+    "delivery_id": {
+      "type": "string",
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])",
+      "description": "Opaque lowercase UUIDv4 delivery identifier; not a capability or token."
+    },
+    "listing_id": {
+      "type": "string",
+      "maxLength": 52,
+      "pattern": "^openarc:listing:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])",
+      "description": "Canonical OpenArc listing identifier."
+    },
+    "listing_version": {
+      "type": "string",
+      "maxLength": 9,
+      "pattern": "^[1-9][0-9]{0,8}(?![\\s\\S])",
+      "description": "Canonical immutable listing version from 1 to 999999999."
+    },
+    "input_digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])",
+      "description": "SHA-256 digest of the canonical request input bytes."
+    },
+    "output_digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])",
+      "description": "SHA-256 digest of the canonical response output bytes."
+    },
+    "delivered_at": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 27,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z(?![\\s\\S])",
+      "description": "RFC 3339 UTC timestamp of first delivery, at most microsecond precision, with an explicit Z offset."
+    }
+  }
+}

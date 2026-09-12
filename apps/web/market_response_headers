@@ -1,0 +1,18 @@
+# Marketplace-specific response-header suppression.
+#
+# The marketplace API is same-origin to this proxy; any Set-Cookie or CORS
+# response header it emits must never reach the browser through the proxy. Vary
+# is suppressed as well so a cached/edge response cannot vary on a header the
+# marketplace proxy already normalizes. This file is include-only and never
+# mutates the old capability/tenant/account includes.
+
+proxy_hide_header Set-Cookie;
+proxy_hide_header Access-Control-Allow-Origin;
+proxy_hide_header Access-Control-Allow-Credentials;
+proxy_hide_header Access-Control-Allow-Headers;
+proxy_hide_header Access-Control-Allow-Methods;
+proxy_hide_header Access-Control-Expose-Headers;
+proxy_hide_header Access-Control-Max-Age;
+proxy_hide_header Access-Control-Request-Method;
+proxy_hide_header Access-Control-Request-Headers;
+proxy_hide_header Vary;

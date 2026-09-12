@@ -13,6 +13,7 @@ import {
   ARC_ERC8183, JOB_EVIDENCE_PATH, JobEvidenceRequestSchema, JobEvidenceEnvelopeSchema,
   type JobEvidenceRequest,
   GATEWAY_TRANSFER_PATH, GatewayTransferRequestSchema, GatewayTransferEnvelopeSchema, type GatewayTransferRequest,
+  MARKETPLACE_CAPABILITIES_PATH,
 } from "@openarc/shared";
 import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
@@ -31,11 +32,18 @@ import { registerTenantRoutes, TENANT_ROUTE_PREFIX } from "./tenant/routes.js";
 import type { TenantReadService } from "./tenant/service.js";
 import { registerTenantWriteRoutes } from "./tenant/write-routes.js";
 import type { TenantWriteService } from "./tenant/write-service.js";
+import { registerMarketRoutes, MARKET_ROUTE_PREFIX } from "./market/routes.js";
+import type { MarketService } from "./market/service.js";
+import { registerMarketLifecycleRoutes } from "./market/lifecycle-routes.js";
+import type { MarketLifecycleService } from "./market/lifecycle-service.js";
+import { registerMarketCatalogRoutes } from "./market/catalog-routes.js";
+import type { MarketCatalogService } from "./market/catalog-service.js";
 import { registerMachineManagementRoutes } from "./machine/management-routes.js";
 import { registerMachineSessionRoutes, isMachineSessionFamilyPath } from "./machine/session-routes.js";
 import type { MachineManagementService } from "./machine/management-service.js";
 import type { MachineSessionService } from "./machine/session-service.js";
 import { registerCommerceCapabilities } from "./commerce/capabilities.js";
+import { registerMarketplaceCapabilities } from "./commerce/marketplace-capabilities.js";
 import { ApiBoundaryError, apiErrorEnvelope, normalizeApiError } from "./http/errors.js";
 import { verifyBrowserOrigin, verifyPreflight } from "./http/origin.js";
 import { registerSourceRoute } from "./http/source-route.js";
@@ -70,6 +78,11 @@ export interface CreateAppOptions {
   tenantWriteService?: TenantWriteService;
   tenantReady?: () => Promise<boolean>;
   tenantMaxResponseBytes?: number;
+  marketService?: MarketService;
+  marketLifecycleService?: MarketLifecycleService;
+  marketCatalogService?: MarketCatalogService;
+  marketReady?: () => Promise<boolean>;
+  marketMaxResponseBytes?: number;
   machineManagementService?: MachineManagementService;
   machineSessionService?: MachineSessionService;
   machineReady?: () => Promise<boolean>;
@@ -87,6 +100,45 @@ const disabledPaths = [
 function isTenantFamilyPath(path: string): boolean {
   return (
     path === TENANT_ROUTE_PREFIX || path.startsWith(`${TENANT_ROUTE_PREFIX}/`)
+  );
+}
+
+/**
+ * The exact bounded protected market family is the route root or the root plus
+ * a slash. A bare `startsWith` would capture lookalike paths such as
+ * `/v2/provider/organizationsXYZ`, so those keep their legacy behavior.
+ */
+function isMarketFamilyPath(path: string): boolean {
+  return (
+    path === MARKET_ROUTE_PREFIX || path.startsWith(`${MARKET_ROUTE_PREFIX}/`)
+  );
+}
+
+/**
+ * Exact roots of the two NEW protected marketplace families and the public
+ * catalog family. Only the root itself or the root plus a slash carries
+ * authority: lookalike prefixes such as `/v2/public/marketXYZ` keep the
+ * ordinary legacy 404 and are never treated as this family.
+ */
+function isModeratorFamilyPath(path: string): boolean {
+  return (
+    path === "/v2/moderator/organizations" ||
+    path.startsWith("/v2/moderator/organizations/")
+  );
+}
+
+function isPublicMarketFamilyPath(path: string): boolean {
+  return (
+    path === "/v2/public/market" || path.startsWith("/v2/public/market/")
+  );
+}
+
+/** Any exact new marketplace family root (threaded through v2 error mapping). */
+function isMarketplaceFamilyPath(path: string): boolean {
+  return (
+    isMarketFamilyPath(path) ||
+    isModeratorFamilyPath(path) ||
+    isPublicMarketFamilyPath(path)
   );
 }
 
@@ -121,8 +173,16 @@ function routeClass(url: string): RouteClass {
   // route class or raw path is introduced.
   if (isMachinePath(path)) return "auth";
   if (isTenantFamilyPath(path)) return "tenant";
+  // The protected market family maps to the EXISTING coarse `tenant` metrics
+  // label; no new route class or label is introduced.
+  if (isMarketFamilyPath(path)) return "tenant";
+  // The new protected/public marketplace families also map to the EXISTING
+  // coarse `tenant` label; still no raw path or new label is introduced.
+  if (isModeratorFamilyPath(path)) return "tenant";
+  if (isPublicMarketFamilyPath(path)) return "tenant";
   if (path === CAPABILITIES_PATH) return "capabilities";
   if (path === COMMERCE_CAPABILITIES_PATH) return "capabilities";
+  if (path === MARKETPLACE_CAPABILITIES_PATH) return "capabilities";
   if (path === ARC_ACCOUNT_SNAPSHOT_PATH) return "arc_account";
   if (path === ARC_TRANSACTION_EVIDENCE_PATH) return "arc_transaction";
   if (path === AGENT_REGISTRY_EVIDENCE_PATH) return "agent_registry";
@@ -136,6 +196,7 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
   sourceBudget, arcAccountService, arcTransactionService, agentRegistryService, jobService, gatewayTransferService,
   authService, authReady, tenantReadService, tenantReady,
   tenantWriteService, tenantMaxResponseBytes,
+  marketService, marketLifecycleService, marketCatalogService, marketReady, marketMaxResponseBytes,
   machineManagementService, machineSessionService, machineReady }: CreateAppOptions): FastifyInstance {
   // Framework request/error logging is disabled, including parser failures.
   // `frameworkErrors` receives errors raised before the normal request
@@ -197,10 +258,13 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
         ? (cause as { code?: unknown }).code
         : null;
     const machineSurface = isMachinePath(rawPath);
-    const commerceCapabilitySurface = rawPath === COMMERCE_CAPABILITIES_PATH;
+    const commerceCapabilitySurface =
+      rawPath === COMMERCE_CAPABILITIES_PATH ||
+      rawPath === MARKETPLACE_CAPABILITIES_PATH;
     const v2Surface =
       rawPath.startsWith("/v2/auth/") ||
       isTenantFamilyPath(rawPath) ||
+      isMarketplaceFamilyPath(rawPath) ||
       commerceCapabilitySurface ||
       machineSurface;
     if (
@@ -212,6 +276,21 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
       // bounded machine surface: a fixed v2 404 envelope with no raw URL echo.
       // This is narrower than the tenant family and never changes legacy
       // behavior for non-machine paths.
+      const mapped = new AuthApiError("FEATURE_DISABLED", 404, "NOT_FOUND");
+      failures.set(request, mapped.metricsCode);
+      return reply
+        .code(mapped.status)
+        .send(authErrorEnvelope(mapped, request.id, config.COMMIT_SHA));
+    }
+    if (
+      isMarketplaceFamilyPath(rawPath) &&
+      cause instanceof ApiBoundaryError &&
+      cause.code === "NOT_FOUND"
+    ) {
+      // An unknown or currently-disabled path under an EXACT new marketplace
+      // family root stays on the bounded v2 surface: a fixed envelope with no
+      // raw URL echo. Lookalike prefixes are deliberately not matched, so they
+      // keep their legacy behavior.
       const mapped = new AuthApiError("FEATURE_DISABLED", 404, "NOT_FOUND");
       failures.set(request, mapped.metricsCode);
       return reply
@@ -259,6 +338,13 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
   const machineEnabled =
     config.MACHINE_CREDENTIAL_MANAGEMENT_ENABLED ||
     config.MACHINE_SESSION_EXCHANGE_ENABLED;
+  // Any of the three independent marketplace families activates the single
+  // bounded marketDatabase readiness check; none activates auth/tenant checks
+  // by itself.
+  const marketEnabled =
+    config.MARKET_CATALOG_ENABLED ||
+    config.LISTING_MANAGEMENT_ENABLED ||
+    config.MARKET_MODERATION_ENABLED;
   app.get("/healthz", async () => ({ status: "ok" as const, ...build }));
   app.get("/readyz", async (_request, reply) => {
     if (config.AUTH_ENABLED) {
@@ -278,28 +364,43 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
             ...(config.AUTH_ENABLED ? { authDatabase: "up" as const } : {}), tenantDatabase: "down" }, ...build });
       }
     }
+    if (marketEnabled) {
+      const marketReadyResult = marketReady ? await marketReady().catch(() => false) : false;
+      if (!marketReadyResult) {
+        return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
+          checks: { configuration: "up", sourceRoutes: config.ARC_OBSERVATION_ENABLED ? "enabled" : "disabled",
+            redis: config.ARC_OBSERVATION_ENABLED ? "not_checked" : "not_required",
+            ...(config.AUTH_ENABLED ? { authDatabase: "up" as const } : {}),
+            ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}),
+            marketDatabase: "down" }, ...build });
+      }
+    }
     if (machineEnabled) {
       const machineReadyResult = machineReady ? await machineReady().catch(() => false) : false;
       if (!machineReadyResult) {
         return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
           checks: { configuration: "up", sourceRoutes: config.ARC_OBSERVATION_ENABLED ? "enabled" : "disabled",
             redis: config.ARC_OBSERVATION_ENABLED ? "not_checked" : "not_required",
+            ...(marketEnabled ? { marketDatabase: "up" as const } : {}),
             machineDatabase: "down" }, ...build });
       }
     }
     if (config.ARC_OBSERVATION_ENABLED) {
       const redisReady = sourceBudget ? await sourceBudget.ready(AbortSignal.timeout(750)) : false;
       if (!redisReady) return reply.code(503).send({ ok: false as const, status: "not_ready" as const,
-        checks: { configuration: "up", sourceRoutes: "enabled", redis: "down" }, ...build });
+        checks: { configuration: "up", sourceRoutes: "enabled", redis: "down",
+          ...(marketEnabled ? { marketDatabase: "up" as const } : {}) }, ...build });
       return { ok: true as const, status: "ready" as const,
         checks: { configuration: "up", sourceRoutes: "enabled", redis: "up",
           ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}),
+          ...(marketEnabled ? { marketDatabase: "up" as const } : {}),
           ...(machineEnabled ? { machineDatabase: "up" as const } : {}) }, ...build };
     }
     return { ok: true as const, status: "ready" as const,
       checks: { configuration: "up", sourceRoutes: "disabled", redis: "not_required",
         ...(config.AUTH_ENABLED ? { authDatabase: "up" as const } : {}),
         ...(config.TENANT_READS_ENABLED ? { tenantDatabase: "up" as const } : {}),
+        ...(marketEnabled ? { marketDatabase: "up" as const } : {}),
         ...(machineEnabled ? { machineDatabase: "up" as const } : {}) }, ...build };
   });
 
@@ -370,6 +471,73 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
       enabled: false,
     });
   }
+
+  if (config.LISTING_MANAGEMENT_ENABLED) {
+    if (!marketService) throw new Error("Market listing dependencies are unavailable");
+    registerMarketRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(config.APP_ORIGIN.startsWith("https://")),
+      service: marketService,
+      buildSha: config.COMMIT_SHA,
+      enabled: true,
+      ...(marketMaxResponseBytes !== undefined
+        ? { maxResponseBytes: marketMaxResponseBytes }
+        : {}),
+    });
+  } else {
+    // Default-off registers NO market route; the request keeps the framework's
+    // ordinary 404 instead of a simulated disabled response.
+    registerMarketRoutes(app, {
+      appOrigin: config.APP_ORIGIN,
+      cookieNames: authCookieNames(false),
+      service: marketService as MarketService,
+      buildSha: config.COMMIT_SHA,
+      enabled: false,
+    });
+  }
+
+  // The provider lifecycle family rides the listing flag; the moderator family
+  // rides the independent moderation flag. Either enabled family REQUIRES the
+  // shared lifecycle service: a missing dependency is a fixed startup error,
+  // never a silent drop of the six provider routes while the manifest still
+  // advertises them. The listing flag is passed through unchanged.
+  const lifecycleEnabled =
+    config.LISTING_MANAGEMENT_ENABLED || config.MARKET_MODERATION_ENABLED;
+  if (lifecycleEnabled && !marketLifecycleService) {
+    throw new Error("Market lifecycle dependencies are unavailable");
+  }
+  registerMarketLifecycleRoutes(app, {
+    listingManagementEnabled: config.LISTING_MANAGEMENT_ENABLED,
+    moderationEnabled: config.MARKET_MODERATION_ENABLED,
+    appOrigin: config.APP_ORIGIN,
+    cookieNames: authCookieNames(config.APP_ORIGIN.startsWith("https://")),
+    ...(marketLifecycleService !== undefined
+      ? { service: marketLifecycleService }
+      : {}),
+    buildSha: config.COMMIT_SHA,
+    ...(marketMaxResponseBytes !== undefined
+      ? { maxResponseBytes: marketMaxResponseBytes }
+      : {}),
+  });
+
+  // The public catalog family is independent of auth/tenant reads; it needs
+  // only the catalog service, and its absence is a fixed startup error.
+  if (config.MARKET_CATALOG_ENABLED) {
+    if (!marketCatalogService) {
+      throw new Error("Market catalog dependencies are unavailable");
+    }
+  }
+  registerMarketCatalogRoutes(app, {
+    enabled: config.MARKET_CATALOG_ENABLED,
+    appOrigin: config.APP_ORIGIN,
+    ...(marketCatalogService !== undefined
+      ? { service: marketCatalogService }
+      : {}),
+    buildSha: config.COMMIT_SHA,
+    ...(marketMaxResponseBytes !== undefined
+      ? { maxResponseBytes: marketMaxResponseBytes }
+      : {}),
+  });
 
   if (config.MACHINE_CREDENTIAL_MANAGEMENT_ENABLED) {
     if (!machineManagementService) {
@@ -471,6 +639,33 @@ export function createApp({ config, logger = config.NODE_ENV !== "test", logSink
     appOrigin: config.APP_ORIGIN,
     ...(tenantMaxResponseBytes !== undefined
       ? { maxResponseBytes: tenantMaxResponseBytes }
+      : {}),
+  });
+
+  // Public, credentialless marketplace capability registry. It ALWAYS
+  // registers, even with every flag off, and returns the accepted three-family
+  // / 18-route manifest. Only the explicit own flags plus the AUTH/TENANT_READS
+  // gating flags and the readiness callbacks actually required by an enabled
+  // family cross this boundary; the full config, secrets, DB URLs and private
+  // identities never do. Availability is not authorization and no automatic
+  // network/provider/RPC request is performed.
+  registerMarketplaceCapabilities(app, {
+    flags: {
+      authEnabled: config.AUTH_ENABLED,
+      tenantReadsEnabled: config.TENANT_READS_ENABLED,
+      marketCatalogEnabled: config.MARKET_CATALOG_ENABLED,
+      listingManagementEnabled: config.LISTING_MANAGEMENT_ENABLED,
+      marketModerationEnabled: config.MARKET_MODERATION_ENABLED,
+    },
+    readiness: {
+      ...(authReady !== undefined ? { authReady } : {}),
+      ...(tenantReady !== undefined ? { tenantReady } : {}),
+      ...(marketReady !== undefined ? { marketReady } : {}),
+    },
+    buildSha: config.COMMIT_SHA,
+    appOrigin: config.APP_ORIGIN,
+    ...(marketMaxResponseBytes !== undefined
+      ? { maxResponseBytes: marketMaxResponseBytes }
       : {}),
   });
 

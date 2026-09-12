@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:openarc:reference-provider:output:v1",
+  "title": "OpenArc Testnet reference sum output",
+  "description": "Strict output for the first-party OpenArc Testnet-only deterministic reference sum API. Schema version openarc.reference-output.v1. sum is exactly a + b for inputs bounded 0..1000000, hence 0..2000000.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "sum"],
+  "properties": {
+    "schemaVersion": {
+      "const": "openarc.reference-output.v1"
+    },
+    "sum": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2000000
+    }
+  }
+}

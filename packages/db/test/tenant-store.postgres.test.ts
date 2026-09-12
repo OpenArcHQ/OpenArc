@@ -210,6 +210,8 @@ describe('tenant migration and schema2 boundary', () => {
       '0003_durability',
       '0004_durable_tenant_mutations',
       '0005_machine_credentials',
+      '0006_market',
+      '0007_market_lifecycle',
     ]);
     expect(applied.rows[1]?.checksum).toBe(checksum);
   });
@@ -238,6 +240,11 @@ describe('tenant migration and schema2 boundary', () => {
     );
     expect(rls.rows.map((row) => row.relname)).toEqual([
       'agents',
+      'listing_origin_reviews',
+      'listing_version_states',
+      'listing_versions',
+      'listings',
+      'market_moderator_grants',
       'memberships',
       'organizations',
       'providers',

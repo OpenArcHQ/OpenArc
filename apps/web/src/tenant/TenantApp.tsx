@@ -2,6 +2,7 @@ import {
   ARC_TESTNET,
   CommerceAgentProfileSchema,
   CommerceProviderProfileSchema,
+  type CommerceListingOwnerVersion,
   type CommerceHumanRole,
 } from "@openarc/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -19,8 +20,19 @@ import {
   initialTenantState,
 } from "./tenant-controller.js";
 import { machineCredentialEnabled, tenantMutationEnabled, tenantReadsEnabled } from "./availability.js";
+import { listingManagementEnabledFromEnv } from "./listing-availability.js";
 import { TenantMutationPanel } from "./TenantMutationPanel.js";
 import { MachineCredentialPanel } from "./MachineCredentialPanel.js";
+import { ListingListPanel } from "./ListingListPanel.js";
+import { ListingEditorPanel, ListingLifecycleActions } from "./ListingEditorPanel.js";
+import { ListingVersionHistory } from "./ListingVersionHistory.js";
+import {
+  ListingController,
+  initialListingControllerState,
+  suppressStaleListingContext,
+  type ListingControllerState,
+} from "./listing-controller.js";
+import { parseListingRoute, type ListingRoute } from "./listing-routes.js";
 import {
   MachineCredentialController,
   initialMachineConsoleState,
@@ -43,6 +55,7 @@ import {
 } from "./tenant-mutation-render.js";
 
 import tenantCssUrl from "./tenant.css?url";
+import listingCssUrl from "./market-listing.css?url";
 
 /**
  * Protected organization workspace.
@@ -53,7 +66,18 @@ import tenantCssUrl from "./tenant.css?url";
  * entirely under `.tenant-shell`, mounted for the component lifetime only.
  */
 
-type AppPath = "/app/overview" | "/app/agents" | "/app/provider";
+type AppPath =
+  | "/app/overview"
+  | "/app/agents"
+  | "/app/provider"
+  | "/app/provider/listings"
+  | "/app/provider/listings/new";
+
+type WorkspacePath =
+  | AppPath
+  | "/app"
+  | { readonly kind: "listing-detail"; readonly listingId: string }
+  | "unknown";
 
 function useTenantStyles(): void {
   useEffect(() => {
@@ -66,20 +90,54 @@ function useTenantStyles(): void {
   }, []);
 }
 
-function currentPath(): AppPath | "/app" | "unknown" {
+/** Mounts the scoped listing stylesheet for the feature lifetime only. */
+function useListingStyles(active: boolean): void {
+  useEffect(() => {
+    if (!active) return;
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = listingCssUrl;
+    link.dataset.listingStyle = "true";
+    document.head.append(link);
+    return () => link.remove();
+  }, [active]);
+}
+
+function currentPath(): WorkspacePath {
   if (typeof window === "undefined") return "/app";
   const raw = window.location.pathname.replace(/\/+$/u, "") || "/";
   if (raw === "/app") return "/app";
   if (raw === "/app/overview") return "/app/overview";
   if (raw === "/app/agents") return "/app/agents";
   if (raw === "/app/provider") return "/app/provider";
+  if (raw.startsWith("/app/provider/listings")) {
+    const listing = parseListingRoute(raw);
+    if (listing === null) return "unknown";
+    if (listing.kind === "roots") return "/app/provider/listings";
+    if (listing.kind === "new") return "/app/provider/listings/new";
+    if (listing.kind === "detail") return { kind: "listing-detail", listingId: listing.listingId };
+  }
   if (raw.startsWith("/app/")) return "unknown";
   return "unknown";
 }
 
-/** True only for the three implemented static workspace paths (and `/app`). */
-function isKnownPath(path: AppPath | "/app" | "unknown"): boolean {
+/** True only for an implemented static workspace or protected listing path. */
+function isKnownPath(path: WorkspacePath): boolean {
   return path !== "unknown";
+}
+
+/** The route object for a listing workspace path, or null when not listing. */
+function listingRouteOf(path: WorkspacePath): ListingRoute | null {
+  if (path === "/app/provider/listings") return { kind: "roots" };
+  if (path === "/app/provider/listings/new") return { kind: "new" };
+  if (typeof path === "object" && path.kind === "listing-detail") {
+    return { kind: "detail", listingId: path.listingId };
+  }
+  return null;
+}
+
+function isListingWorkspacePath(path: WorkspacePath): boolean {
+  return listingRouteOf(path) !== null;
 }
 
 export default function TenantApp() {
@@ -103,12 +161,19 @@ export default function TenantApp() {
       ),
     [],
   );
+  // The listing surface is independent of the write and machine flags: it has
+  // its own server authority and its own capability probe. All defaults false.
+  const listingEnabled = useMemo(() => listingManagementEnabledFromEnv(), []);
   const [state, setState] = useState<TenantViewControllerState>(initialTenantState);
   const [mutationState, setMutationState] = useState<TenantMutationState>(initialTenantMutationState);
   const [machineState, setMachineState] = useState<MachineConsoleState>(initialMachineConsoleState);
   const [machineList, setMachineList] = useState<MachineCredentialListState>(initialMachineCredentialListState);
+  const [listingState, setListingState] = useState<ListingControllerState>(initialListingControllerState);
+  const [listingCreating, setListingCreating] = useState(false);
+  const [listingProviderId, setListingProviderId] = useState<string | null>(null);
+  const [listingBaseVersion, setListingBaseVersion] = useState<CommerceListingOwnerVersion | null>(null);
   const [selectedProfile, setSelectedProfile] = useState<MachineCredentialTarget | null>(null);
-  const [path, setPath] = useState<AppPath | "/app" | "unknown">(currentPath);
+  const [path, setPath] = useState<WorkspacePath>(currentPath);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const drawerRef = useRef<HTMLDivElement | null>(null);
@@ -117,11 +182,15 @@ export default function TenantApp() {
   const controllerRef = useRef<TenantController | null>(null);
   const writeControllerRef = useRef<TenantWriteController | null>(null);
   const machineControllerRef = useRef<MachineCredentialController | null>(null);
+  const listingControllerRef = useRef<ListingController | null>(null);
   const boundMachineContextRef = useRef<MachineRenderContext | null>(null);
+  const boundListingContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
+  const listingOpenRef = useRef<((listingId: string) => void) | null>(null);
   const accountRef = useRef<AccountFlowController | null>(null);
   const known = isKnownPath(path);
 
   useTenantStyles();
+  useListingStyles(listingEnabled);
 
   useEffect(() => {
     const onPopState = () => setPath(currentPath());
@@ -175,6 +244,28 @@ export default function TenantApp() {
         })
       : null;
     machineControllerRef.current = machineController;
+    // The listing controller is constructed ONLY when its own flag and all its
+    // prerequisites are enabled. It mounts no read/write client request until a
+    // protected listing route initializes the independent capability gate, and
+    // it never depends on the tenant-write or machine-credential flags.
+    const listingController = listingEnabled
+      ? new ListingController({
+          account,
+          reads: {
+            currentOrganizationId: () => controller.currentOrganizationId(),
+            currentRole: () => controller.currentRole(),
+            currentAccountId: () =>
+              account.state.session.signedIn ? account.state.session.accountId : null,
+            abortPendingReads: () => controller.abortPendingReads(),
+            reloadAfterCommit: async () => {
+              await controller.reloadAfterCommit("providers");
+            },
+          },
+          onState: setListingState,
+          onCommittedListing: (listingId) => listingOpenRef.current?.(listingId),
+        })
+      : null;
+    listingControllerRef.current = listingController;
     const onVisibility = () => {
       if (document.visibilityState === "hidden") {
         // The hidden boundary is external and synchronous: a browser may
@@ -187,6 +278,7 @@ export default function TenantApp() {
           controller.onHidden();
           writeController?.clear();
           machineController?.clear();
+          listingController?.clear();
         });
       }
     };
@@ -195,6 +287,7 @@ export default function TenantApp() {
         controller.onHidden();
         writeController?.clear();
         machineController?.clear();
+        listingController?.clear();
       });
     };
     document.addEventListener("visibilitychange", onVisibility);
@@ -206,12 +299,23 @@ export default function TenantApp() {
       controller.dispose();
       writeController?.dispose();
       machineController?.dispose();
+      listingController?.dispose();
       if (controllerRef.current === controller) controllerRef.current = null;
       if (writeControllerRef.current === writeController) writeControllerRef.current = null;
       if (machineControllerRef.current === machineController) machineControllerRef.current = null;
+      if (listingControllerRef.current === listingController) listingControllerRef.current = null;
       if (accountRef.current === account) accountRef.current = null;
     };
-  }, [enabled, known, writesEnabled, machineEnabled]);
+  }, [enabled, known, writesEnabled, machineEnabled, listingEnabled]);
+
+  // Clear the create/version selection when leaving the listing subtree.
+  useEffect(() => {
+    if (isListingWorkspacePath(path)) return;
+    setListingCreating(false);
+    setListingProviderId(null);
+    setListingBaseVersion(null);
+    listingControllerRef.current?.clearSensitive();
+  }, [path]);
 
   // A signed-in identity change must never expose a previous account's
   // committed confirmation. The receipt belongs to the account that produced
@@ -233,6 +337,10 @@ export default function TenantApp() {
       machineControllerRef.current?.clear();
       setMachineState(initialMachineConsoleState());
       setMachineList(initialMachineCredentialListState());
+      listingControllerRef.current?.clear();
+      setListingCreating(false);
+      setListingProviderId(null);
+      setListingBaseVersion(null);
       setSelectedProfile(null);
     }
   }, [accountId]);
@@ -243,6 +351,9 @@ export default function TenantApp() {
   const organizationId = state.selectedOrganizationId;
   const role: CommerceHumanRole | null = state.context?.access.role ?? null;
   useEffect(() => {
+    // The listing controller is independent of the machine flag, so reconcile
+    // its role before the machine early-return below.
+    listingControllerRef.current?.reconcileRole(role);
     const machineController = machineControllerRef.current;
     if (machineController === null) return;
     // Role is authoritative from the current server context. Reconcile it
@@ -257,7 +368,24 @@ export default function TenantApp() {
   // panel is shown for a stale profile.
   useEffect(() => {
     setSelectedProfile(null);
+    setListingCreating(false);
+    setListingProviderId(null);
+    setListingBaseVersion(null);
+    listingControllerRef.current?.clear();
   }, [organizationId]);
+
+  // Initialize the listing controller only for a protected listing route. This
+  // effect is declared AFTER the organization/role reconciliation effects so it
+  // observes the authoritative context. The capability probe runs first and,
+  // when it is not `enabled`, no listing request is made and an honest
+  // unavailable state is rendered.
+  useEffect(() => {
+    const listingController = listingControllerRef.current;
+    if (listingController === null) return;
+    const route = listingRouteOf(path);
+    if (route === null) return;
+    void listingController.initialize(route);
+  }, [path, listingEnabled, organizationId, role, accountId]);
 
   // After the render where the machine context is current, record the bound
   // context so the NEXT transition render can suppress synchronously. When the
@@ -276,6 +404,22 @@ export default function TenantApp() {
       profileId: selectedProfile.profileId,
     };
   }, [selectedProfile, organizationId, accountId, role]);
+
+  // After the render where the listing context is current, record the bound
+  // account/organization/role so the NEXT transition render suppresses
+  // synchronously before any child can read a stale draft, receipt or list.
+  useEffect(() => {
+    if (
+      listingControllerRef.current === null ||
+      !isListingWorkspacePath(path) ||
+      organizationId === null ||
+      accountId === null
+    ) {
+      boundListingContextRef.current = null;
+      return;
+    }
+    boundListingContextRef.current = { accountId, organizationId, role };
+  }, [path, organizationId, accountId, role]);
 
   // Synchronous privacy guard: effects run after render, so the effect above
   // alone would paint one stale frame of account A's receipt/form for account
@@ -309,6 +453,20 @@ export default function TenantApp() {
     machineControllerRef.current !== null &&
     (suppressPriorMutation ||
       suppressStaleMachineContext(boundMachineContextRef.current, currentMachineContext));
+
+  const suppressListing =
+    listingControllerRef.current !== null &&
+    (suppressPriorMutation ||
+      suppressStaleListingContext(
+        boundListingContextRef.current !== null && accountId !== null && organizationId !== null
+          ? {
+              accountId: boundListingContextRef.current.accountId,
+              organizationId: boundListingContextRef.current.organizationId,
+              role: boundListingContextRef.current.role,
+            }
+          : null,
+        { accountId, organizationId, role },
+      ));
 
   useEffect(() => {
     if (!drawerOpen) return;
@@ -364,11 +522,26 @@ export default function TenantApp() {
 
   const navigate = useCallback((next: AppPath) => {
     writeControllerRef.current?.clear();
+    listingControllerRef.current?.clearSensitive();
+    setListingCreating(false);
+    setListingProviderId(null);
+    setListingBaseVersion(null);
     setMutationState(initialTenantMutationState());
     setDrawerOpen(false);
     window.history.pushState(null, "", next);
     setPath(next);
   }, []);
+
+  const openListing = useCallback((listingId: string) => {
+    const route = parseListingRoute(`/app/provider/listings/${encodeURIComponent(listingId)}`);
+    if (route === null || route.kind !== "detail") return;
+    setDrawerOpen(false);
+    window.history.pushState(null, "", `/app/provider/listings/${encodeURIComponent(route.listingId)}`);
+    setPath({ kind: "listing-detail", listingId: route.listingId });
+  }, []);
+  useEffect(() => {
+    listingOpenRef.current = openListing;
+  }, [openListing]);
 
   const selectOrganization = useCallback(
     (organizationId: string) => {
@@ -391,7 +564,13 @@ export default function TenantApp() {
       : null;
 
   const activePath: AppPath | null =
-    path === "/app" ? "/app/overview" : path === "unknown" ? null : path;
+    path === "/app"
+      ? "/app/overview"
+      : path === "unknown"
+        ? null
+        : typeof path === "object"
+          ? "/app/provider/listings"
+          : path;
 
   return (
     <div className="tenant-shell">
@@ -489,6 +668,23 @@ export default function TenantApp() {
             machineList={suppressMachine ? initialMachineCredentialListState() : machineList}
             onSelectProfile={setSelectedProfile}
             machineEnabled={machineEnabled}
+            listingEnabled={listingEnabled}
+            listingState={suppressListing ? initialListingControllerState() : listingState}
+            listingController={suppressListing ? null : listingControllerRef.current}
+            listingCreating={listingCreating}
+            listingProviderId={listingProviderId}
+            listingBaseVersion={listingBaseVersion}
+            onSelectListingProvider={setListingProviderId}
+            onStartListingCreate={() => {
+              setListingCreating(true);
+              void listingControllerRef.current?.loadProviderOptions();
+            }}
+            onCancelListingCreate={() => setListingCreating(false)}
+            onSelectListingBaseVersion={(version) => {
+              setListingBaseVersion(version);
+              listingControllerRef.current?.selectVersion(version);
+            }}
+            onOpenListing={openListing}
           />
         </main>
 
@@ -521,6 +717,7 @@ function Rail(props: RailProps) {
     { path: "/app/overview", label: "Overview" },
     { path: "/app/agents", label: "Agents" },
     { path: "/app/provider", label: "Provider" },
+    { path: "/app/provider/listings", label: "Listings" },
   ];
   return (
     <nav
@@ -619,7 +816,7 @@ function Rail(props: RailProps) {
 }
 
 interface WorkspaceProps {
-  path: AppPath | "/app" | "unknown";
+  path: WorkspacePath;
   state: TenantViewControllerState;
   selectedId: string | null;
   currentOrganization: { displayName: string; role: CommerceHumanRole; status: "active" | "suspended" } | null;
@@ -633,6 +830,17 @@ interface WorkspaceProps {
   machineList: MachineCredentialListState;
   onSelectProfile: (target: MachineCredentialTarget | null) => void;
   machineEnabled: boolean;
+  listingEnabled: boolean;
+  listingState: ListingControllerState;
+  listingController: ListingController | null;
+  listingCreating: boolean;
+  listingProviderId: string | null;
+  listingBaseVersion: CommerceListingOwnerVersion | null;
+  onSelectListingProvider: (providerId: string) => void;
+  onStartListingCreate: () => void;
+  onCancelListingCreate: () => void;
+  onSelectListingBaseVersion: (version: CommerceListingOwnerVersion) => void;
+  onOpenListing: (listingId: string) => void;
 }
 
 function Workspace(props: WorkspaceProps) {
@@ -654,6 +862,14 @@ function Workspace(props: WorkspaceProps) {
   // Unknown /app/* routes are bounded before any principal or read handling:
   // no controller is constructed and no auth or tenant request is made.
   if (props.path === "unknown") return <NotAvailable onNavigate={props.onNavigate} />;
+
+  const listingRoute = listingRouteOf(props.path);
+  if (listingRoute !== null) {
+    // A listing route is known (not "unknown"): with the flag off nothing was
+    // constructed and the section is honestly unavailable. With the flag on the
+    // controller's independent capability gate decides the rendered state.
+    if (!props.listingEnabled) return <NotAvailable onNavigate={props.onNavigate} />;
+  }
 
   if (state.refreshRequired && principal.status === "signed-in" && state.organizations.status === "none") {
     return (
@@ -803,6 +1019,26 @@ function Workspace(props: WorkspaceProps) {
         ) : null}
         <OrganizationList state={state} onSelect={props.onSelect} controller={props.controller} />
       </section>
+    );
+  }
+
+  if (listingRoute !== null) {
+    return (
+      <ListingWorkspace
+        route={listingRoute}
+        state={props.listingState}
+        controller={props.controller}
+        listingController={props.listingController}
+        creating={props.listingCreating}
+        providerId={props.listingProviderId}
+        baseVersion={props.listingBaseVersion}
+        onSelectProvider={props.onSelectListingProvider}
+        onStartCreate={props.onStartListingCreate}
+        onCancelCreate={props.onCancelListingCreate}
+        onSelectBaseVersion={props.onSelectListingBaseVersion}
+        onOpenListing={props.onOpenListing}
+        onNavigate={props.onNavigate}
+      />
     );
   }
 
@@ -1194,6 +1430,293 @@ function Pagination(props: {
         Page size ≤ {MAX_PAGE_LIMIT}. Replaces the current page.
       </span>
     </div>
+  );
+}
+
+/**
+ * Protected listing workspace. The independent capability gate is rendered
+ * honestly: `checking` is a status, `unavailable` is never fake empty data.
+ */
+function ListingWorkspace(props: {
+  route: ListingRoute;
+  state: ListingControllerState;
+  controller: TenantController | null;
+  listingController: ListingController | null;
+  creating: boolean;
+  providerId: string | null;
+  baseVersion: CommerceListingOwnerVersion | null;
+  onSelectProvider: (providerId: string) => void;
+  onStartCreate: () => void;
+  onCancelCreate: () => void;
+  onSelectBaseVersion: (version: CommerceListingOwnerVersion) => void;
+  onOpenListing: (listingId: string) => void;
+  onNavigate: (path: AppPath) => void;
+}) {
+  const controller = props.listingController;
+  if (props.state.capability === "unknown" || props.state.capability === "checking") {
+    return <p className="tenant-status" role="status">Checking listing availability…</p>;
+  }
+  if (props.state.capability === "unavailable") {
+    return (
+      <section aria-labelledby="listing-unavailable-title">
+        <p className="tenant-eyebrow">LISTINGS</p>
+        <h1 className="tenant-title" id="listing-unavailable-title">
+          Listing management is not available in this deployment
+        </h1>
+        <p className="tenant-status tenant-status--warning" role="status">
+          The marketplace capability manifest does not enable listing management here. No listing
+          request was made and no empty catalogue is implied.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <div className="tenant-listings">
+      <p className="tenant-eyebrow">PROVIDER LISTINGS</p>
+      <h1 className="tenant-title">Listings</h1>
+      <p className="tenant-status" role="status">
+        {props.state.canWrite
+          ? "You can create and manage listings. Every write requires an explicit confirmation and is server-authorized."
+          : "Your role is read-only here. Only owner, provider admin and provider developer roles can write."}
+      </p>
+      <ListingMutationStatusView state={props.state.mutation} controller={controller} />
+      {props.route.kind === "roots" || props.route.kind === "new" ? (
+        <ListingListPanel
+          state={props.state}
+          creating={props.creating || props.route.kind === "new"}
+          selectedProviderId={props.providerId}
+          onSelectProvider={props.onSelectProvider}
+          onStartCreate={props.onStartCreate}
+          onCancelCreate={props.onCancelCreate}
+          onLoadRoots={() => void controller?.loadRoots()}
+          onNextRoots={() => void controller?.loadNextRoots()}
+          onLoadMoreProviders={() => void controller?.loadNextProviderOptions()}
+          onSubmitDraft={(providerId, content) => controller?.beginCreateDraft(providerId, content)}
+          onOpenListing={props.onOpenListing}
+        />
+      ) : (
+        <ListingDetailView
+          state={props.state}
+          controller={controller}
+          baseVersion={props.baseVersion}
+          onSelectBaseVersion={props.onSelectBaseVersion}
+        />
+      )}
+    </div>
+  );
+}
+
+function ListingMutationStatusView(props: {
+  state: ListingControllerState["mutation"];
+  controller: ListingController | null;
+}) {
+  const mutation = props.state;
+  if (mutation.kind === "idle") return null;
+  if (mutation.kind === "confirming") {
+    const draft = mutation.draft;
+    if (draft.op === "publish" || draft.op === "pause" || draft.op === "retire") {
+      const heading =
+        draft.op === "publish"
+          ? `Publish version ${draft.version}`
+          : draft.op === "pause"
+            ? `Pause version ${draft.version}`
+            : `Retire version ${draft.version}`;
+      return (
+        <section className="tenant-listings__disclosure" aria-labelledby="listing-lifecycle-confirm-title">
+          <h3 className="tenant-title tenant-title--small" id="listing-lifecycle-confirm-title">
+            {heading}
+          </h3>
+          <p className="tenant-status">
+            {draft.op === "publish"
+              ? "Publishing makes the title, description, provider name, fixed price, terms revision and privacy summary public. The protected endpoint path is NOT disclosed. Publishing atomically pauses the prior active version; origin review approval remains a manual moderation step and is never self-service."
+              : draft.op === "pause"
+                ? "Pausing removes the active pointer. Buyers can no longer purchase this version until another is published."
+                : "Retiring is terminal. This version cannot be reactivated."}
+          </p>
+          <p className="tenant-mono">
+            version {draft.version} · expectedUpdatedAt {draft.expectedUpdatedAt} · expectedActiveVersion{" "}
+            {draft.expectedActiveVersion ?? "null"}
+          </p>
+          <div className="tenant-actions">
+            <button
+              type="button"
+              className="tenant-button tenant-button--primary"
+              onClick={() => void props.controller?.confirm()}
+            >
+              Confirm {draft.op}
+            </button>
+            <button type="button" className="tenant-button" onClick={() => props.controller?.cancel()}>
+              Cancel
+            </button>
+          </div>
+        </section>
+      );
+    }
+    return (
+      <section className="tenant-listings__disclosure" aria-labelledby="listing-confirm-title">
+        <h3 className="tenant-title tenant-title--small" id="listing-confirm-title">
+          Confirm this write
+        </h3>
+        <p className="tenant-status">
+          One explicit confirmation sends exactly one logical write with a fresh mutation id and an
+          idempotency key held in memory only. There is no automatic retry.
+        </p>
+        <p className="tenant-mono">operation {mutation.draft.op}</p>
+        <div className="tenant-actions">
+          <button
+            type="button"
+            className="tenant-button tenant-button--primary"
+            onClick={() => void props.controller?.confirm()}
+          >
+            Confirm write
+          </button>
+          <button type="button" className="tenant-button" onClick={() => props.controller?.cancel()}>
+            Cancel
+          </button>
+        </div>
+      </section>
+    );
+  }
+  if (mutation.kind === "pending") {
+    return <p className="tenant-status" role="status">Sending the confirmed write…</p>;
+  }
+  if (mutation.kind === "committed") {
+    return (
+      <p className="tenant-status" role="status">
+        Committed operation {mutation.receipt.operation}
+        {mutation.resourceVersion === null ? "" : ` (resource version ${mutation.resourceVersion})`}.
+        {mutation.refreshError ? " The follow-up refresh failed; the committed receipt stands." : ""}
+      </p>
+    );
+  }
+  if (mutation.kind === "rejected") {
+    const notice = mutation.notice;
+    return (
+      <p className="tenant-status tenant-status--error" role="alert">
+        {notice.kind === "conflict"
+          ? "A conflict was detected. Review the latest state and confirm explicitly again; no automatic retry was performed."
+          : notice.kind === "forbidden"
+            ? "Your role cannot perform this write."
+            : notice.kind === "unauthenticated"
+              ? "Your session needs re-authentication before this write."
+              : notice.kind === "csrf"
+                ? "The request origin or anti-forgery token was rejected."
+                : notice.kind === "not-found"
+                  ? "The target no longer exists."
+                  : notice.kind === "account-changed"
+                    ? "The account changed during the write; nothing was applied to the new account."
+                    : notice.kind === "capability-disabled"
+                      ? "Listing management is not enabled."
+                      : "The write was rejected. Review the values and confirm explicitly again."}
+      </p>
+    );
+  }
+  return (
+    <section aria-labelledby="listing-unknown-title">
+      <h3 className="tenant-title tenant-title--small" id="listing-unknown-title">
+        The write outcome is unknown
+      </h3>
+      <p className="tenant-status tenant-status--warning" role="status">
+        {mutation.statusMessage ??
+          "The write may have committed. Only an explicit status check with the original mutation id can resolve it."}
+      </p>
+      <div className="tenant-actions">
+        <button
+          type="button"
+          className="tenant-button"
+          disabled={mutation.checking}
+          onClick={() => void props.controller?.checkStatus()}
+        >
+          Check status
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ListingDetailView(props: {
+  state: ListingControllerState;
+  controller: ListingController | null;
+  baseVersion: CommerceListingOwnerVersion | null;
+  onSelectBaseVersion: (version: CommerceListingOwnerVersion) => void;
+}) {
+  const detail = props.state.detail;
+  const controller = props.controller;
+  if (detail.status === "loading" || detail.status === "none") {
+    return <p className="tenant-status" role="status">Loading listing detail…</p>;
+  }
+  if (detail.status === "not-found") {
+    return (
+      <p className="tenant-status tenant-status--warning" role="status">
+        This listing was not found. No empty or fabricated listing is shown.
+      </p>
+    );
+  }
+  if (detail.status === "error") {
+    return (
+      <p className="tenant-status tenant-status--error" role="alert">
+        The listing detail could not be loaded.
+      </p>
+    );
+  }
+  const root = detail.root;
+  if (root === null) return null;
+  const historyComplete = detail.history.historyComplete;
+  const selected = props.baseVersion;
+  return (
+    <>
+      <section aria-labelledby="listing-root-title">
+        <h2 className="tenant-title tenant-title--small" id="listing-root-title">
+          Listing {root.listingId}
+        </h2>
+        <dl className="tenant-meta">
+          <dt>Provider</dt>
+          <dd className="tenant-mono">{root.providerId}</dd>
+          <dt>Active version</dt>
+          <dd className="tenant-mono">{root.activeVersion ?? "none"}</dd>
+          <dt>Updated</dt>
+          <dd className="tenant-mono">{root.updatedAt}</dd>
+        </dl>
+      </section>
+      <ListingVersionHistory
+        history={detail.history}
+        selectedVersion={selected}
+        onLoadMore={() => void controller?.loadMoreVersions()}
+        onSelect={props.onSelectBaseVersion}
+      />
+      {!historyComplete ? (
+        <p className="tenant-status tenant-status--warning" role="status">
+          Create version is disabled while the version history is incomplete.
+        </p>
+      ) : null}
+      {historyComplete && selected !== null ? (
+        <>
+          <ListingLifecycleActions
+            version={selected}
+            activeVersion={root.activeVersion}
+            canWrite={props.state.canWrite}
+            onPublish={() => controller?.beginLifecycle("publish", selected)}
+            onPause={() => controller?.beginLifecycle("pause", selected)}
+            onRetire={() => controller?.beginLifecycle("retire", selected)}
+          />
+          <ListingEditorPanel
+            mode="create-version"
+            providerOptions={[]}
+            providerOptionsStatus="ready"
+            selectedProviderId={null}
+            onSelectProvider={() => undefined}
+            prefill={props.state.selection.prefill}
+            baseVersion={selected}
+            canWrite={props.state.canWrite}
+            onSubmitDraft={() => undefined}
+            onSubmitVersion={(content) => controller?.beginCreateVersion(content)}
+            onCancel={() => controller?.cancel()}
+            onLoadMoreProviders={() => undefined}
+            hasNextProviders={false}
+          />
+        </>
+      ) : null}
+    </>
   );
 }
 

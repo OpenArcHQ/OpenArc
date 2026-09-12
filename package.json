@@ -17,7 +17,7 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm --filter @openarc/shared build && pnpm --filter @openarc/db build && pnpm -r --if-present test --maxWorkers=2",
     "build": "pnpm -r --if-present build",
-    "e2e": "pnpm --filter @openarc/shared build && playwright test && playwright test -c playwright.flag-off.config.ts && playwright test -c playwright.api-boundary.config.ts && playwright test -c playwright.arc-observation.config.ts && playwright test -c playwright.agent-registry.config.ts && playwright test -c playwright.job-evidence.config.ts && playwright test -c playwright.gateway-evidence.config.ts && playwright test -c playwright.local-agent-import.config.ts && playwright test -c playwright.investigations.config.ts && playwright test -c playwright.investigations.flag-off.config.ts && playwright test -c playwright.machine-management.config.ts && playwright test -c playwright.tenant-write.config.ts && pnpm e2e:tenant && playwright test -c playwright.supplied.config.ts",
+    "e2e": "pnpm --filter @openarc/shared build && playwright test && playwright test -c playwright.flag-off.config.ts && playwright test -c playwright.api-boundary.config.ts && playwright test -c playwright.arc-observation.config.ts && playwright test -c playwright.agent-registry.config.ts && playwright test -c playwright.job-evidence.config.ts && playwright test -c playwright.gateway-evidence.config.ts && playwright test -c playwright.local-agent-import.config.ts && playwright test -c playwright.investigations.config.ts && playwright test -c playwright.investigations.flag-off.config.ts && playwright test -c playwright.market-public.config.ts && playwright test -c playwright.listing-management.config.ts && playwright test -c playwright.machine-management.config.ts && playwright test -c playwright.tenant-write.config.ts && pnpm e2e:tenant && playwright test -c playwright.supplied.config.ts",
     "e2e:local-agent-import": "playwright test -c playwright.local-agent-import.config.ts",
     "e2e:local-agent-import:production": "OPENARC_EXACT_SOURCE=true playwright test -c playwright.local-agent-import.production.config.ts",
     "e2e:production": "playwright test -c playwright.production.config.ts",
@@ -35,7 +35,7 @@
     "release:check": "node scripts/release-check.mjs",
     "ops:check": "pnpm --filter @openarc/api exec vitest run test/operations.test.ts --maxWorkers=1",
     "ops:reader": "node scripts/test-compatible-reader-drill.mjs",
-    "release:gate": "pnpm release:check && pnpm audit:prod && pnpm licenses:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm e2e",
+    "release:gate": "pnpm release:check && pnpm audit:prod && pnpm licenses:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:reference-contract && pnpm e2e",
     "docker:api": "docker build --build-arg COMMIT_SHA=${COMMIT_SHA:-local} -f apps/api/Dockerfile -t openarc-api:local .",
     "docker:web": "docker build --build-arg COMMIT_SHA=${COMMIT_SHA:-local} -f apps/web/Dockerfile -t openarc-web:local .",
     "e2e:accounts": "pnpm --filter @openarc/shared build && pnpm --filter @openarc/db build && playwright test -c playwright.account.config.ts",
@@ -45,7 +45,10 @@
     "e2e:tenant:writes": "playwright test -c playwright.tenant-write.config.ts",
     "e2e:tenant:writes:production": "playwright test -c playwright.tenant-write.production.config.ts",
     "e2e:machine": "playwright test -c playwright.machine-management.config.ts",
-    "e2e:machine:production": "playwright test -c playwright.machine.production.config.ts"
+    "e2e:machine:production": "playwright test -c playwright.machine.production.config.ts",
+    "e2e:market": "playwright test -c playwright.market-public.config.ts",
+    "e2e:listings": "playwright test -c playwright.listing-management.config.ts",
+    "test:reference-contract": "pnpm --filter @openarc/shared build && node --test tools/reference-provider/contract.test.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
