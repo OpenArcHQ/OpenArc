@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  CommerceSessionStore,
   ControlPolicyStore,
   CredentialStore,
   MarketStore,
@@ -37,6 +38,8 @@ import { createHandlerRegistry, eventKeyOf, validateNotification } from '../src/
 function sha256(seed: string): string {
   return createHash('sha256').update(`openarc-worker-test:${seed}`).digest('hex');
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function uuid(seed: number): string {
   return `00000000-0000-4000-8000-${String(seed).padStart(12, '0')}`;
@@ -637,6 +640,186 @@ describe('worker role consumes durable tenant notifications', () => {
       [owner.org],
     );
     expect(states.rows).toHaveLength(5);
+    expect(states.rows.every((row) => row.state === 'completed')).toBe(true);
+  });
+
+  it('consumes the three commerce-session events derived from a real issue/exchange/revoke lifecycle', async () => {
+    const seed = 60;
+    const owner = await seedOwner(seed);
+    const subjectAgent = 'openarc:agent:' + uuid(seed + 1);
+    await admin.query(
+      "INSERT INTO openarc_tenant.agents (organization_id, agent_id, display_name) VALUES ($1, $2, 'Session Agent')",
+      [owner.org, subjectAgent],
+    );
+
+    const policyContent = {
+      organizationId: owner.org,
+      subjectAgentId: subjectAgent,
+      networkId: 'eip155:5042002',
+      asset: 'USDC',
+      representation: 'erc20',
+      decimals: 6,
+      perActionLimit: '1000',
+      rollingLimit: null,
+      rollingWindowSeconds: null,
+      feeLimit: '10',
+      allowedProviderIds: [],
+      allowedListingIds: [],
+      approval: { mode: 'none', threshold: null, separateApprover: false },
+      expiresAt: null,
+    } as const;
+    const metadata = (offset: number) => ({
+      idempotencyKey: base64Key(seed * 100 + offset),
+      mutationId: mutationId(seed * 100 + offset),
+    });
+
+    const policies = new ControlPolicyStore(tenant);
+    await policies.initialize();
+    const created = await policies.createPolicy(owner.hash, owner.org, policyContent, metadata(1));
+    const policyId = created.receipt.resourceId;
+
+    const salt = Buffer.alloc(16, 9).toString('base64url');
+    const digest = Buffer.alloc(32, 10).toString('base64url');
+    const hash = {
+      algorithm: 'scrypt' as const,
+      hashVersion: 1 as const,
+      pepperVersion: 1,
+      N: 32768 as const,
+      r: 8 as const,
+      p: 1 as const,
+      salt,
+      digest,
+    };
+    const issuedCredential = await credentials.issueAgentCredentialDurably({
+      sessionHash: owner.hash,
+      organizationId: owner.org,
+      profileId: subjectAgent,
+      lookupId: uuid(800060),
+      hash,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      metadata: { idempotencyKey: base64Key(seed * 100 + 2), mutationId: mutationId(seed * 100 + 2) },
+    });
+    const machineTokenHash = sha256(`machine-session:${seed}`);
+    await credentials.createAgentSession({
+      organizationId: owner.org,
+      profileId: subjectAgent,
+      credentialId: issuedCredential.receipt.credentialId,
+      expectedVersion: 1,
+      sessionId: uuid(610060),
+      tokenHash: machineTokenHash,
+      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+    });
+
+    const sessions = new CommerceSessionStore(tenant);
+    const handoffHash = sha256(`handoff:${seed}`);
+    const issued = await sessions.issueCommerceSession(
+      owner.hash,
+      owner.org,
+      { subjectAgentId: subjectAgent, policyId, handoffHash, hashVersion: 1 },
+      metadata(10),
+    );
+    const sessionId = issued.receipt.resourceId;
+    expect(sessionId).toBe(mutationId(seed * 100 + 10));
+    const exchanged = await sessions.exchangeCommerceSession(
+      machineTokenHash,
+      handoffHash,
+      { tokenHash: sha256(`session-token:${seed}`), hashVersion: 1 },
+      metadata(11),
+    );
+    expect(exchanged.receipt.resourceId).toBe(sessionId);
+    const revoked = await sessions.revokeCommerceSession(owner.hash, owner.org, sessionId, metadata(12));
+    expect(revoked.receipt.resourceId).toBe(sessionId);
+
+    await outbox.initialize();
+    // The real worker loop claims, validates and consumes each fenced event once.
+    // A thin recorder captures the raw claimed rows without altering the real
+    // claim/fence path, so the loop still owns every claim and acknowledgement.
+    const claimedRows: ClaimedOutboxEvent[] = [];
+    const recordingStore = {
+      claim: async (input?: { limit?: number }) => {
+        const batch = await outbox.claim(input);
+        claimedRows.push(...batch);
+        return batch;
+      },
+      complete: (eventId: unknown, leaseGeneration: unknown) =>
+        outbox.complete(eventId, leaseGeneration),
+      fail: (eventId: unknown, leaseGeneration: unknown, code: unknown) =>
+        outbox.fail(eventId, leaseGeneration, code),
+    };
+    const records: WorkerLogRecord[] = [];
+    let stop: () => void = () => undefined;
+    const loop = new WorkerLoop({
+      store: recordingStore,
+      claimLimit: 50,
+      pollMs: 250,
+      idleMaxMs: 1000,
+      logger: {
+        log: (record) => {
+          records.push(record);
+          if (record.status === 'claim_empty') stop();
+        },
+      },
+    });
+    stop = () => loop.requestStop();
+    await loop.run();
+
+    const sessionEvents = claimedRows.filter((event) => event.resourceType === 'commerce_session');
+    expect(sessionEvents).toHaveLength(3);
+    expect(
+      sessionEvents.map((event) => `${event.eventType}|${event.resourceId}`).sort(),
+    ).toEqual(
+      [
+        `control.commerce_session.issued|${sessionId}`,
+        `control.commerce_session.exchanged|${sessionId}`,
+        `control.commerce_session.revoked|${sessionId}`,
+      ].sort(),
+    );
+    // Every commerce-session resource id is the canonical UUIDv4 session id and
+    // every claim mutation id is a canonical UUID that matches the durable row.
+    for (const event of sessionEvents) {
+      expect(event.resourceId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+      expect(event.mutationId).toMatch(UUID);
+      expect(validateNotification(event)).toEqual(event);
+    }
+    const mutationByType = new Map(
+      sessionEvents.map((event) => [event.eventType, event.mutationId]),
+    );
+    expect(mutationByType.get('control.commerce_session.issued')).toBe(mutationId(seed * 100 + 10));
+    expect(mutationByType.get('control.commerce_session.exchanged')).toBe(mutationId(seed * 100 + 11));
+    expect(mutationByType.get('control.commerce_session.revoked')).toBe(mutationId(seed * 100 + 12));
+
+    const completedSession = records.filter(
+      (record) => record.status === 'completed' && record.eventType?.startsWith('control.commerce_session.'),
+    );
+    expect(completedSession).toHaveLength(3);
+    expect(records.some((record) => record.status === 'failed')).toBe(false);
+    expect(completedSession.every((record) => record.count === 1)).toBe(true);
+    // A second claim replays nothing: each job was acknowledged exactly once.
+    expect(await outbox.claim({ limit: 50 })).toHaveLength(0);
+    // The raw handoff and the machine/token hashes never leak into the emitted
+    // event rows nor the bounded worker log records.
+    const serializedLog = JSON.stringify(records);
+    expect(serializedLog).not.toContain(handoffHash);
+    expect(serializedLog).not.toContain(machineTokenHash);
+    expect(serializedLog).not.toContain(sha256(`session-token:${seed}`));
+    expect(serializedLog).not.toContain(sessionId);
+    const durableRows = await admin.query<{ event_type: string; resource_id: string }>(
+      `SELECT event_type, resource_id FROM openarc_durable.outbox_events
+        WHERE organization_id = $1 AND resource_type = 'commerce_session'`,
+      [owner.org],
+    );
+    expect(durableRows.rows).toHaveLength(3);
+    const serializedRows = JSON.stringify(durableRows.rows);
+    expect(serializedRows).not.toContain(handoffHash);
+    expect(serializedRows).not.toContain(machineTokenHash);
+    expect(durableRows.rows.every((row) => row.resource_id === sessionId)).toBe(true);
+    const states = await admin.query<{ state: string }>(
+      `SELECT state FROM openarc_durable.outbox_events
+        WHERE organization_id = $1 AND resource_type = 'commerce_session'`,
+      [owner.org],
+    );
     expect(states.rows.every((row) => row.state === 'completed')).toBe(true);
   });
 });

@@ -157,6 +157,52 @@ const POLICY_CASES: readonly EventCase[] = [
   },
 ];
 
+const COMMERCE_SESSION_CASES: readonly EventCase[] = [
+  {
+    resourceType: 'commerce_session',
+    eventType: 'control.commerce_session.issued',
+    resourceId: '00000000-0000-4000-8000-000000000050',
+  },
+  {
+    resourceType: 'commerce_session',
+    eventType: 'control.commerce_session.exchanged',
+    resourceId: '00000000-0000-4000-8000-000000000051',
+  },
+  {
+    resourceType: 'commerce_session',
+    eventType: 'control.commerce_session.revoked',
+    resourceId: '00000000-0000-4000-8000-000000000052',
+  },
+];
+
+/** The exact closed inventory: 21 legacy tuples plus the 3 new tuples. */
+const EXPECTED_EVENT_KEYS: readonly string[] = [
+  'organization|tenant.organization.created',
+  'agent|tenant.agent.created',
+  'agent|tenant.agent.updated',
+  'provider|tenant.provider.created',
+  'provider|tenant.provider.updated',
+  'membership|tenant.membership.set',
+  'agent_credential|tenant.agent.credential.created',
+  'agent_credential|tenant.agent.credential.revoked',
+  'provider_credential|tenant.provider.credential.created',
+  'provider_credential|tenant.provider.credential.revoked',
+  'listing|market.listing.created',
+  'listing_version|market.listing.version.created',
+  'listing_version|market.listing.origin_review.recorded',
+  'listing_version|market.listing.version.published',
+  'listing_version|market.listing.version.paused',
+  'listing_version|market.listing.version.retired',
+  'budget_policy|control.policy.created',
+  'budget_policy_revision|control.policy.revision.created',
+  'budget_policy|control.policy.paused',
+  'budget_policy|control.policy.resumed',
+  'budget_policy|control.policy.revoked',
+  'commerce_session|control.commerce_session.issued',
+  'commerce_session|control.commerce_session.exchanged',
+  'commerce_session|control.commerce_session.revoked',
+];
+
 function eventFor(item: EventCase): ClaimedOutboxEvent {
   return baseEvent({
     resourceType: item.resourceType,
@@ -335,16 +381,126 @@ describe('worker configuration', () => {
 });
 
 describe('notification handler registry', () => {
+  it('keeps the exact closed event inventory: 21 legacy tuples plus the 3 commerce-session tuples', () => {
+    expect([...NOTIFICATION_EVENT_KEYS]).toEqual(EXPECTED_EVENT_KEYS);
+    const registry = createHandlerRegistry();
+    expect(Object.keys(registry).sort()).toEqual([...EXPECTED_EVENT_KEYS].sort());
+  });
+
   it('dispatches exactly the allowlisted events, including the five control policy tuples', async () => {
     const registry = createHandlerRegistry();
     expect(Object.keys(registry).sort()).toEqual([...NOTIFICATION_EVENT_KEYS].sort());
-    for (const item of [...SIX_CASES, ...POLICY_CASES]) {
+    for (const item of [...SIX_CASES, ...POLICY_CASES, ...COMMERCE_SESSION_CASES]) {
       const event = eventFor(item);
       const key = eventKeyOf(event);
       const handler = registry[key];
       expect(handler).toBeDefined();
       await handler?.(event, { signal: new AbortController().signal });
     }
+  });
+
+  it('accepts each of the three commerce-session tuples with a canonical UUIDv4 resource', async () => {
+    const registry = createHandlerRegistry();
+    for (const item of COMMERCE_SESSION_CASES) {
+      const event = eventFor(item);
+      const key = `${item.resourceType}|${item.eventType}`;
+      expect(eventKeyOf(event)).toBe(key);
+      expect(validateNotification(event)).toEqual(event);
+      const handler = registry[key];
+      expect(handler).toBeDefined();
+      await handler?.(event, { signal: new AbortController().signal });
+    }
+  });
+
+  it('rejects mismatched commerce-session resource/event tuples', () => {
+    const mismatches = [
+      // Correct tuple but a non-UUIDv4 resource (version nibble 1).
+      baseEvent({
+        resourceType: 'commerce_session',
+        eventType: 'control.commerce_session.issued',
+        resourceId: '00000000-0000-1000-8000-000000000050',
+      }),
+      // Wrong variant nibble.
+      baseEvent({
+        resourceType: 'commerce_session',
+        eventType: 'control.commerce_session.exchanged',
+        resourceId: '00000000-0000-4000-7000-000000000051',
+      }),
+      // Wrong resource type for a commerce-session event type.
+      baseEvent({
+        resourceType: 'budget_policy',
+        eventType: 'control.commerce_session.issued',
+        resourceId: '00000000-0000-4000-8000-000000000050',
+      }),
+      // Wrong event type for the commerce_session resource type.
+      baseEvent({
+        resourceType: 'commerce_session',
+        eventType: 'control.policy.created',
+        resourceId: '00000000-0000-4000-8000-000000000050',
+      }),
+    ];
+    for (const event of mismatches) {
+      expect(() => validateNotification(event)).toThrow(InvalidEventError);
+    }
+  });
+
+  it('rejects malformed commerce-session resources including newlines without coercion', () => {
+    const malformed = [
+      '00000000-0000-4000-8000-00000000005', // short
+      '00000000-0000-4000-8000-0000000000500', // long
+      '00000000-0000-4000-8000-000000000050\n', // trailing newline
+      '00000000-0000-4000-8000-000000000050 ', // trailing space
+      ' 00000000-0000-4000-8000-000000000050', // leading space
+      '00000000-0000-4000-8000-00000000005Z', // uppercase/non-hex
+      'OPENARC00000-0000-4000-8000-000000000050', // non-hex prefix
+      'openarc:session:00000000-0000-4000-8000-000000000050', // prefixed resource
+      '00000000-0000-4000-8000-000000000050@2', // version suffix
+      '00000000-0000-4000-8000-000000000050\n\n', // two newlines
+    ];
+    for (const resourceId of malformed) {
+      expect(() =>
+        validateNotification(
+          baseEvent({
+            resourceType: 'commerce_session',
+            eventType: 'control.commerce_session.issued',
+            resourceId,
+          }),
+        ),
+      ).toThrow(InvalidEventError);
+    }
+    // Valid every event tuple still passes with each exact resource.
+    for (const item of COMMERCE_SESSION_CASES) {
+      expect(() => validateNotification(eventFor(item))).not.toThrow();
+    }
+  });
+
+  it('rejects a private field on a commerce-session event without echoing it', () => {
+    const CANARY = 'CANARY-private-commerce-key-9b42';
+    const withCanary = baseEvent({
+      resourceType: 'commerce_session',
+      eventType: 'control.commerce_session.issued',
+      resourceId: '00000000-0000-4000-8000-000000000050',
+      privateCanary: CANARY,
+    });
+    let message = '';
+    try {
+      validateNotification(withCanary);
+    } catch (error) {
+      expect(error).toBeInstanceOf(InvalidEventError);
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toBe(INVALID_EVENT_MESSAGE);
+    expect(message).not.toContain(CANARY);
+    expect(JSON.stringify(withCanary)).toContain(CANARY);
+  });
+
+  it('consumes a commerce-session event with an already-aborted signal without side effects', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const event = eventFor(COMMERCE_SESSION_CASES[0]!);
+    const handler = createHandlerRegistry()[eventKeyOf(event)];
+    expect(handler).toBeDefined();
+    expect(await handler?.(event, { signal: controller.signal })).toBeUndefined();
   });
 
   it('accepts each of the five control policy tuples with its exact resource grammar', async () => {

@@ -12,9 +12,9 @@ import type { ClaimedOutboxEvent } from '@openarc/db';
  * The registry is a fixed, closed union of resourceType+eventType pairs already
  * accepted by ClaimedOutboxEvent (the original tenant events, four
  * notification-only credential events, the market listing and listing-version
- * lifecycle events, and the five control policy events). There are no dynamic
- * callbacks, user URLs or plugin handlers, and the original event is never
- * JSON-logged.
+ * lifecycle events, the five control policy events, and the three
+ * notification-only commerce-session events). There are no dynamic callbacks,
+ * user URLs or plugin handlers, and the original event is never JSON-logged.
  */
 
 export const INVALID_EVENT_MESSAGE = 'Durable notification event is invalid.';
@@ -58,7 +58,10 @@ export type NotificationEventKey =
   | 'budget_policy_revision|control.policy.revision.created'
   | 'budget_policy|control.policy.paused'
   | 'budget_policy|control.policy.resumed'
-  | 'budget_policy|control.policy.revoked';
+  | 'budget_policy|control.policy.revoked'
+  | 'commerce_session|control.commerce_session.issued'
+  | 'commerce_session|control.commerce_session.exchanged'
+  | 'commerce_session|control.commerce_session.revoked';
 
 export type NotificationHandlerRegistry = Readonly<
   Record<NotificationEventKey, NotificationHandler>
@@ -86,6 +89,9 @@ export const NOTIFICATION_EVENT_KEYS: readonly NotificationEventKey[] = [
   'budget_policy|control.policy.paused',
   'budget_policy|control.policy.resumed',
   'budget_policy|control.policy.revoked',
+  'commerce_session|control.commerce_session.issued',
+  'commerce_session|control.commerce_session.exchanged',
+  'commerce_session|control.commerce_session.revoked',
 ];
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -125,6 +131,12 @@ const POLICY_REVISION_RESOURCE = /^openarc:policy:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][
 function isPolicyRevisionResource(value: string): boolean {
   return value.length <= POLICY_REVISION_RESOURCE_MAX_LENGTH && POLICY_REVISION_RESOURCE.test(value);
 }
+
+// Commerce session resource: a bare canonical lower-case UUIDv4 (version nibble
+// exactly 4, variant 8/9/a/b) with an absolute end, so a trailing newline or any
+// other suffix can never satisfy the anchor. This mirrors the durable outbox
+// projection exactly, without the `$`-before-newline relaxation.
+const COMMERCE_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\s\S])/;
 
 // The exact safe metadata keyset accepted at the handler boundary. Anything
 // else (a private canary, an internal digest, a raw body) is rejected rather
@@ -272,6 +284,11 @@ export function validateNotification(raw: unknown): ClaimedOutboxEvent {
     case 'budget_policy_revision|control.policy.revision.created':
       if (!isPolicyRevisionResource(resourceId)) throw new InvalidEventError();
       break;
+    case 'commerce_session|control.commerce_session.issued':
+    case 'commerce_session|control.commerce_session.exchanged':
+    case 'commerce_session|control.commerce_session.revoked':
+      if (!COMMERCE_SESSION_ID.test(resourceId)) throw new InvalidEventError();
+      break;
     default:
       throw new InvalidEventError();
   }
@@ -305,6 +322,9 @@ const DEFAULT_HANDLERS: Record<NotificationEventKey, NotificationHandler> = {
   'budget_policy|control.policy.paused': consume,
   'budget_policy|control.policy.resumed': consume,
   'budget_policy|control.policy.revoked': consume,
+  'commerce_session|control.commerce_session.issued': consume,
+  'commerce_session|control.commerce_session.exchanged': consume,
+  'commerce_session|control.commerce_session.revoked': consume,
 };
 
 /**
