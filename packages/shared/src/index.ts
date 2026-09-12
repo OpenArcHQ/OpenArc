@@ -32,3 +32,4 @@ export * from "./commerce/control-policy.js";
 export * from "./commerce/control-policy-wire.js";
 export * from "./commerce/control-capabilities.js";
 export * from "./commerce/control-session.js";
+export * from "./commerce/control-session-capabilities.js";
