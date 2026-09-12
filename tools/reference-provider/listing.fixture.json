@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "openarc.listing-owner-version.v1",
+  "listingId": "openarc:listing:33333333-3333-4333-8333-333333333333",
+  "organizationId": "openarc:org:11111111-1111-4111-8111-111111111111",
+  "providerId": "openarc:provider:22222222-2222-4222-8222-222222222222",
+  "version": "1",
+  "kind": "api",
+  "title": "OpenArc Testnet reference sum (TESTNET REFERENCE ONLY)",
+  "description": "TESTNET REFERENCE ONLY. Synthetic first-party OpenArc reference sum API fixture for delivery-evidence contract tests. Deterministic integer sum of a and b with no prompts, personal data or external data. Not a real service, not a third-party vendor, no mainnet or monetary value, and not approved for publication.",
+  "manifest": {
+    "schemaVersion": "openarc.listing-manifest.v1",
+    "inputSchemaDigest": "sha256:05ef830eca39e24fff9b1a8453fd2bf37d7f44b1218bce31dd4bfd814ac08357",
+    "outputSchemaDigest": "sha256:b3815e99c58414ca54149d6f6783d161b332343aff3494465289b7da13d376af"
+  },
+  "price": {
+    "amount": {
+      "schemaVersion": "openarc.usdc-amount.v1",
+      "networkId": "eip155:5042002",
+      "asset": "USDC",
+      "atomicAmount": "10000",
+      "representation": "erc20",
+      "decimals": 6
+    },
+    "pricingModel": "fixed"
+  },
+  "evidenceContract": {
+    "schemaVersion": "openarc.receipt-contract.v1",
+    "receiptType": "reference_sum",
+    "receiptSchemaDigest": "sha256:41078ac65c37efa6e6d9a010f4468eb4348144494819258e3020d5adb06d9076",
+    "deliveryFields": [
+      "delivery_id",
+      "listing_id",
+      "listing_version",
+      "input_digest",
+      "output_digest",
+      "delivered_at"
+    ]
+  },
+  "endpointContract": {
+    "origin": "https://reference.openarc.example",
+    "path": "/v1/sum"
+  },
+  "originReviewState": "unreviewed",
+  "termsRevision": "reference-fixture-v1",
+  "privacySummary": "TESTNET REFERENCE ONLY. There is no active or deployed endpoint; the reserved https://reference.openarc.example origin is documentation only and receives no traffic. The reference sum operates on synthetic integer operands only: no names, emails, wallets, prompts, arbitrary URLs, scripts or external data are accepted or sent to any provider. Proposed controlled-test artifact retention is 24 hours from first delivery with an immutable expiry; this is a proposed policy awaiting implementation, not a live guarantee, and it is not a zero-retention account claim. Any durable platform uniqueness, audit or financial tombstone retention remains separately governed. Synthetic identifiers are examples and confer no account ownership, authority or endorsement.",
+  "paymentLane": "unavailable",
+  "availability": {
+    "status": "unavailable",
+    "rateLimitPerMinute": null
+  },
+  "status": "draft",
+  "createdAt": "2026-09-12T00:00:00.000000Z",
+  "updatedAt": "2026-09-12T00:00:00.000000Z",
+  "publishedAt": null
+}

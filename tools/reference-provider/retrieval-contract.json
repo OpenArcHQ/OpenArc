@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "openarc.reference-retrieval-contract.v1",
+  "implementationStatus": "contract_only",
+  "environment": "testnet",
+  "network": "eip155:5042002",
+  "paymentLane": "unavailable",
+  "endpoint": {
+    "method": "GET",
+    "origin": "https://reference.openarc.example",
+    "pathTemplate": "/v1/deliveries/:deliveryId",
+    "active": false,
+    "note": "Reserved documentation origin only. Not a real owned or deployed domain and not an approved network origin. No DNS lookup or live endpoint exists."
+  },
+  "authentication": {
+    "scheme": "separately_scoped_delivery_proof",
+    "location": "Authorization",
+    "forbiddenLocations": ["query", "cookie", "browser_storage"],
+    "tokenGenerationImplemented": false,
+    "fixtureContainsTokenValues": false,
+    "proofBinds": ["provider", "listingImmutableVersion", "delivery", "authorizedRequester", "authorizedAction"],
+    "digestAloneGrantsRetrieval": false
+  },
+  "scope": {
+    "retrievalOnly": true,
+    "canInitiatePurchase": false,
+    "canCharge": false,
+    "canRetryPurchase": false
+  },
+  "replaySemantics": {
+    "repeatedAuthorizedRetrievalReturnsByteIdenticalOutput": true,
+    "sameOutputDigest": true,
+    "rerunsOperation": false,
+    "chargesAgain": false,
+    "rechecksProofExpiryEachTime": true,
+    "rechecksProofRevocationEachTime": true,
+    "rechecksOwnershipEachTime": true
+  },
+  "transport": {
+    "cacheControl": "no-store",
+    "redirectsRejected": true,
+    "maxResponseBytes": 65536,
+    "logsRawPayload": false,
+    "logsToken": false
+  },
+  "retention": {
+    "status": "proposed_controlled_test_policy",
+    "windowHours": 24,
+    "clockStarts": "first_delivery",
+    "expiryImmutable": true,
+    "getExtendsExpiry": false,
+    "afterExpiryStatus": 410,
+    "afterExpiryReturnsOutput": false,
+    "afterExpiryRecharges": false,
+    "proofFailureStatus": 403,
+    "proofFailureRevealsExistenceDetails": false,
+    "beforeKnownCompletionStatus": 409,
+    "neverFakesSuccessForMissingArtifact": true,
+    "platformUniquenessAuditRetentionSeparatelyGoverned": true,
+    "durableFinancialTombstonesPreserved": true,
+    "guessedProductionLegalRetentionPeriod": null,
+    "mainnetAddresses": null
+  },
+  "implementationNotes": [
+    "Contract semantics only; awaiting PORT04 implementation and tests.",
+    "Does not claim current recovery works.",
+    "Before advertising recovery, validate: actual authenticated read, cross-actor rejection, lost-response repeat with no extra charge, expiry/deletion, and exact digest checks."
+  ]
+}

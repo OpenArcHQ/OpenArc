@@ -23,6 +23,7 @@ export default defineConfig({
       "test/tenant-reads.postgres.test.ts",
       "test/tenant-writes.postgres.test.ts",
       "test/market-api.postgres.test.ts",
+      "test/market-lifecycle-api.postgres.test.ts",
       "test/machine-api.postgres.test.ts",
     ],
     fileParallelism: false,
