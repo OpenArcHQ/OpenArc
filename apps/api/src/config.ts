@@ -3,6 +3,29 @@ import { z } from "zod";
 
 const flag = () => z.enum(["true", "false"]).default("false").transform((value) => value === "true");
 const secret = () => z.string().regex(/^[A-Za-z0-9_-]{32,128}$/u);
+/**
+ * Canonical unpadded base64url of exactly 32 bytes: 43 characters whose final
+ * character carries zero padding bits. Used only for machine peppers and the
+ * dedicated machine rate secret. `(?![\s\S])` requires an ABSOLUTE end, so a
+ * trailing newline or CR can never be smuggled past a bare `$` anchor; the
+ * explicit length check keeps the character count exact.
+ */
+const canonical32ByteSecret = () =>
+  z
+    .string()
+    .length(43)
+    .regex(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\s\S])/u);
+/**
+ * Canonical decimal pepper version: exactly the strings `1`..`16`, then parsed
+ * to a number. `coerce.number()` would smuggle `01`, `1e0`, ` 1`, `1.0` and
+ * booleans past the bound; the absolute-end lookahead rejects a trailing
+ * newline/CR and every non-canonical textual form.
+ */
+const pepperVersion = () =>
+  z
+    .string()
+    .regex(/^(?:[1-9]|1[0-6])(?![\s\S])/u)
+    .transform((value) => Number(value));
 const EnvironmentSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   HOST: z.string().min(1).max(255).default("0.0.0.0"),
@@ -28,6 +51,13 @@ const EnvironmentSchema = z.object({
     .max(4096)
     .regex(/^postgres(?:ql)?:\/\//u)
     .optional(),
+  MACHINE_CREDENTIAL_MANAGEMENT_ENABLED: flag(),
+  MACHINE_SESSION_EXCHANGE_ENABLED: flag(),
+  MACHINE_CREDENTIAL_PEPPER_VERSION: pepperVersion().optional(),
+  MACHINE_CREDENTIAL_PEPPER: canonical32ByteSecret().optional(),
+  MACHINE_CREDENTIAL_PREVIOUS_VERSION: pepperVersion().optional(),
+  MACHINE_CREDENTIAL_PREVIOUS_PEPPER: canonical32ByteSecret().optional(),
+  MACHINE_RATE_SECRET: canonical32ByteSecret().optional(),
   AUTH_SECRET: secret().optional(),
   AUTH_RP_ID: z.string().min(1).max(253).optional(),
   AUTH_RATE_GLOBAL_PER_MINUTE: z.coerce.number().int().min(1).max(100_000).default(600),
@@ -111,6 +141,61 @@ const EnvironmentSchema = z.object({
     }
     if (!config.TENANT_DATABASE_URL) {
       context.addIssue({ code: "custom", path: ["TENANT_DATABASE_URL"], message: "Tenant writes require a dedicated tenant database" });
+    }
+  }
+  const machineManagementEnabled = config.MACHINE_CREDENTIAL_MANAGEMENT_ENABLED;
+  const machineExchangeEnabled = config.MACHINE_SESSION_EXCHANGE_ENABLED;
+  if (machineManagementEnabled) {
+    if (!config.AUTH_ENABLED) {
+      context.addIssue({ code: "custom", path: ["MACHINE_CREDENTIAL_MANAGEMENT_ENABLED"], message: "Machine credential management requires authentication" });
+    }
+    if (!config.TENANT_READS_ENABLED) {
+      context.addIssue({ code: "custom", path: ["MACHINE_CREDENTIAL_MANAGEMENT_ENABLED"], message: "Machine credential management requires the protected tenant read family" });
+    }
+    if (!config.TENANT_WRITES_ENABLED) {
+      context.addIssue({ code: "custom", path: ["MACHINE_CREDENTIAL_MANAGEMENT_ENABLED"], message: "Machine credential management requires the protected tenant write family" });
+    }
+  }
+  if (machineExchangeEnabled) {
+    if (!config.AUTH_ENABLED) {
+      context.addIssue({ code: "custom", path: ["MACHINE_SESSION_EXCHANGE_ENABLED"], message: "Machine session exchange requires authentication" });
+    }
+    if (!config.TENANT_READS_ENABLED) {
+      context.addIssue({ code: "custom", path: ["MACHINE_SESSION_EXCHANGE_ENABLED"], message: "Machine session exchange requires the protected tenant read family" });
+    }
+    if (!config.TENANT_DATABASE_URL) {
+      context.addIssue({ code: "custom", path: ["MACHINE_SESSION_EXCHANGE_ENABLED"], message: "Machine session exchange requires a dedicated tenant database" });
+    }
+  }
+  if (machineManagementEnabled || machineExchangeEnabled) {
+    if (config.MACHINE_CREDENTIAL_PEPPER_VERSION === undefined) {
+      context.addIssue({ code: "custom", path: ["MACHINE_CREDENTIAL_PEPPER_VERSION"], message: "Machine credentials require a canonical pepper version" });
+    }
+    if (config.MACHINE_CREDENTIAL_PEPPER === undefined) {
+      context.addIssue({ code: "custom", path: ["MACHINE_CREDENTIAL_PEPPER"], message: "Machine credentials require a current pepper" });
+    }
+    if (config.MACHINE_RATE_SECRET === undefined) {
+      context.addIssue({ code: "custom", path: ["MACHINE_RATE_SECRET"], message: "Machine credentials require a dedicated rate secret" });
+    }
+    const machineMaterial = [
+      config.MACHINE_CREDENTIAL_PEPPER,
+      config.MACHINE_CREDENTIAL_PREVIOUS_PEPPER,
+      config.MACHINE_RATE_SECRET,
+      config.AUTH_SECRET,
+    ].filter(Boolean);
+    if (new Set(machineMaterial).size !== machineMaterial.length) {
+      context.addIssue({ code: "custom", message: "Machine pepper material and rate secret must be distinct from each other and AUTH_SECRET" });
+    }
+    const hasPreviousVersion = config.MACHINE_CREDENTIAL_PREVIOUS_VERSION !== undefined;
+    const hasPreviousPepper = config.MACHINE_CREDENTIAL_PREVIOUS_PEPPER !== undefined;
+    if (hasPreviousVersion !== hasPreviousPepper) {
+      context.addIssue({ code: "custom", message: "Machine previous pepper version and material must be configured together" });
+    }
+    if (hasPreviousVersion && config.MACHINE_CREDENTIAL_PREVIOUS_VERSION === config.MACHINE_CREDENTIAL_PEPPER_VERSION) {
+      context.addIssue({ code: "custom", path: ["MACHINE_CREDENTIAL_PREVIOUS_VERSION"], message: "Machine previous pepper version must differ from the current version" });
+    }
+    if (hasPreviousPepper && config.MACHINE_CREDENTIAL_PREVIOUS_PEPPER === config.MACHINE_CREDENTIAL_PEPPER) {
+      context.addIssue({ code: "custom", path: ["MACHINE_CREDENTIAL_PREVIOUS_PEPPER"], message: "Machine previous pepper material must differ from the current pepper" });
     }
   }
   if (config.GATEWAY_EVIDENCE_ENABLED) {

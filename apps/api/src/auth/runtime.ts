@@ -49,6 +49,18 @@ async function assertAppRole(pool: AuthPool): Promise<void> {
 
 export interface StartedAuthRuntime {
   service: AuthService;
+  /**
+   * Narrow bound interface over the accepted durable fixed-window rate-limit
+   * increment. It exposes ONLY `consume`; no pool, full store or counter read
+   * is reachable from the machine slice.
+   */
+  rateLimitStore: {
+    consume(input: {
+      keyHash: string;
+      limit: number;
+      windowSeconds: number;
+    }): Promise<{ allowed: boolean }>;
+  };
   ready(): Promise<boolean>;
   close(): Promise<void>;
 }
@@ -86,6 +98,10 @@ export async function startAuthRuntime(
   let ready = true;
   return {
     service,
+    rateLimitStore: {
+      consume: (input: { keyHash: string; limit: number; windowSeconds: number }) =>
+        store.consumeRateLimit(input),
+    },
     async ready(): Promise<boolean> {
       if (!ready) return false;
       try {
