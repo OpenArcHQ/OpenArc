@@ -30,3 +30,12 @@ One-time human-approved handoffs and separately namespaced session tokens are
 specified without storing raw tokens in persistence. Actual persistence,
 exchange, reservation, approval, grant and payment execution remain unbuilt at
 this checkpoint; do not describe these schema tests as integration evidence.
+
+## Session token primitives
+
+The isolated, unregistered token module has now passed lead review and 30 focused
+tests, type checking and lint (all exit 0). Exact OpenCode DeepSeek authored it.
+It uses 32-byte Node CSPRNG secrets, accepted distinct handoff/session namespaces
+and purpose-separated SHA-256 hashes including the full token. No pepper, new
+operational key, logging, persistence or authorization is added by this module.
+The combined API gate will cover it before phase acceptance.
