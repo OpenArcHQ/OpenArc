@@ -1,0 +1,5 @@
+{
+  "name": "openarc-e2e-tenant-write-production",
+  "private": true,
+  "type": "module"
+}
