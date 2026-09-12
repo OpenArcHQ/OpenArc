@@ -29,7 +29,7 @@ export interface TenantMutationPanelProps {
    * user with zero organizations. `full` renders the accepted six-operation
    * panel for a selected organization.
    */
-  readonly mode?: "full" | "bootstrap";
+  readonly mode?: "full" | "bootstrap" | "receipt";
 }
 
 type OperationKey = TenantMutationDraft["op"];
@@ -56,6 +56,7 @@ const PROVIDER_STATUSES = ["active", "suspended", "retired"] as const;
 export function TenantMutationPanel(props: TenantMutationPanelProps) {
   const { controller, role, organizationId } = props;
   const bootstrap = props.mode === "bootstrap";
+  const receiptOnly = props.mode === "receipt";
   const [operation, setOperation] = useState<OperationKey>(
     bootstrap ? "tenant.organization.create" : "tenant.agent.create",
   );
@@ -115,6 +116,14 @@ export function TenantMutationPanel(props: TenantMutationPanelProps) {
   const confirming = state.kind === "confirming";
   const unknown = state.kind === "outcome-unknown";
 
+  // Receipt-only mode keeps a committed or unconfirmed outcome visible even
+  // though the organization list refreshed and no organization is selected.
+  // It never renders the create form, so no new mutation is offered outside a
+  // real first-organization context.
+  if (receiptOnly && state.kind !== "committed" && state.kind !== "outcome-unknown") {
+    return null;
+  }
+
   function submitDraft(): void {
     const result = buildDraft({
       operation,
@@ -151,7 +160,7 @@ export function TenantMutationPanel(props: TenantMutationPanelProps) {
 
       {renderState(state, controller, resetDraft)}
 
-      {!pending && !confirming && !unknown ? (
+      {!receiptOnly && !pending && !confirming && !unknown ? (
         <form
           className="tenant-form"
           aria-label="Tenant change"

@@ -24,6 +24,10 @@ import {
   initialTenantMutationState,
   type TenantMutationState,
 } from "./tenant-write-controller.js";
+import {
+  renderMutationState,
+  suppressPriorAccountMutation,
+} from "./tenant-mutation-render.js";
 
 import tenantCssUrl from "./tenant.css?url";
 
@@ -143,6 +147,41 @@ export default function TenantApp() {
       if (accountRef.current === account) accountRef.current = null;
     };
   }, [enabled, known, writesEnabled]);
+
+  // A signed-in identity change must never expose a previous account's
+  // committed confirmation. The receipt belongs to the account that produced
+  // it; a signed-out/expired transition (for example a self-demotion that
+  // revoked this session) keeps the same account's committed evidence on
+  // screen. Hidden/logout/navigation clears run separately in the flow.
+  const accountId = state.principal.accountId;
+  const lastAccountRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (accountId === null) return;
+    if (lastAccountRef.current === null) {
+      lastAccountRef.current = accountId;
+      return;
+    }
+    if (lastAccountRef.current !== accountId) {
+      lastAccountRef.current = accountId;
+      writeControllerRef.current?.clear();
+      setMutationState(initialTenantMutationState());
+    }
+  }, [accountId]);
+
+  // Synchronous privacy guard: effects run after render, so the effect above
+  // alone would paint one stale frame of account A's receipt/form for account
+  // B. Compute this during render and expose only the guarded state/controller
+  // to the Workspace, because the mutation panel also reads controller.state
+  // directly. A->null is intentionally allowed so a self-demotion receipt from
+  // the same account survives the session revocation.
+  const suppressPriorMutation = suppressPriorAccountMutation(lastAccountRef.current, accountId);
+  const renderedMutationState = renderMutationState(
+    lastAccountRef.current,
+    accountId,
+    mutationState,
+    initialTenantMutationState,
+  );
+  const renderedWriteController = suppressPriorMutation ? null : writeControllerRef.current;
 
   useEffect(() => {
     if (!drawerOpen) return;
@@ -307,14 +346,16 @@ export default function TenantApp() {
             onSelect={selectOrganization}
             onNavigate={navigate}
             controller={controllerRef.current}
-            writeController={writeControllerRef.current}
-            mutationState={mutationState}
+            writeController={renderedWriteController}
+            mutationState={renderedMutationState}
           />
         </main>
 
         <footer className="tenant-footer">
           <span className="tenant-mono">
-            NON-CUSTODIAL · READ-ONLY WORKSPACE · {ARC_TESTNET.caip2}
+            {writesEnabled
+              ? `NON-CUSTODIAL · NO PAYMENTS · ${ARC_TESTNET.caip2}`
+              : `NON-CUSTODIAL · READ-ONLY WORKSPACE · ${ARC_TESTNET.caip2}`}
           </span>
         </footer>
       </div>
@@ -450,6 +491,18 @@ function Workspace(props: WorkspaceProps) {
   const { state } = props;
   const { principal } = state;
 
+  // A committed receipt or an unconfirmed outcome must stay visible while the
+  // organization list refreshes after a bootstrap create and no organization
+  // is selected yet. These are terminal, form-free states: they never enable a
+  // new create outside the real first-organization context.
+  const stickyMutation =
+    props.writeController !== null &&
+    (props.mutationState.kind === "committed" || props.mutationState.kind === "outcome-unknown");
+  // After a session revocation only the authoritative committed receipt is
+  // kept: never a draft, an in-flight unknown or a recoverable check action.
+  const committedReceipt =
+    props.writeController !== null && props.mutationState.kind === "committed";
+
   // Unknown /app/* routes are bounded before any principal or read handling:
   // no controller is constructed and no auth or tenant request is made.
   if (props.path === "unknown") return <NotAvailable onNavigate={props.onNavigate} />;
@@ -488,6 +541,14 @@ function Workspace(props: WorkspaceProps) {
         <p className="tenant-status" role="status">
           Organization access needs an active OpenArc session.
         </p>
+        {committedReceipt ? (
+          <TenantMutationPanel
+            controller={props.writeController}
+            role={props.currentOrganization?.role ?? "owner"}
+            organizationId={props.selectedId ?? ""}
+            mode="receipt"
+          />
+        ) : null}
         <div className="tenant-actions">
           <a className="tenant-button tenant-button--primary" href="/account">Go to account</a>
           <a className="tenant-button" href="/design/docs">Read the docs</a>
@@ -500,6 +561,14 @@ function Workspace(props: WorkspaceProps) {
       <section aria-labelledby="tenant-expired-title">
         <p className="tenant-eyebrow">SESSION</p>
         <h1 className="tenant-title" id="tenant-expired-title">Session expired. Sign in again.</h1>
+        {committedReceipt ? (
+          <TenantMutationPanel
+            controller={props.writeController}
+            role={props.currentOrganization?.role ?? "owner"}
+            organizationId={props.selectedId ?? ""}
+            mode="receipt"
+          />
+        ) : null}
         <div className="tenant-actions">
           <a className="tenant-button tenant-button--primary" href="/account">Go to account</a>
         </div>
@@ -520,7 +589,19 @@ function Workspace(props: WorkspaceProps) {
   }
 
   if (state.organizations.status === "loading" && state.organizations.items.length === 0) {
-    return <p className="tenant-status" role="status">Loading organizations…</p>;
+    return (
+      <>
+        <p className="tenant-status" role="status">Loading organizations…</p>
+        {stickyMutation ? (
+          <TenantMutationPanel
+            controller={props.writeController}
+            role={props.currentOrganization?.role ?? "owner"}
+            organizationId={props.selectedId ?? ""}
+            mode="receipt"
+          />
+        ) : null}
+      </>
+    );
   }
 
   if (state.organizations.items.length === 0 && state.organizations.nextCursor === null) {
@@ -547,6 +628,13 @@ function Workspace(props: WorkspaceProps) {
             organizationId={props.selectedId ?? ""}
             mode="bootstrap"
           />
+        ) : stickyMutation ? (
+          <TenantMutationPanel
+            controller={props.writeController}
+            role={props.currentOrganization?.role ?? "owner"}
+            organizationId={props.selectedId ?? ""}
+            mode="receipt"
+          />
         ) : null}
       </section>
     );
@@ -557,6 +645,14 @@ function Workspace(props: WorkspaceProps) {
       <section aria-labelledby="tenant-choose-title">
         <p className="tenant-eyebrow">ORGANIZATIONS</p>
         <h1 className="tenant-title" id="tenant-choose-title">Choose an organization to continue.</h1>
+        {stickyMutation ? (
+          <TenantMutationPanel
+            controller={props.writeController}
+            role={props.currentOrganization?.role ?? "owner"}
+            organizationId={props.selectedId ?? ""}
+            mode="receipt"
+          />
+        ) : null}
         <OrganizationList state={state} onSelect={props.onSelect} controller={props.controller} />
       </section>
     );

@@ -548,3 +548,140 @@ test("account navigation clears the draft", async ({ page }) => {
   await page.locator(".tenant-org-select").selectOption(ORG_A);
   await expect(page.getByLabel("Display name")).toHaveValue("");
 });
+
+test("a first-organization commit keeps its receipt until the user explicitly chooses the organization", async ({ page }) => {
+  await stubSession(page);
+  await stubBootstrap(page);
+  // The first-organization list is empty until the realistic create commit,
+  // then the reload reports exactly one item, as a real API list does. The old
+  // bootstrap branch stopped matching at that point and unmounted the panel
+  // with the committed receipt still only in memory.
+  let organizations: string[] = [];
+  const pageOf = () => ({
+    items: organizations.map((id, index) => organization(id, index)),
+    nextCursor: null,
+  });
+  await page.route("**/v1/operator/organizations?*", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: envelope(pageOf()) });
+  });
+  await page.route("**/v1/operator/organizations", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: envelope(pageOf()) });
+      return;
+    }
+    const parsed = JSON.parse(route.request().postData() ?? "{}") as { mutationId: string };
+    const created = `openarc:org:${parsed.mutationId}`;
+    organizations = [created];
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: envelope({
+        organizationId: created,
+        replayed: false,
+        receipt: receipt(parsed.mutationId, "tenant.organization.create", "organization", created),
+      }),
+    });
+  });
+  await page.route("**/v1/operator/organizations/*", async (route) => {
+    const encoded = new URL(route.request().url()).pathname.split("/").pop() ?? "";
+    const organizationId = decodeURIComponent(encoded);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: envelope(context(organizationId, "owner")),
+    });
+  });
+
+  await page.goto("/app/overview");
+  await expect(page.getByRole("heading", { name: "No organizations available." })).toBeVisible();
+  await page.getByLabel("Display name").fill("First Org");
+  await page.getByRole("button", { name: "Review change" }).click();
+  await page.getByRole("button", { name: "Confirm and send" }).click();
+
+  // The list reload now reports one organization, but nothing is auto-selected
+  // and the committed receipt stays visible with no create form re-enabled.
+  await expect(page.getByText("Change committed")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Choose an organization to continue." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Organization 0" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Confirm and send" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Review change" })).toHaveCount(0);
+
+  // Only an explicit human choice clears the receipt and selects the context.
+  await page.getByRole("button", { name: /Organization 0/ }).click();
+  await expect(page.getByText("Change committed")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Organization 0" })).toBeVisible();
+});
+
+test("a self-membership commit survives a revoked session with the receipt and sign-in guidance", async ({ page }) => {
+  await stubSession(page);
+  await stubBootstrap(page);
+  await stubReads(page, "owner", [ORG_A]);
+  // After the self-demotion commits the runtime revokes this session: the
+  // follow-up context read and session refresh both 401. The authoritative
+  // commit must stay visible with sign-in guidance and no protected surface.
+  let revoked = false;
+  await page.route("**/v2/auth/session", async (route) => {
+    if (!revoked) {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        error: { code: "UNAUTHENTICATED", message: "Session revoked.", retryable: false },
+        meta: META,
+      }),
+    });
+  });
+  await page.route("**/v1/operator/organizations/*", async (route) => {
+    if (!revoked) {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        error: { code: "UNAUTHENTICATED", message: "Session revoked.", retryable: false },
+        meta: META,
+      }),
+    });
+  });
+  await page.route("**/v1/operator/organizations/*/memberships/*", async (route: Route) => {
+    if (route.request().method() !== "PUT") {
+      await route.fallback();
+      return;
+    }
+    const parsed = JSON.parse(route.request().postData() ?? "{}") as { mutationId: string };
+    revoked = true;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: envelope({
+        organizationId: ORG_A,
+        replayed: false,
+        receipt: receipt(parsed.mutationId, "tenant.membership.set", "membership", ACCOUNT_A),
+      }),
+    });
+  });
+
+  await openWorkspace(page);
+  await page.getByLabel("Operation").selectOption("tenant.membership.set");
+  await page.getByLabel("Target account ID").fill(ACCOUNT_A);
+  await page.getByRole("button", { name: "Review change" }).click();
+  await page.getByRole("button", { name: "Confirm and send" }).click();
+
+  // The commit is authoritative even though every follow-up read is 401.
+  await expect(page.getByText("Change committed")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in required" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Go to account" }).first()).toBeVisible();
+  await expect(page.getByText("Outcome unknown")).toHaveCount(0);
+  // No protected rows or mutation controls survive the revocation.
+  await expect(page.getByLabel("Operation")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Review change" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Confirm and send" })).toHaveCount(0);
+  await expect(page.locator(".tenant-org-select")).toHaveCount(0);
+});
