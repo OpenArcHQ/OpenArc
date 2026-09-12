@@ -62,6 +62,7 @@ interface BrowserFetchResult {
 interface NodeResponse {
   readonly status: number;
   readonly contentType: string | null;
+  readonly bodyText: string;
 }
 
 async function addVirtualAuthenticator(
@@ -167,6 +168,36 @@ function expectAllTenantResponsesSafe(sink: readonly ObservedResponse[]): void {
   }
 }
 
+/**
+ * The accepted nginx fail-closed routes deliberately return their generic
+ * error document (which is HTML), NOT the SPA shell. The contract is
+ * "no SPA bootstrap, assets, root document or protected DTO", so assert the
+ * response body is bounded and generic rather than asserting a content type.
+ */
+const SPA_DOCUMENT_MARKERS: readonly RegExp[] = [
+  /<!doctype html/iu,
+  /id=["']root["']/iu,
+  /\/assets\/[a-z0-9._-]+\.(?:js|css)/iu,
+];
+
+function expectBoundedGenericErrorBody(
+  bodyText: string,
+  status: number,
+  label: string,
+): void {
+  expect(bodyText.length, `${label}: non-empty`).toBeGreaterThan(0);
+  expect(bodyText.length, `${label}: bounded body`).toBeLessThanOrEqual(4096);
+  // The generic error document names its own status; the SPA shell never does.
+  expect(bodyText, `${label}: generic error status`).toContain(String(status));
+  for (const marker of SPA_DOCUMENT_MARKERS) {
+    expect(bodyText, `${label}: no SPA bootstrap/asset/root`).not.toMatch(marker);
+  }
+  // No protected organization DTO field may appear in the fail-closed body.
+  expect(bodyText, `${label}: no protected DTO`).not.toMatch(
+    /"(?:organizationId|displayName|membershipStatus|access)"\s*:/u,
+  );
+}
+
 function tenantPath(organizationId: string): string {
   return `${TENANT_API_PREFIX}/${encodeURIComponent(organizationId)}`;
 }
@@ -223,10 +254,14 @@ function loopbackRequest(input: {
         timeout: 5_000,
       },
       (response) => {
-        response.resume();
-        resolvePromise({
-          status: response.statusCode ?? 0,
-          contentType: response.headers["content-type"] ?? null,
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("end", () => {
+          resolvePromise({
+            status: response.statusCode ?? 0,
+            contentType: response.headers["content-type"] ?? null,
+            bodyText: Buffer.concat(chunks).toString("utf8"),
+          });
         });
       },
     );
@@ -249,15 +284,20 @@ async function selectOrganization(
   ).toBeVisible();
 }
 
-async function gotoAgents(page: Page): Promise<void> {
-  await page.getByRole("link", { name: "Agents" }).click();
-  await expect(page.getByRole("heading", { name: "Agents", exact: true })).toBeVisible();
-}
-
-async function gotoProvider(page: Page): Promise<void> {
-  await page.getByRole("link", { name: "Provider" }).click();
+/**
+ * Navigate through the real rail to a workspace panel and require the exact
+ * heading for that role. A role that may not read the panel lands on the
+ * explicit "Your role cannot view …" heading, so callers state which panel
+ * outcome they expect rather than assuming an allowed panel.
+ */
+async function gotoPanel(
+  page: Page,
+  linkName: "Agents" | "Provider",
+  headingName: string,
+): Promise<void> {
+  await page.getByRole("link", { name: linkName }).click();
   await expect(
-    page.getByRole("heading", { name: "Provider", exact: true }),
+    page.getByRole("heading", { name: headingName, exact: true }),
   ).toBeVisible();
 }
 
@@ -274,6 +314,22 @@ function roleLabel(role: FixtureHumanRole): string {
     case "viewer":
       return "Viewer";
   }
+}
+
+/**
+ * The overview Role definition. The rail also renders the same role text in
+ * `.tenant-org-role`, so role assertions are scoped to the overview meta
+ * `<dl>` (its `Role` `dd`), never the whole page.
+ */
+function overviewMeta(page: Page) {
+  return page.locator(".tenant-meta");
+}
+
+async function expectOverviewRole(
+  page: Page,
+  role: FixtureHumanRole,
+): Promise<void> {
+  await expect(overviewMeta(page).getByText(roleLabel(role))).toBeVisible();
 }
 
 /**
@@ -562,13 +618,15 @@ test.describe(
 
         await page.goto("/app/overview");
         await selectOrganization(page, organization);
-        await expect(page.getByText(roleLabel("owner"))).toBeVisible();
-        await expect(page.getByText(/Arc Testnet \(5042002\)/u)).toBeVisible();
-        await expect(page.getByText("TESTNET")).toBeVisible();
+        await expectOverviewRole(page, "owner");
+        await expect(
+          overviewMeta(page).getByText(/Arc Testnet \(5042002\)/u),
+        ).toBeVisible();
+        await expect(page.locator(".tenant-testnet")).toHaveText("TESTNET");
         expect(page.url()).not.toContain("openarc:org");
         expect(new URL(page.url()).search).toBe("");
 
-        await gotoAgents(page);
+        await gotoPanel(page, "Agents", "Agents");
         await page.getByRole("button", { name: "Load agents" }).click();
         await expect(
           page.getByRole("cell", { name: agents[0]?.displayName ?? "" }),
@@ -577,7 +635,7 @@ test.describe(
           page.getByRole("cell", { name: agents[0]?.id ?? "" }),
         ).toBeVisible();
 
-        await gotoProvider(page);
+        await gotoPanel(page, "Provider", "Provider");
         await page.getByRole("button", { name: "Load providers" }).click();
         await expect(
           page.getByRole("cell", { name: providers[0]?.displayName ?? "" }),
@@ -631,7 +689,7 @@ test.describe(
 
         await page.goto("/app/overview");
         await selectOrganization(page, organization);
-        await gotoAgents(page);
+        await gotoPanel(page, "Agents", "Agents");
         await page.getByRole("button", { name: "Load agents" }).click();
 
         const rows = page.locator(".tenant-table tbody tr");
@@ -694,7 +752,7 @@ test.describe(
 
         await page.goto("/app/overview");
         await selectOrganization(page, organization);
-        await gotoProvider(page);
+        await gotoPanel(page, "Provider", "Provider");
         await page.getByRole("button", { name: "Load providers" }).click();
 
         const rows = page.locator(".tenant-table tbody tr");
@@ -754,13 +812,13 @@ test.describe(
 
         await page.goto("/app/overview");
         await selectOrganization(page, organization);
-        await expect(page.getByText("Operator")).toBeVisible();
+        await expectOverviewRole(page, "operator");
 
-        await gotoAgents(page);
+        await gotoPanel(page, "Agents", "Agents");
         await page.getByRole("button", { name: "Load agents" }).click();
         await expect(page.getByText("No agents in this organization.")).toBeVisible();
 
-        await gotoProvider(page);
+        await gotoPanel(page, "Provider", "Your role cannot view providers");
         await expect(
           page.getByRole("heading", {
             name: "Your role cannot view providers",
@@ -788,13 +846,13 @@ test.describe(
 
         await page.goto("/app/overview");
         await selectOrganization(page, organization);
-        await expect(page.getByText("Viewer")).toBeVisible();
+        await expectOverviewRole(page, "viewer");
 
-        await gotoAgents(page);
+        await gotoPanel(page, "Agents", "Agents");
         await page.getByRole("button", { name: "Load agents" }).click();
         await expect(page.getByText("No agents in this organization.")).toBeVisible();
 
-        await gotoProvider(page);
+        await gotoPanel(page, "Provider", "Your role cannot view providers");
         await expect(
           page.getByRole("heading", {
             name: "Your role cannot view providers",
@@ -823,15 +881,15 @@ test.describe(
 
           await page.goto("/app/overview");
           await selectOrganization(page, organization);
-          await expect(page.getByText(roleLabel(role))).toBeVisible();
+          await expectOverviewRole(page, role);
 
-          await gotoAgents(page);
+          await gotoPanel(page, "Agents", "Your role cannot view agents");
           await expect(
             page.getByRole("heading", {
               name: "Your role cannot view agents",
             }),
           ).toBeVisible();
-          await gotoProvider(page);
+          await gotoPanel(page, "Provider", "Your role cannot view providers");
           await expect(
             page.getByRole("heading", {
               name: "Your role cannot view providers",
@@ -914,7 +972,7 @@ test.describe(
 
         await page.goto("/app/overview");
         await selectOrganization(page, organization);
-        await gotoAgents(page);
+        await gotoPanel(page, "Agents", "Agents");
         await page.getByRole("button", { name: "Load agents" }).click();
         await expect(page.getByRole("cell", { name: "Fixture Agent 001" })).toBeVisible();
 
@@ -984,7 +1042,7 @@ test.describe(
 
         await page.goto("/app/overview");
         await selectOrganization(page, organization);
-        await gotoAgents(page);
+        await gotoPanel(page, "Agents", "Agents");
         await page.getByRole("button", { name: "Load agents" }).click();
         await expect(page.getByRole("cell", { name: "Fixture Agent 001" })).toBeVisible();
 
@@ -1048,10 +1106,18 @@ test.describe(
         ]);
         const organization = seeded[0];
         if (organization === undefined) throw new Error("seed missing");
-        await expireAccountSessions(accountId, 8);
 
         await page.goto("/app/overview");
         await selectOrganization(page, organization);
+
+        // Expire the session only AFTER the workspace has loaded and just
+        // before the blocked read. The read acquires the session lock while the
+        // session is still valid, waits on the organization row lock, then
+        // rechecks expiry once the lock is released. A 2s expiry keeps the wait
+        // well inside the server's 5s statement timeout, so the final 401 is
+        // the database-expiry proof rather than a statement timeout.
+        const affected = await expireAccountSessions(accountId, 2);
+        expect(affected).toBeGreaterThan(0);
 
         const lock = await holdOrganizationRowLock(organization.organizationId);
         const readPromise = browserGet(
@@ -1135,8 +1201,8 @@ test.describe(
       ];
       for (const path of failClosedPaths) {
         const result = await loopbackRequest({ method: "GET", path });
-        expect([400, 404]).toContain(result.status);
-        expect(result.contentType ?? "").not.toContain("text/html");
+        expect([400, 404], path).toContain(result.status);
+        expectBoundedGenericErrorBody(result.bodyText, result.status, path);
       }
     });
 
@@ -1217,12 +1283,12 @@ test.describe(
 
       await page.goto("/app/overview");
       await selectOrganization(page, organization);
-      await gotoAgents(page);
+      await gotoPanel(page, "Agents", "Agents");
       await page.getByRole("button", { name: "Load agents" }).click();
       await expect(
         page.getByRole("cell", { name: agents[0]?.displayName ?? "" }),
       ).toBeVisible();
-      await gotoProvider(page);
+      await gotoPanel(page, "Provider", "Provider");
       await page.getByRole("button", { name: "Load providers" }).click();
       await expect(
         page.getByRole("cell", { name: providers[0]?.displayName ?? "" }),
@@ -1286,7 +1352,13 @@ test.describe(
       const direct = await browserGet(page, TENANT_API_PREFIX);
       expect(direct.status).toBe(404);
       expect(direct.setCookie).toBe(false);
-      expect(direct.contentType ?? "").not.toContain("text/html");
+      // The disabled image deliberately returns nginx's generic error document
+      // (HTML), never the SPA shell and never a protected DTO.
+      expectBoundedGenericErrorBody(
+        direct.bodyText,
+        direct.status,
+        "tenant-off direct API",
+      );
     });
   },
 );
