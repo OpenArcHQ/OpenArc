@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
  * Static wiring guards for the tenant CI packet.
  *
  * These assertions read only the root package.json. They prove the two tenant
- * aliases exist verbatim, that the tenant journey was appended to the root e2e
- * gate exactly once without dropping the supplied journey that ended it, and
+ * aliases exist verbatim, that the tenant journey runs in the root e2e gate
+ * exactly once immediately before the supplied journey that still ends it, and
  * that the release gate still runs both e2e and the existing security steps.
  * They do not exercise a browser, a database or the release workflow itself.
  */
@@ -48,16 +48,16 @@ test("e2e gate includes the tenant journey exactly once", () => {
   assert.equal(occurrences, 1, "root e2e must invoke pnpm e2e:tenant exactly once");
 });
 
-test("e2e gate keeps every original journey and its supplied ending", () => {
+test("e2e gate keeps every original journey with the supplied ending last", () => {
   const e2e = scripts["e2e"];
   for (const journey of ORIGINAL_JOURNEYS) {
     assert.ok(e2e.includes(journey), `root e2e must keep the journey: ${journey}`);
   }
   assert.ok(
-    e2e.includes(`${SUPPLIED} && pnpm e2e:tenant`),
-    "the supplied journey must remain immediately before the appended tenant call",
+    e2e.includes(`pnpm e2e:tenant && ${SUPPLIED}`),
+    "the tenant journey must run immediately before the supplied journey",
   );
-  assert.ok(e2e.endsWith("&& pnpm e2e:tenant"), "the tenant call must be the final appended step");
+  assert.ok(e2e.endsWith(SUPPLIED), "the supplied journey must remain the final step");
 });
 
 test("release gate still runs e2e and the existing security steps", () => {
