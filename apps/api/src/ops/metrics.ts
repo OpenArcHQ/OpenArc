@@ -3,7 +3,7 @@ import { ApiErrorCodeSchema, BuildMarkerSchema, type ApiErrorCode } from "@opena
 
 import { SOURCE_CLASSES, type BudgetEvent, type SourceClass } from "../limits/budget.js";
 
-export const ROUTE_CLASSES = ["health", "readiness", "capabilities", "metrics", "auth", "arc_account", "arc_transaction", "agent_registry", "agent_job", "gateway_transfer", "disabled_source", "not_found", "test_source"] as const;
+export const ROUTE_CLASSES = ["health", "readiness", "capabilities", "metrics", "auth", "tenant", "arc_account", "arc_transaction", "agent_registry", "agent_job", "gateway_transfer", "disabled_source", "not_found", "test_source"] as const;
 export type RouteClass = typeof ROUTE_CLASSES[number];
 export type SafeMethod = "GET" | "POST" | "OPTIONS" | "HEAD" | "OTHER";
 

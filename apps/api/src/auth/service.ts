@@ -754,6 +754,64 @@ export class AuthService {
   }
 
   /* ---------------------------------------------------------------- */
+  /* Internal tenant-read seam                                         */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * INTERNAL read-only session start for the tenant read family. This is not
+   * an HTTP auth endpoint and never mints, rotates or clears a cookie. It
+   * enforces the existing bounded global/peer/binding rate limits using
+   * HMAC-hashed identifiers only, resolves the presented canonical session
+   * cookie against the live database, and rejects a missing, revoked or
+   * expired session. A read never requires the fresh five-minute proof or a
+   * binding cookie: an active recovery session may read according to role.
+   *
+   * The returned `sessionHash` is an internal 64-lowercase-hex value and must
+   * never enter a wire response or a log.
+   */
+  async beginTenantRead(
+    ctx: AuthRequestContext,
+  ): Promise<{ sessionHash: string; accountId: string }> {
+    const binding = this.#readBindingForLimits(ctx.cookies);
+    await this.#enforceLimits(ctx, binding, false);
+    const presented = this.#presentedSessionHash(ctx.cookies);
+    if (presented === null) throw AUTH_ERRORS.unauthenticated();
+    const live = await this.#safeGetSession(presented);
+    if (live === null) throw AUTH_ERRORS.unauthenticated();
+    if (!(live.expiresAt.getTime() > this.#runtime.now().getTime())) {
+      throw AUTH_ERRORS.unauthenticated();
+    }
+    return { sessionHash: presented, accountId: live.accountId };
+  }
+
+  /**
+   * INTERNAL read-only completion guard. Recomputes the presented canonical
+   * session hash from the SAME request context, requires it to equal the hash
+   * captured by `beginTenantRead`, and revalidates the live account session in
+   * the database AFTER the awaited repository read. This closes reads that
+   * waited on table locks past session expiry/revocation. It mints nothing,
+   * rotates nothing and charges no second rate-limit unit. The expected
+   * authority comes only from the begin result, never from the caller.
+   */
+  async finishTenantRead(
+    ctx: AuthRequestContext,
+    expected: { sessionHash: string; accountId: string },
+  ): Promise<void> {
+    const presented = this.#presentedSessionHash(ctx.cookies);
+    if (presented === null || presented !== expected.sessionHash) {
+      throw AUTH_ERRORS.unauthenticated();
+    }
+    const live = await this.#safeGetSession(presented);
+    if (live === null) throw AUTH_ERRORS.unauthenticated();
+    if (live.accountId !== expected.accountId) {
+      throw AUTH_ERRORS.unauthenticated();
+    }
+    if (!(live.expiresAt.getTime() > this.#runtime.now().getTime())) {
+      throw AUTH_ERRORS.unauthenticated();
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
   /* Housekeeping                                                      */
   /* ---------------------------------------------------------------- */
 
@@ -794,6 +852,25 @@ export class AuthService {
       throw AUTH_ERRORS.invalidRequest();
     }
     return sha256Hex(`openarc:session:v1:${cookies.session}`);
+  }
+
+  /**
+   * A binding cookie is optional for reads. When one is present and verifies,
+   * its exact value keys the existing binding rate-limit bucket; an absent or
+   * malformed binding simply contributes no binding bucket. This is a
+   * rate-limit input only, never an authorization or CSRF decision.
+   */
+  #readBindingForLimits(cookies: ParsedAuthCookies): string | null {
+    if (cookies.binding === null) return null;
+    try {
+      return verifyBindingCookie(
+        this.#config.authSecret,
+        cookies.binding,
+        this.#runtime.now().getTime(),
+      );
+    } catch {
+      return null;
+    }
   }
 
   #requireBinding(ctx: AuthRequestContext): string {
