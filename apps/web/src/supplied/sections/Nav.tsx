@@ -31,34 +31,37 @@ export default function Nav() {
 
   const goAnchor = (href: string) => {
     setOpen(false)
+    const reduce = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const behavior: ScrollBehavior = reduce ? 'auto' : 'smooth'
     if (loc.pathname !== '/') {
       nav('/')
-      setTimeout(() => document.querySelector(href)?.scrollIntoView({ behavior: 'smooth' }), 120)
+      setTimeout(() => document.querySelector(href)?.scrollIntoView({ behavior }), 120)
     } else {
-      document.querySelector(href)?.scrollIntoView({ behavior: 'smooth' })
+      document.querySelector(href)?.scrollIntoView({ behavior })
     }
   }
 
   return (
-    <header className="fixed top-0 left-0 right-0 z-50">
-      <div className="mx-auto max-w-[1400px] px-6">
-        <div className="rounded-b-2xl bg-white/85 backdrop-blur border border-t-0 border-[#e5e9f0] px-5">
+    <header className="oa-nav fixed left-0 right-0 top-0 z-50">
+      <div className="oa-nav__wrap mx-auto max-w-[1400px] px-6">
+        <div className="oa-nav__panel px-5">
           <div className="flex h-[68px] items-center justify-between">
-            <Link to="/" className="flex items-center gap-2.5" aria-label="OpenArc home">
+            <Link to="/" className="oa-nav__brand flex items-center gap-2.5" aria-label="OpenArc home">
               <Logo size={26} />
               <span className="text-[17px] font-bold tracking-tight text-ink">OPENARC</span>
             </Link>
-            <nav className="hidden lg:flex items-center gap-6">
+            <nav className="oa-nav__links hidden lg:flex items-center">
               {links.map(l => (
-                <button key={l.label} onClick={() => goAnchor(l.href)} className="text-[15px] font-medium text-ink hover:opacity-60 transition-opacity">
+                <button key={l.label} onClick={() => goAnchor(l.href)} className="oa-nav__link text-[15px] font-medium text-ink">
                   {l.label}
                 </button>
               ))}
-              <Link to="/docs" className="text-[15px] font-medium text-ink hover:opacity-60 transition-opacity">
+              <Link to="/docs" className="oa-nav__link text-[15px] font-medium text-ink">
                 Docs
               </Link>
             </nav>
-            <div className="hidden lg:flex items-center gap-2.5">
+            <div className="oa-nav__actions hidden lg:flex items-center gap-2.5">
               <Link to="/app" className="btn-grad rounded-lg px-5 py-2.5 text-[14px] font-semibold text-white">
                 Dashboard
               </Link>
@@ -68,7 +71,7 @@ export default function Nav() {
             <button
               ref={toggleRef}
               type="button"
-              className="flex h-10 w-10 items-center justify-center rounded-lg border border-line lg:hidden"
+              className="oa-nav__toggle flex h-10 w-10 items-center justify-center rounded-lg border border-line lg:hidden"
               onClick={() => setOpen(v => !v)}
               aria-label={open ? 'Close menu' : 'Open menu'}
               aria-expanded={open}
