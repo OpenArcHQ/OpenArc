@@ -57,10 +57,17 @@ export default function Features() {
   useEffect(() => {
     const el = gridRef.current
     if (!el) return
-    const io = new IntersectionObserver(
-      ([e]) => { if (e?.isIntersecting) { setFill(true); io.disconnect() } },
-      { threshold: 0.2 },
-    )
+    if (typeof IntersectionObserver === 'undefined') { setFill(true); return }
+    let io: IntersectionObserver
+    try {
+      io = new IntersectionObserver(
+        ([e]) => { if (e?.isIntersecting) { setFill(true); io.disconnect() } },
+        { threshold: 0.2 },
+      )
+    } catch {
+      setFill(true)
+      return
+    }
     io.observe(el)
     return () => io.disconnect()
   }, [])
