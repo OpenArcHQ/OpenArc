@@ -3,9 +3,20 @@ import "fake-indexeddb/auto";
 import { ARC_TESTNET, type CapabilitiesEnvelope, type WorkspaceRecord } from "@openarc/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { JOB_TEST_REQUEST } from "../../../test-fixtures/job-evidence.js";
+import { runAgentRegistryPermissionFlow } from "../src/api/agent-registry-permission-flow.js";
 import { runArcObservationPermissionFlow } from "../src/api/arc-permission-flow.js";
+import { runGatewayPermissionFlow } from "../src/api/gateway-permission-flow.js";
+import { runJobPermissionFlow } from "../src/api/job-permission-flow.js";
 import { runCapabilityPermissionFlow } from "../src/api/permission-flow.js";
-import { VAULT_DATABASE_NAME, markVaultDeleting, readVaultMeta, signalVaultLock } from "../src/vault/db.js";
+import { GATEWAY_TEST_REQUEST } from "./gateway-test-fixtures.js";
+import {
+  VAULT_DATABASE_NAME,
+  markVaultDeleting,
+  readOpaqueVaultSnapshot,
+  readVaultMeta,
+  signalVaultLock,
+} from "../src/vault/db.js";
 import { assertStoredWorkspaceRevision } from "../src/vault/revision-guard.js";
 import {
   createAgentProfileRecord,
@@ -88,6 +99,66 @@ describe("P08-02 durable pre-egress Vault revision recheck", () => {
       verifyStored: (workspace) => assertStoredWorkspaceRevision(workspace), request }))
       .resolves.toMatchObject({ capabilities });
     expect(request).toHaveBeenCalledOnce();
+  });
+
+  type SaveRecords = ReturnType<typeof saveThenPeer>;
+  type EvidenceFlowRun = (options: { workspace: UnlockedWorkspace; save: SaveRecords;
+    fetch: (...args: unknown[]) => Promise<never> }) => Promise<unknown>;
+  const evidenceFlows: [string, string, EvidenceFlowRun][] = [
+    ["ERC-8004 agent registry", "arc_agent_registry_evidence", ({ workspace, save, fetch }) => runAgentRegistryPermissionFlow({
+      workspace, origin, request: { network: ARC_TESTNET.caip2, agentId: "1" }, linkedAgentProfileRecordId: null,
+      signal: new AbortController().signal, assertActive: () => undefined, save,
+      verifyStored: (current) => assertStoredWorkspaceRevision(current), fetch })],
+    ["ERC-8183 job", "arc_job_evidence", ({ workspace, save, fetch }) => runJobPermissionFlow({
+      workspace, origin, request: JOB_TEST_REQUEST, linkedActionRecordId: null,
+      signal: new AbortController().signal, assertActive: () => undefined, save,
+      verifyStored: (current) => assertStoredWorkspaceRevision(current), fetch })],
+    ["Circle Gateway transfer", "circle_gateway_transfer", ({ workspace, save, fetch }) => runGatewayPermissionFlow({
+      workspace, origin, request: GATEWAY_TEST_REQUEST, linkedBundleRecordId: null,
+      signal: new AbortController().signal, assertActive: () => undefined, save,
+      verifyStored: (current) => assertStoredWorkspaceRevision(current), fetch })],
+  ];
+
+  const evidenceCases = evidenceFlows.flatMap(([flow, connectorId, run]) =>
+    peerChanges.map(([change, peer]) => [flow, change, connectorId, run, peer] as const));
+
+  it.each(evidenceCases)("%s flow sends nothing after a silent %s and keeps the approval", async (_flow, _change, connectorId, run, peer) => {
+    const created = await createLocalWorkspace(passphrase);
+    const fetch = vi.fn(async () => { throw new Error("must not be called"); });
+    const commits: { workspace: UnlockedWorkspace; storedRecordCount: number }[] = [];
+    const save: SaveRecords = async (workspace, records, assertActive, signal) => {
+      const saved = await saveWorkspaceRecords(workspace, records, assertActive, signal);
+      commits.push({ workspace: saved, storedRecordCount: (await readOpaqueVaultSnapshot()).records.length });
+      await peer(saved);
+      return saved;
+    };
+    await expect(run({ workspace: created, save, fetch })).rejects.toMatchObject({ code: "VAULT_CONFLICT" });
+    expect(fetch).not.toHaveBeenCalled();
+
+    // Exactly one commit happened: the approval. The refusal wrote nothing else.
+    expect(commits).toHaveLength(1);
+    const [commit] = commits;
+    expect(commit!.workspace.records.filter((record) => record.kind === "permission_receipt"))
+      .toEqual([expect.objectContaining({ connectorId, outcome: "approved" })]);
+    const meta = await readVaultMeta();
+    if (meta!.deletionPending) {
+      // A pending deletion refuses every unlock by design; prove the committed
+      // approval was not rolled back from the durable revision and ciphertext.
+      expect(meta).toMatchObject({ vaultId: commit!.workspace.meta.vaultId, revision: commit!.workspace.meta.revision });
+      expect((await readOpaqueVaultSnapshot()).records).toHaveLength(commit!.storedRecordCount);
+      return;
+    }
+    const unlocked = await unlockLocalWorkspace(meta!, passphrase);
+    expect(unlocked.records.filter((record) => record.kind === "permission_receipt"))
+      .toEqual([expect.objectContaining({ connectorId, outcome: "approved" })]);
+  });
+
+  it.each(evidenceFlows)("%s flow with an unchanged stored revision sends exactly one request", async (_flow, _connectorId, run) => {
+    const created = await createLocalWorkspace(passphrase);
+    const sentinel = new Error("request reached the network boundary");
+    const fetch = vi.fn(async () => { throw sentinel; });
+    await expect(run({ workspace: created, save: saveThenPeer(null), fetch })).rejects.toBe(sentinel);
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
   it("refuses when the Vault disappeared or was replaced", async () => {

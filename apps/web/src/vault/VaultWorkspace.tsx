@@ -941,6 +941,7 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
           broadcast("changed", saved.meta.vaultId);
           return saved;
         },
+        verifyStored: (workspace) => assertStoredWorkspaceRevision(workspace),
         fetch: requestAgentRegistryEvidence,
       });
       guard.assertActive();
@@ -992,6 +993,7 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
           broadcast("changed", saved.meta.vaultId);
           return saved;
         },
+        verifyStored: (workspace) => assertStoredWorkspaceRevision(workspace),
         fetch: requestJobEvidence,
       });
       guard.assertActive();
@@ -1037,7 +1039,9 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
           deadlineRef.current = Date.now() + INACTIVITY_MS;
           setScreen({ phase: "unlocked", workspace: saved }); broadcast("changed", saved.meta.vaultId);
           return saved;
-        }, fetch: requestGatewayTransfer,
+        },
+        verifyStored: (workspace) => assertStoredWorkspaceRevision(workspace),
+        fetch: requestGatewayTransfer,
       });
       guard.assertActive(); setBusy(false);
       setNotice("Gateway report encrypted locally. Imported metadata, Gateway status and fulfillment remain separate.");
