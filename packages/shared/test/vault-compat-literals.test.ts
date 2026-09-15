@@ -1,7 +1,7 @@
 // P08-00 Vault compatibility freeze for the shared record parser. The plaintext records below were frozen from an
 // encrypted Vault written by integration build 0f5caa9 (apps/web/test/fixtures/vault-compat). Every literal checked
 // here is stored inside existing encrypted Vaults and backups: see
-// tmp/commerce-port/port08-vault-integration-gap-2026-09-15.md §1.9 and §1.11 item 9.
+// PORT-08 Vault compatibility rules §1.9 and §1.11 item 9.
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -17,7 +17,7 @@ import {
 import { SentinelRecordSchema, WorkspaceRecordSchema, WorkspaceRecordSchemaVersion } from "../src/vault.js";
 
 const rule = (identifier: string) =>
-  `COMPAT RULE port08-vault-integration-gap-2026-09-15.md §1.11 item 9: ${identifier} is stored inside existing encrypted ` +
+  `COMPAT RULE PORT-08 Vault compatibility rules §1.11 item 9: ${identifier} is stored inside existing encrypted ` +
   "Vaults and backups. Changing it makes WorkspaceRecordSchema reject them, which fails the whole unlock and import. " +
   "Keep it byte-for-byte; add a new additive union member instead (P08-01)";
 

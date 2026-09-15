@@ -1,5 +1,5 @@
 // P08-00 identifier freeze. Every value asserted here is a Private Vault compatibility identifier listed in
-// tmp/commerce-port/port08-vault-integration-gap-2026-09-15.md §1.11. A failure means an existing encrypted
+// PORT-08 Vault compatibility rules §1.11. A failure means an existing encrypted
 // Vault, backup or rescue would stop opening. Do not update an expectation here to make a change pass.
 import "fake-indexeddb/auto";
 
@@ -72,7 +72,7 @@ import {
 } from "./vault-compat/reference-codec.js";
 
 const rule = (item: number, identifier: string) =>
-  `COMPAT RULE port08-vault-integration-gap-2026-09-15.md §1.11 item ${item}: ${identifier} is a frozen Private Vault ` +
+  `COMPAT RULE PORT-08 Vault compatibility rules §1.11 item ${item}: ${identifier} is a frozen Private Vault ` +
   "identifier. Changing it makes existing encrypted Vaults, backups or rescues unreadable. Keep it byte-for-byte and add " +
   "an additive dual-read instead (P08-01)";
 

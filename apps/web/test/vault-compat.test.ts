@@ -38,7 +38,7 @@ import {
   type IndexedDbImage,
 } from "./vault-compat/fixture-io.js";
 
-const FROZEN = "COMPAT RULE P08-00 (port08-vault-integration-gap-2026-09-15.md §2.1 and §1.11): Vault data written by " +
+const FROZEN = "COMPAT RULE P08-00 (PORT-08 Vault compatibility rules §2.1 and §1.11): Vault data written by " +
   "integration build 0f5caa9 must stay unlockable, importable, recoverable and rescuable by every later build. " +
   "Fix the reader; never edit or regenerate the frozen fixture";
 const NEW_PASSPHRASE = "TEST-ONLY replacement passphrase";
