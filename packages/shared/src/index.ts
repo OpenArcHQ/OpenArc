@@ -43,3 +43,4 @@ export * from "./commerce/control-grant-wire.js";
 export * from "./commerce/control-grant-capabilities.js";
 export * from "./commerce/erc8183-manifest.js";
 export * from "./commerce/erc8183-job-mirror.js";
+export * from "./commerce/evidence-v2.js";
