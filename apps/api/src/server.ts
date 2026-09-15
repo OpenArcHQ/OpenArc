@@ -11,6 +11,11 @@ import {
   createCommerceActionStoreAdapter,
   createCommerceSessionReadAdapter,
 } from "./control/action-store-adapter.js";
+import { startCommerceGrantRuntime, type StartedCommerceGrantRuntime } from "./control/grant-runtime.js";
+import {
+  createCommerceGrantSessionReadAdapter,
+  createCommerceGrantStoreAdapter,
+} from "./control/grant-store-adapter.js";
 import { ArcAccountService } from "./arc/account-service.js";
 import { AgentRegistryService } from "./arc/agent-registry-service.js";
 import { JobService } from "./arc/job-service.js";
@@ -21,9 +26,11 @@ import {
   asCommerceSessionPool,
   asControlActionPool,
   asControlActionReadPool,
+  asControlGrantPool,
   CommerceSessionStore,
   ControlActionReadStore,
   ControlActionStore,
+  ControlGrantStore,
   createDatabasePool,
 } from "@openarc/db";
 import { connectBudgetRedis, SourceBudget } from "./limits/budget.js";
@@ -99,6 +106,70 @@ async function startBoundCommerceActionRuntime(
   }
 }
 
+/**
+ * Opens the authorization-grant family's ONE owned restricted pool and binds
+ * every seam the grant runtime requires.
+ *
+ * The runtime deliberately owns no pool and constructs no repository, so the
+ * concrete DB12 grant store and the DB9/DB13 commerce-session read are both
+ * built here over that single pool, exactly as the commerce-action runtime
+ * builds its own. The `lifecycle` seam hands the runtime the
+ * initialize/readiness/close of what THIS function owns: both stores are
+ * initialized once before any route may serve, readiness re-probes both
+ * read-only, and `closePool` ends the one pool exactly once no matter how often
+ * it is reached (the runtime's construction-failure catch, the handle's
+ * `close()`, shutdown and the startup catch all funnel into it).
+ *
+ * The gate stays DEFAULT OFF: this is only reached when the flag is explicitly
+ * on. If the runtime still reports `built_disabled` — a seam missing or
+ * malformed — nothing is left open and no service is handed to `createApp`, so
+ * startup fails closed rather than serving a family the manifest advertises.
+ */
+async function startBoundCommerceGrantRuntime(
+  tenantDatabaseUrl: string,
+  authSecret: string,
+  auth: NonNullable<StartedAuthRuntime>["service"],
+  rateLimitStore: NonNullable<StartedAuthRuntime>["rateLimitStore"],
+): Promise<StartedCommerceGrantRuntime> {
+  const pool = createDatabasePool(tenantDatabaseUrl);
+  let poolClosed = false;
+  const closePool = async (): Promise<void> => {
+    if (poolClosed) return;
+    poolClosed = true;
+    await pool.end().catch(() => undefined);
+  };
+  try {
+    const grants = new ControlGrantStore(asControlGrantPool(pool));
+    const sessions = new CommerceSessionStore(asCommerceSessionPool(pool));
+    const started = await startCommerceGrantRuntime({
+      enabled: true,
+      authSecret,
+      auth,
+      rateLimitStore,
+      store: createCommerceGrantStoreAdapter(grants),
+      commerceSessions: createCommerceGrantSessionReadAdapter(sessions),
+      lifecycle: {
+        initialize: async (): Promise<void> => {
+          await grants.initialize();
+          await sessions.initialize();
+        },
+        readiness: async (): Promise<void> => {
+          await grants.readiness();
+          await sessions.readiness();
+        },
+        close: closePool,
+      },
+    });
+    // A `built_disabled` outcome never runs the lifecycle, so the pool this
+    // function opened would otherwise leak. Release it here instead.
+    if (started.service === undefined) await closePool();
+    return started;
+  } catch (error) {
+    await closePool();
+    throw error;
+  }
+}
+
 async function start(): Promise<void> {
   const config = loadConfig();
   const metrics = new AggregateMetrics();
@@ -109,6 +180,7 @@ async function start(): Promise<void> {
   let controlRuntimeHandle: StartedControlRuntime | undefined;
   let commerceSessionRuntimeHandle: StartedCommerceSessionRuntime | undefined;
   let commerceActionRuntimeHandle: StartedCommerceActionRuntime | undefined;
+  let commerceGrantRuntimeHandle: StartedCommerceGrantRuntime | undefined;
   let redis: Awaited<ReturnType<typeof connectBudgetRedis>> | undefined;
   let sourceBudget: SourceBudget | undefined;
   let rpc: ArcRpcClient | undefined;
@@ -211,6 +283,20 @@ async function start(): Promise<void> {
           authRuntimeHandle!.rateLimitStore,
         )
       : undefined;
+    // The authorization-grant family is DEFAULT OFF and fails closed, with the
+    // same discipline as the commerce-action family above: the runtime owns no
+    // pool and constructs no repository, every seam is built over one owned
+    // restricted pool by the helper above and injected, and a `built_disabled`
+    // outcome hands `createApp` no service so startup fails closed rather than
+    // serving a family the capability manifest advertises.
+    commerceGrantRuntimeHandle = config.COMMERCE_GRANTS_ENABLED
+      ? await startBoundCommerceGrantRuntime(
+          config.TENANT_DATABASE_URL as string,
+          config.AUTH_SECRET as string,
+          authRuntimeHandle!.service,
+          authRuntimeHandle!.rateLimitStore,
+        )
+      : undefined;
     redis = config.ARC_OBSERVATION_ENABLED && config.REDIS_URL ? await connectBudgetRedis(config.REDIS_URL) : undefined;
     sourceBudget = redis && config.ABUSE_LIMIT_SECRET ? new SourceBudget(redis, {
       secret: config.ABUSE_LIMIT_SECRET,
@@ -275,6 +361,15 @@ async function start(): Promise<void> {
             commerceActionReady: () => commerceActionRuntimeHandle!.ready(),
           }
         : {}),
+      // A `built_disabled` grant runtime exposes no service, so nothing is
+      // handed over and `createApp` fails startup closed rather than serving an
+      // enabled family with no store behind it.
+      ...(commerceGrantRuntimeHandle?.service !== undefined
+        ? {
+            commerceGrantService: commerceGrantRuntimeHandle.service,
+            commerceGrantReady: () => commerceGrantRuntimeHandle!.ready(),
+          }
+        : {}),
       ...(config.GATEWAY_EVIDENCE_ENABLED ? { gatewayTransferService: new GatewayTransferService(new BoundedGatewayClient({
         timeoutMs: config.SOURCE_TIMEOUT_MS, maxResponseBytes: config.SOURCE_MAX_RESPONSE_BYTES,
       })) } : {}),
@@ -292,6 +387,7 @@ async function start(): Promise<void> {
       await controlRuntimeHandle?.close();
       await commerceSessionRuntimeHandle?.close();
       await commerceActionRuntimeHandle?.close();
+      await commerceGrantRuntimeHandle?.close();
       if (redis?.isOpen) redis.destroy();
       process.exit(0);
     };
@@ -309,6 +405,7 @@ async function start(): Promise<void> {
     await controlRuntimeHandle?.close().catch(() => undefined);
     await commerceSessionRuntimeHandle?.close().catch(() => undefined);
     await commerceActionRuntimeHandle?.close().catch(() => undefined);
+    await commerceGrantRuntimeHandle?.close().catch(() => undefined);
     if (redis?.isOpen) redis.destroy();
     throw error;
   }
