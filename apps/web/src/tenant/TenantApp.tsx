@@ -24,6 +24,21 @@ import { machineCredentialEnabled, tenantMutationEnabled, tenantReadsEnabled } f
 import { listingManagementEnabledFromEnv } from "./listing-availability.js";
 import { policyManagementEnabledFromEnv } from "./policy-availability.js";
 import { commerceSessionsEnabledFromEnv } from "./session-availability.js";
+import { commerceActionsEnabledFromEnv } from "./action-availability.js";
+import { parseActionRoute, type ActionRoute } from "./action-routes.js";
+import {
+  ActionController,
+  initialActionControllerState,
+  renderActionState,
+  suppressStaleActionContext,
+  type ActionControllerState,
+  type ActionReadCoordinator,
+} from "./action-controller.js";
+import { ActionQueuePanel } from "./ActionQueuePanel.js";
+import { ApprovalQueuePanel } from "./ApprovalQueuePanel.js";
+import { ActionDetailPanel, ActionDecisionView } from "./ActionDetailPanel.js";
+import { ApprovalDetailPanel } from "./ApprovalDetailPanel.js";
+import { ActionExposurePanel } from "./ActionExposurePanel.js";
 import { parseSessionRoute, type SessionRoute } from "./session-routes.js";
 import {
   SessionController,
@@ -86,6 +101,7 @@ import tenantCssUrl from "./tenant.css?url";
 import listingCssUrl from "./market-listing.css?url";
 import policyCssUrl from "./control-policy.css?url";
 import sessionCssUrl from "./commerce-session.css?url";
+import actionCssUrl from "./control-action.css?url";
 
 /**
  * Protected organization workspace.
@@ -105,7 +121,10 @@ type AppPath =
   | "/app/budgets"
   | "/app/budgets/new"
   | "/app/sessions"
-  | "/app/sessions/new";
+  | "/app/sessions/new"
+  | "/app/actions"
+  | "/app/actions/approvals"
+  | "/app/actions/exposure";
 
 type WorkspacePath =
   | AppPath
@@ -113,6 +132,8 @@ type WorkspacePath =
   | { readonly kind: "listing-detail"; readonly listingId: string }
   | { readonly kind: "policy-detail"; readonly policyId: string }
   | { readonly kind: "session-detail"; readonly sessionId: string }
+  | { readonly kind: "action-detail"; readonly actionId: string }
+  | { readonly kind: "approval-detail"; readonly approvalId: string }
   | "unknown";
 
 function useTenantStyles(): void {
@@ -165,6 +186,19 @@ function useSessionStyles(active: boolean): void {
   }, [active]);
 }
 
+/** Mounts the scoped control-action stylesheet for the feature lifetime only. */
+function useActionStyles(active: boolean): void {
+  useEffect(() => {
+    if (!active) return;
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = actionCssUrl;
+    link.dataset.actionStyle = "true";
+    document.head.append(link);
+    return () => link.remove();
+  }, [active]);
+}
+
 function currentPath(): WorkspacePath {
   if (typeof window === "undefined") return "/app";
   const raw = window.location.pathname.replace(/\/+$/u, "") || "/";
@@ -192,6 +226,18 @@ function currentPath(): WorkspacePath {
     if (session.kind === "roots") return "/app/sessions";
     if (session.kind === "new") return "/app/sessions/new";
     if (session.kind === "detail") return { kind: "session-detail", sessionId: session.sessionId };
+    return "unknown";
+  }
+  if (raw.startsWith("/app/actions")) {
+    const action = parseActionRoute(raw);
+    if (action === null) return "unknown";
+    if (action.kind === "queue") return "/app/actions";
+    if (action.kind === "approvals") return "/app/actions/approvals";
+    if (action.kind === "exposure") return "/app/actions/exposure";
+    if (action.kind === "detail") return { kind: "action-detail", actionId: action.actionId };
+    if (action.kind === "approval-detail") {
+      return { kind: "approval-detail", approvalId: action.approvalId };
+    }
     return "unknown";
   }
   if (raw.startsWith("/app/")) return "unknown";
@@ -245,6 +291,24 @@ function isSessionWorkspacePath(path: WorkspacePath): boolean {
   return sessionRouteOf(path) !== null;
 }
 
+/** The route object for an action workspace path, or null when not action. */
+function actionRouteOf(path: WorkspacePath): ActionRoute | null {
+  if (path === "/app/actions") return { kind: "queue" };
+  if (path === "/app/actions/approvals") return { kind: "approvals" };
+  if (path === "/app/actions/exposure") return { kind: "exposure" };
+  if (typeof path === "object" && path.kind === "action-detail") {
+    return { kind: "detail", actionId: path.actionId };
+  }
+  if (typeof path === "object" && path.kind === "approval-detail") {
+    return { kind: "approval-detail", approvalId: path.approvalId };
+  }
+  return null;
+}
+
+function isActionWorkspacePath(path: WorkspacePath): boolean {
+  return actionRouteOf(path) !== null;
+}
+
 export default function TenantApp() {
   const enabled = useMemo(() => tenantReadsEnabled() && accountAccessEnabled(), []);
   const writesEnabled = useMemo(
@@ -278,6 +342,12 @@ export default function TenantApp() {
   // authority and its own separate PUBLIC credentialless capability probe. All
   // defaults false, so a disabled deployment makes ZERO session requests.
   const sessionsEnabled = useMemo(() => commerceSessionsEnabledFromEnv(), []);
+  // The commerce action/approval console is independent of tenant writes,
+  // machine, listing, policy, session, Vault, wallet and market flags: it has
+  // its own server authority and its own separate PUBLIC credentialless
+  // capability probe. All defaults false, so a disabled deployment makes ZERO
+  // action requests.
+  const actionsEnabled = useMemo(() => commerceActionsEnabledFromEnv(), []);
   const [state, setState] = useState<TenantViewControllerState>(initialTenantState);
   const [mutationState, setMutationState] = useState<TenantMutationState>(initialTenantMutationState);
   const [machineState, setMachineState] = useState<MachineConsoleState>(initialMachineConsoleState);
@@ -306,6 +376,11 @@ export default function TenantApp() {
   // on an external hidden/pagehide boundary, committed inside the same
   // flushSync as the controller clear so no previous form frame is painted.
   const [sessionFormGeneration, setSessionFormGeneration] = useState(0);
+  const [actionState, setActionState] = useState<ActionControllerState>(initialActionControllerState);
+  // Monotonic privacy generation that remounts the exposure form subtree on an
+  // external hidden/pagehide boundary, committed inside the same flushSync as
+  // the controller clear so no previous form frame is painted.
+  const [actionFormGeneration, setActionFormGeneration] = useState(0);
   const [selectedProfile, setSelectedProfile] = useState<MachineCredentialTarget | null>(null);
   const [path, setPath] = useState<WorkspacePath>(currentPath);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -319,11 +394,13 @@ export default function TenantApp() {
   const listingControllerRef = useRef<ListingController | null>(null);
   const policyControllerRef = useRef<PolicyController | null>(null);
   const sessionControllerRef = useRef<SessionController | null>(null);
+  const actionControllerRef = useRef<ActionController | null>(null);
   const sessionSelectedAgentRef = useRef<string | null>(null);
   const boundMachineContextRef = useRef<MachineRenderContext | null>(null);
   const boundListingContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
   const boundPolicyContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
   const boundSessionContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
+  const boundActionContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
   const listingOpenRef = useRef<((listingId: string) => void) | null>(null);
   const policyOpenRef = useRef<((policyId: string) => void) | null>(null);
   const accountRef = useRef<AccountFlowController | null>(null);
@@ -352,6 +429,7 @@ export default function TenantApp() {
   useListingStyles(listingEnabled);
   usePolicyStyles(policyEnabled);
   useSessionStyles(sessionsEnabled);
+  useActionStyles(actionsEnabled);
 
   useEffect(() => {
     const onPopState = () => setPath(currentPath());
@@ -496,6 +574,28 @@ export default function TenantApp() {
         })
       : null;
     sessionControllerRef.current = sessionController;
+    // The commerce-action controller is constructed ONLY when its own flag and
+    // all prerequisites are enabled. It mounts no request until a protected
+    // action route initializes the independent public credentialless capability
+    // gate, and it never depends on tenant-write, machine, listing, policy,
+    // session, Vault, wallet or market flags. With it off, ZERO action or
+    // action-capability requests are made, and it never calls any of the three
+    // agent-audience authorization routes.
+    const actionReads: ActionReadCoordinator = {
+      currentOrganizationId: () => controller.currentOrganizationId(),
+      currentRole: () => controller.currentRole(),
+      currentAccountId: () =>
+        account.state.session.signedIn ? account.state.session.accountId : null,
+      abortPendingReads: () => controller.abortPendingReads(),
+    };
+    const actionController = actionsEnabled
+      ? new ActionController({
+          account,
+          reads: actionReads,
+          onState: setActionState,
+        })
+      : null;
+    actionControllerRef.current = actionController;
     const onVisibility = () => {
       if (document.visibilityState === "hidden") {
         // The hidden boundary is external and synchronous: a browser may
@@ -511,8 +611,10 @@ export default function TenantApp() {
           listingController?.clear();
           policyController?.clear();
           sessionController?.clear();
+          actionController?.clear();
           setPolicyFormGeneration((value) => value + 1);
           setSessionFormGeneration((value) => value + 1);
+          setActionFormGeneration((value) => value + 1);
           invalidateSessionPolicies();
         });
       }
@@ -525,8 +627,10 @@ export default function TenantApp() {
         listingController?.clear();
         policyController?.clear();
         sessionController?.clear();
+        actionController?.clear();
         setPolicyFormGeneration((value) => value + 1);
         setSessionFormGeneration((value) => value + 1);
+        setActionFormGeneration((value) => value + 1);
         invalidateSessionPolicies();
       });
     };
@@ -542,15 +646,17 @@ export default function TenantApp() {
       listingController?.dispose();
       policyController?.dispose();
       sessionController?.dispose();
+      actionController?.dispose();
       if (controllerRef.current === controller) controllerRef.current = null;
       if (writeControllerRef.current === writeController) writeControllerRef.current = null;
       if (machineControllerRef.current === machineController) machineControllerRef.current = null;
       if (listingControllerRef.current === listingController) listingControllerRef.current = null;
       if (policyControllerRef.current === policyController) policyControllerRef.current = null;
       if (sessionControllerRef.current === sessionController) sessionControllerRef.current = null;
+      if (actionControllerRef.current === actionController) actionControllerRef.current = null;
       if (accountRef.current === account) accountRef.current = null;
     };
-  }, [enabled, known, writesEnabled, machineEnabled, listingEnabled, policyEnabled, sessionsEnabled, invalidateSessionPolicies]);
+  }, [enabled, known, writesEnabled, machineEnabled, listingEnabled, policyEnabled, sessionsEnabled, actionsEnabled, invalidateSessionPolicies]);
 
   // Clear the create/version selection when leaving the listing subtree.
   useEffect(() => {
@@ -576,6 +682,12 @@ export default function TenantApp() {
     sessionControllerRef.current?.clear();
     invalidateSessionPolicies();
   }, [path, invalidateSessionPolicies]);
+
+  // Clear every action artifact when leaving the action subtree.
+  useEffect(() => {
+    if (isActionWorkspacePath(path)) return;
+    actionControllerRef.current?.clear();
+  }, [path]);
 
   // A selected-agent change invalidates the picker binding and aborts any
   // in-flight policy page so a late response cannot repopulate options for the
@@ -613,6 +725,7 @@ export default function TenantApp() {
       sessionSelectedAgentRef.current = null;
       setSessionSelectedAgent(null);
       sessionControllerRef.current?.clear();
+      actionControllerRef.current?.clear();
     }
   }, [accountId]);
 
@@ -627,6 +740,7 @@ export default function TenantApp() {
     listingControllerRef.current?.reconcileRole(role);
     policyControllerRef.current?.reconcileRole(role);
     sessionControllerRef.current?.reconcileRole(role);
+    actionControllerRef.current?.reconcileRole(role);
     const machineController = machineControllerRef.current;
     if (machineController === null) return;
     // Role is authoritative from the current server context. Reconcile it
@@ -650,6 +764,7 @@ export default function TenantApp() {
     sessionSelectedAgentRef.current = null;
     setSessionSelectedAgent(null);
     sessionControllerRef.current?.clear();
+    actionControllerRef.current?.clear();
     invalidateSessionPolicies();
   }, [organizationId, invalidateSessionPolicies]);
 
@@ -695,6 +810,34 @@ export default function TenantApp() {
     void sessionController.initialize(route);
     if (route.kind === "new") void controllerRef.current?.loadAgents();
   }, [path, sessionsEnabled, organizationId, role, accountId]);
+
+  // Initialize the action controller only for a protected action route. The
+  // public credentialless capability probe runs first; when it is not
+  // `enabled`, no action request is made and an honest unavailable state is
+  // rendered.
+  useEffect(() => {
+    const actionController = actionControllerRef.current;
+    if (actionController === null) return;
+    const route = actionRouteOf(path);
+    if (route === null) return;
+    void actionController.initialize(route);
+  }, [path, actionsEnabled, organizationId, role, accountId]);
+
+  // After the render where the action context is current, record the bound
+  // account/organization/role so the NEXT transition render suppresses
+  // synchronously before any child can read a stale queue, detail or decision.
+  useEffect(() => {
+    if (
+      actionControllerRef.current === null ||
+      !isActionWorkspacePath(path) ||
+      organizationId === null ||
+      accountId === null
+    ) {
+      boundActionContextRef.current = null;
+      return;
+    }
+    boundActionContextRef.current = { accountId, organizationId, role };
+  }, [path, organizationId, accountId, role]);
 
   // After the render where the session context is current, record the bound
   // account/organization/role so the NEXT transition render suppresses
@@ -831,6 +974,14 @@ export default function TenantApp() {
         { accountId, organizationId, role },
       ));
 
+  const suppressAction =
+    actionControllerRef.current !== null &&
+    (suppressPriorMutation ||
+      suppressStaleActionContext(
+        boundActionContextRef.current,
+        { accountId, organizationId, role },
+      ));
+
   // The policy create editor is keyed by its FULL bound context plus the
   // external privacy generation. A context change remounts it in the SAME
   // render (so no stale caps/allowlists/expiry/agent selection survive), and a
@@ -845,6 +996,11 @@ export default function TenantApp() {
   const sessionFormKey = `${accountId ?? "anon"}|${organizationId ?? "none"}|${role ?? "none"}|${
     sessionSelectedAgent ?? "none"
   }|${path === "/app/sessions/new" ? "new" : "list"}|${sessionFormGeneration}`;
+
+  // The action console subtree is keyed by its FULL bound context so a context
+  // change remounts it and no typed exposure subject or pending confirmation
+  // can survive a same-route organization/role transition.
+  const actionFormKey = `${accountId ?? "anon"}|${organizationId ?? "none"}|${role ?? "none"}|${actionFormGeneration}`;
 
   useEffect(() => {
     if (!drawerOpen) return;
@@ -903,6 +1059,7 @@ export default function TenantApp() {
     listingControllerRef.current?.clearSensitive();
     policyControllerRef.current?.clearSensitive();
     sessionControllerRef.current?.clear();
+    actionControllerRef.current?.clear();
     setListingCreating(false);
     setListingProviderId(null);
     setListingBaseVersion(null);
@@ -947,6 +1104,26 @@ export default function TenantApp() {
   const openSessionCreate = useCallback(() => {
     navigate("/app/sessions/new");
   }, [navigate]);
+
+  const openAction = useCallback((actionId: string) => {
+    const route = parseActionRoute(`/app/actions/${encodeURIComponent(actionId)}`);
+    if (route === null || route.kind !== "detail") return;
+    setDrawerOpen(false);
+    window.history.pushState(null, "", `/app/actions/${encodeURIComponent(route.actionId)}`);
+    setPath({ kind: "action-detail", actionId: route.actionId });
+  }, []);
+
+  const openApproval = useCallback((approvalId: string) => {
+    const route = parseActionRoute(`/app/actions/approvals/${encodeURIComponent(approvalId)}`);
+    if (route === null || route.kind !== "approval-detail") return;
+    setDrawerOpen(false);
+    window.history.pushState(
+      null,
+      "",
+      `/app/actions/approvals/${encodeURIComponent(route.approvalId)}`,
+    );
+    setPath({ kind: "approval-detail", approvalId: route.approvalId });
+  }, []);
 
   // Bounded current-organization policy picker via the accepted PolicyClient
   // directly. It runs ONLY when the existing policy UI and capability are
@@ -1191,6 +1368,12 @@ export default function TenantApp() {
             onOpenSession={openSession}
             onStartSessionIssue={openSessionCreate}
             sessionFormKey={sessionFormKey}
+            actionsEnabled={actionsEnabled}
+            actionState={renderActionState(suppressAction, actionState)}
+            actionController={suppressAction ? null : actionControllerRef.current}
+            actionFormKey={actionFormKey}
+            onOpenAction={openAction}
+            onOpenApproval={openApproval}
           />
         </main>
 
@@ -1226,6 +1409,7 @@ function Rail(props: RailProps) {
     { path: "/app/provider/listings", label: "Listings" },
     { path: "/app/budgets", label: "Budgets" },
     { path: "/app/sessions", label: "Sessions" },
+    { path: "/app/actions", label: "Actions" },
   ];
   return (
     <nav
@@ -1371,6 +1555,12 @@ interface WorkspaceProps {
   onOpenSession: (sessionId: string) => void;
   onStartSessionIssue: () => void;
   sessionFormKey: string;
+  actionsEnabled: boolean;
+  actionState: ActionControllerState;
+  actionController: ActionController | null;
+  actionFormKey: string;
+  onOpenAction: (actionId: string) => void;
+  onOpenApproval: (approvalId: string) => void;
 }
 
 function Workspace(props: WorkspaceProps) {
@@ -1407,6 +1597,14 @@ function Workspace(props: WorkspaceProps) {
     // constructed and the section is honestly unavailable. With the flag on the
     // controller's independent capability gate decides the rendered state.
     if (!props.policyEnabled) return <NotAvailable onNavigate={props.onNavigate} />;
+  }
+
+  const actionRoute = actionRouteOf(props.path);
+  if (actionRoute !== null) {
+    // An action route is known (not "unknown"): with the flag off nothing was
+    // constructed and the section is honestly unavailable. With the flag on the
+    // controller's independent public capability gate decides the rendered state.
+    if (!props.actionsEnabled) return <NotAvailable onNavigate={props.onNavigate} />;
   }
 
   const sessionRoute = sessionRouteOf(props.path);
@@ -1600,6 +1798,21 @@ function Workspace(props: WorkspaceProps) {
         onStartCreate={props.onStartPolicyCreate}
         onCancelCreate={props.onCancelPolicyCreate}
         onOpenPolicy={props.onOpenPolicy}
+      />
+    );
+  }
+
+  if (actionRoute !== null) {
+    return (
+      <ActionWorkspace
+        key={`action-context:${props.actionFormKey}`}
+        route={actionRoute}
+        state={props.actionState}
+        controller={props.actionController}
+        formKey={props.actionFormKey}
+        onOpenAction={props.onOpenAction}
+        onOpenApproval={props.onOpenApproval}
+        onNavigate={props.onNavigate}
       />
     );
   }
@@ -2439,6 +2652,169 @@ function SessionWorkspace(props: {
         </>
       )}
     </div>
+  );
+}
+
+interface ActionWorkspaceProps {
+  route: ActionRoute;
+  state: ActionControllerState;
+  controller: ActionController | null;
+  formKey: string;
+  onOpenAction: (actionId: string) => void;
+  onOpenApproval: (approvalId: string) => void;
+  onNavigate: (path: AppPath) => void;
+}
+
+/**
+ * The commerce action/approval console shell.
+ *
+ * The independent public capability probe runs before any action request, so a
+ * deployment without the action surface renders an honest unavailable state and
+ * issues zero requests. Nothing here is a demo: every row and figure comes from
+ * the server or is not shown at all.
+ */
+function ActionWorkspace(props: ActionWorkspaceProps) {
+  const controller = props.controller;
+  if (props.route.kind === "invalid") {
+    return (
+      <p className="tenant-status tenant-status--warning" role="status">
+        That action address is not valid. No request was made.
+      </p>
+    );
+  }
+  if (props.state.capability === "unknown" || props.state.capability === "checking") {
+    return (
+      <p className="tenant-status" role="status">
+        Checking commerce-action availability…
+      </p>
+    );
+  }
+  if (props.state.capability === "unavailable") {
+    return (
+      <section aria-labelledby="action-unavailable-title">
+        <p className="tenant-eyebrow">COMMERCE ACTIONS</p>
+        <h1 className="tenant-title" id="action-unavailable-title">
+          Commerce actions are not available in this deployment
+        </h1>
+        <p className="tenant-status tenant-status--warning" role="status">
+          The public action capability manifest does not enable the action console here. No action
+          request was made and no empty queue is implied.
+        </p>
+      </section>
+    );
+  }
+  if (!props.state.canRead) {
+    return <ActionNoAccess />;
+  }
+  return (
+    <div className="tenant-actions-console">
+      <p className="tenant-eyebrow">COMMERCE ACTIONS</p>
+      <h1 className="tenant-title">Actions and approvals</h1>
+      <p className="tenant-status tenant-status--warning" role="status">
+        This console reviews and decides pending commerce actions. It connects no wallet, signs
+        nothing, moves no money, and never reports a payment, settlement, delivery or purchase.
+      </p>
+      <ul className="tenant-actions-console__tabs">
+        <li>
+          <a
+            href="/app/actions"
+            aria-current={props.route.kind === "detail" || props.route.kind === "queue" ? "page" : undefined}
+            onClick={(event) => {
+              event.preventDefault();
+              props.onNavigate("/app/actions");
+            }}
+          >
+            Action queue
+          </a>
+        </li>
+        <li>
+          <a
+            href="/app/actions/approvals"
+            aria-current={
+              props.route.kind === "approvals" || props.route.kind === "approval-detail"
+                ? "page"
+                : undefined
+            }
+            onClick={(event) => {
+              event.preventDefault();
+              props.onNavigate("/app/actions/approvals");
+            }}
+          >
+            Approval queue
+          </a>
+        </li>
+        <li>
+          <a
+            href="/app/actions/exposure"
+            aria-current={props.route.kind === "exposure" ? "page" : undefined}
+            onClick={(event) => {
+              event.preventDefault();
+              props.onNavigate("/app/actions/exposure");
+            }}
+          >
+            Exposure
+          </a>
+        </li>
+      </ul>
+
+      {props.route.kind === "queue" ? (
+        <ActionQueuePanel
+          state={props.state}
+          controller={controller}
+          onOpenAction={props.onOpenAction}
+        />
+      ) : null}
+      {props.route.kind === "approvals" ? (
+        <ApprovalQueuePanel
+          state={props.state}
+          controller={controller}
+          onOpenApproval={props.onOpenApproval}
+          onOpenAction={props.onOpenAction}
+        />
+      ) : null}
+      {props.route.kind === "exposure" ? (
+        <ActionExposurePanel state={props.state} controller={controller} formKey={props.formKey} />
+      ) : null}
+      {props.route.kind === "detail" ? (
+        <ActionDetailPanel
+          state={props.state}
+          controller={controller}
+          actionId={props.route.actionId}
+          onBack={() => props.onNavigate("/app/actions")}
+          onOpenApproval={props.onOpenApproval}
+        />
+      ) : null}
+      {props.route.kind === "approval-detail" ? (
+        <>
+          <ActionDecisionView decision={props.state.decision} controller={controller} />
+          <ApprovalDetailPanel
+            state={props.state}
+            controller={controller}
+            approvalId={props.route.approvalId}
+            onBack={() => props.onNavigate("/app/actions/approvals")}
+            onOpenAction={props.onOpenAction}
+          />
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function ActionNoAccess() {
+  return (
+    <section aria-labelledby="action-no-access-title">
+      <p className="tenant-eyebrow">NOT ALLOWED</p>
+      <h1 className="tenant-title" id="action-no-access-title">
+        You do not have access to commerce actions
+      </h1>
+      <p className="tenant-status tenant-status--warning" role="status">
+        Only a current owner, operator or viewer on a non-recovery account may read commerce
+        actions, and only an owner or operator may decide them. No request was made.
+      </p>
+      <div className="tenant-actions">
+        <a className="tenant-button" href="/app/overview">Back to overview</a>
+      </div>
+    </section>
   );
 }
 
