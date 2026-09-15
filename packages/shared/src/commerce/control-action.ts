@@ -71,6 +71,7 @@ export type CommerceRequirementId = z.infer<
 export const CommerceActionStatusSchema = z.enum([
   "pending_approval",
   "reserved_not_granted",
+  "grant_issued",
   "rejected",
   "cancelled",
   "expired",
@@ -244,6 +245,19 @@ export const CommerceActionMetadataSchema = z
             code: "custom",
             path: ["reservationId"],
             message: "reserved_not_granted requires a non-null reservationId",
+          });
+        }
+        break;
+      }
+      // Pure metadata vocabulary amendment: DB12 will later enforce the atomic
+      // reservation-to-grant transition. Like reserved_not_granted, grant_issued
+      // requires a non-null reservationId; approvalId may be null or valid.
+      case "grant_issued": {
+        if (value.reservationId === null) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["reservationId"],
+            message: "grant_issued requires a non-null reservationId",
           });
         }
         break;

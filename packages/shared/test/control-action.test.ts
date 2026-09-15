@@ -169,10 +169,11 @@ describe("new id leaves", () => {
 });
 
 describe("CommerceActionStatusSchema", () => {
-  it("is exactly the five frozen DB10 stages", () => {
+  it("is exactly the six frozen stages with grant_issued after reserved_not_granted", () => {
     expect(CommerceActionStatusSchema.options).toEqual([
       "pending_approval",
       "reserved_not_granted",
+      "grant_issued",
       "rejected",
       "cancelled",
       "expired",
@@ -211,6 +212,47 @@ describe("CommerceActionMetadataSchema valid combinations", () => {
       reservationId: RESERVATION_ID,
     });
     expect(CommerceActionMetadataSchema.safeParse(value).success).toBe(true);
+  });
+
+  it("accepts grant_issued with reservationId and null approvalId", () => {
+    const value = action({
+      status: "grant_issued",
+      approvalId: null,
+      reservationId: RESERVATION_ID,
+    });
+    expect(CommerceActionMetadataSchema.safeParse(value).success).toBe(true);
+  });
+
+  it("accepts grant_issued with both ids non-null", () => {
+    const value = action({
+      status: "grant_issued",
+      reservationId: RESERVATION_ID,
+    });
+    expect(CommerceActionMetadataSchema.safeParse(value).success).toBe(true);
+  });
+
+  it("keeps grant_issued distinct from reserved_not_granted", () => {
+    const issued = action({
+      status: "grant_issued",
+      approvalId: null,
+      reservationId: RESERVATION_ID,
+    });
+    const reserved = action({
+      status: "reserved_not_granted",
+      approvalId: null,
+      reservationId: RESERVATION_ID,
+    });
+    expect(CommerceActionStatusSchema.safeParse("grant_issued").success).toBe(
+      true,
+    );
+    expect(
+      CommerceActionStatusSchema.safeParse("reserved_not_granted").success,
+    ).toBe(true);
+    // A granted action is never mislabeled as reserved_not_granted, and each
+    // status keeps its own exact parse result.
+    expect(CommerceActionMetadataSchema.safeParse(issued).success).toBe(true);
+    expect(CommerceActionMetadataSchema.safeParse(reserved).success).toBe(true);
+    expect(issued.status).not.toBe(reserved.status);
   });
 
   it("accepts rejected with approvalId non-null and reservationId null", () => {
@@ -276,6 +318,17 @@ describe("CommerceActionMetadataSchema invalid combinations", () => {
       reservationId: null,
     });
     expect(CommerceActionMetadataSchema.safeParse(value).success).toBe(false);
+  });
+
+  it("rejects grant_issued with null reservationId", () => {
+    for (const approvalId of [null, APPROVAL_ID]) {
+      const value = action({
+        status: "grant_issued",
+        approvalId,
+        reservationId: null,
+      });
+      expect(CommerceActionMetadataSchema.safeParse(value).success).toBe(false);
+    }
   });
 
   it("rejects rejected with null approvalId or non-null reservationId", () => {
