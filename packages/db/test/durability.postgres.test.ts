@@ -333,6 +333,7 @@ describe('durability migration and readiness', () => {
       '0012_authorization_grants',
       '0013_commerce_session_reads',
       '0014_grant_mutation_reads',
+      '0015_payment_attempts',
     ]);
     const helpers = await admin.query<{ proname: string; owner: string }>(
       `SELECT p.proname, r.rolname AS owner
@@ -362,6 +363,7 @@ describe('durability migration and readiness', () => {
       'commit_agent_update',
       'commit_lifecycle_transition',
       'commit_listing_create',
+      'commit_listing_payment_terms',
       'commit_listing_version_create',
       'commit_membership_set',
       'commit_organization_create',
@@ -459,12 +461,15 @@ describe('durability migration and readiness', () => {
       'lock_policy_actor',
       'lock_policy_reader',
       'lock_policy_writer',
+      'payment_attempt_binding_digest',
+      'persist_payment_attempt',
       'read_agent_commerce_action',
       'read_agent_commerce_action_mutation_status',
       'read_agent_commerce_session_mutation_status',
       'read_agent_credential_mutation_status',
       'read_agent_grant_mutation_status',
       'read_agent_mutation_status',
+      'read_agent_payment_attempt',
       'read_agent_session',
       'read_authorization_grant',
       'read_commerce_action',
@@ -490,6 +495,10 @@ describe('durability migration and readiness', () => {
       'read_provider_grant_attempt_status',
       'read_provider_session',
       'read_tenant_mutation_status',
+      'record_payment_attempt_dispatch',
+      'record_payment_attempt_observation',
+      'register_verified_commerce_requirement',
+      'register_verified_commerce_requirement_core',
       'replace_authorization_grant',
       'replace_authorization_grant_core',
       'reservation_releasable',
@@ -502,6 +511,7 @@ describe('durability migration and readiness', () => {
       'revoke_authorization_grant',
       'revoke_commerce_session',
       'revoke_provider_session',
+      'verified_requirement_digest',
     ]);
     expect(helpers.rows.every((row) => row.owner === 'openarc_migrator')).toBe(true);
     const identities = await admin.query<{ proname: string; args: string; prosecdef: boolean; config: string[] }>(
@@ -546,19 +556,24 @@ describe('durability migration and readiness', () => {
     expect(triggers.rows.map((row) => row.tgname)).toEqual([
       'audit_events_append_only',
       'authorization_grant_claims_immutable',
+      'authorization_grant_claims_payment_attempt',
       'authorization_grant_tokens_mutation',
       'authorization_grants_mutation',
       'budget_events_immutable',
       'budget_reservations_mutation',
+      'budget_reservations_payment_exposure',
       'commerce_actions_mutation',
+      'commerce_actions_payment_exposure',
       'commerce_approvals_mutation',
       'commerce_requirement_references_immutable',
+      'commerce_requirement_references_verified',
       'commerce_session_handoffs_mutation',
       'commerce_session_handoffs_window',
       'commerce_sessions_binding',
       'commerce_sessions_mutation',
       'idempotency_records_immutable',
       'outbox_events_no_delete',
+      'payment_attempts_mutation',
     ]);
   });
 
@@ -587,6 +602,7 @@ describe('durability migration and readiness', () => {
       'commerce_sessions',
       'idempotency_records',
       'outbox_events',
+      'payment_attempts',
       'provider_credentials',
       'provider_sessions',
     ]);
