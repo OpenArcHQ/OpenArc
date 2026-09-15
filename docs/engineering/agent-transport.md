@@ -32,13 +32,29 @@ only the headers the surface expects and never set a `sec-fetch-*` header.
 
 ## What the guard checks
 
-- No `sec-fetch-mode`, `sec-fetch-site` or other browser fetch metadata.
-- Exactly one credential, in the namespace that surface accepts: `oacs_v1_` for
-  a buyer commerce session, `oas_pr_` with a grant token for a provider claim.
-  A machine credential (`oas_ag_`) is refused on spending surfaces; it is valid
-  only when exchanging it for a commerce session.
-- No browser session cookie, CSRF token or browser client marker.
+Any of these headers present on an agent or headless route is refused with
+`400 INVALID_REQUEST`, before the credential is even read:
 
-A browser client calls the browser audience with a cookie, an Origin, a client
-marker and a CSRF token, and never carries an `Authorization` header. The two
-sets are mutually exclusive by design: presenting both is refused.
+`cookie`, `origin`, `x-openarc-client`, `x-openarc-csrf`, `sec-fetch-site`,
+`sec-fetch-mode`, `sec-fetch-dest`, `sec-fetch-user`, `proxy-authorization`.
+
+A duplicate of any critical header is refused the same way, and an
+over-long request URL is refused before anything else.
+
+The credential must then match the namespace that surface accepts, as a single
+`Bearer` value:
+
+| Surface | Accepted credential |
+| --- | --- |
+| Commerce session exchange | `oas_ag_…` machine credential |
+| Buyer agent routes (actions, grants, payments) | `oacs_v1_…` commerce session |
+| Provider routes (claim, introspect) | `oas_pr_…` provider credential |
+
+The machine credential is valid **only** at the session exchange. It is not
+accepted on any spending surface, which is the audience separation the guards
+exist to enforce. Provider claim additionally carries the one-use grant secret
+in the request body, never in a header.
+
+A browser client uses the browser audience instead, with a cookie, an Origin, a
+client marker and a CSRF token. Those routes expect no `Authorization` header:
+the payment-terms route, for example, refuses any request that carries one.
