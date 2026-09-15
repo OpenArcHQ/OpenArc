@@ -9,6 +9,7 @@ import {
   ArcAccountSnapshotRequestSchema,
   ArcTransactionEvidenceRequestSchema,
   AgentRegistryEvidenceRequestSchema,
+  describeDeploymentCheck,
   JobEvidenceRequestSchema, JOB_DISCLOSURE, JOB_EVIDENCE_PATH,
   compareIsoTimestamps,
   type JobEvidenceRequest, type JobObservationRecord,
@@ -1640,13 +1641,42 @@ function AgentRegistryPanel(props: Pick<Parameters<typeof WorkspaceViewPanel>[0]
             <ExactIdentifier label="Observer" value={evidence.feedback.observer} />
             <p>Tags: {evidence.feedback.tag1 || "none"} / {evidence.feedback.tag2 || "none"}. This is one observer’s claim.</p>
           </div> : null}
-          {evidence.validation ? <div className="evidence-claim">
-            <p className="eyebrow">VALIDATOR-SPECIFIC RESPONSE</p>
-            <p><strong>{evidence.validation.response}/100</strong> · {evidence.validation.tag || "No tag"}</p>
-            <ExactIdentifier label="Validator" value={evidence.validation.validator} />
-            <ExactIdentifier label="Request hash" value={evidence.validation.requestHash} />
-            <p>This response belongs to the named validator; it is not a general safety certification.</p>
-          </div> : null}
+          {evidence.schemaVersion === "openarc.agent-registry-evidence.v2" ? <>
+            <div className="evidence-claim">
+              <p className="eyebrow">{evidence.deployment.status === "verified" ? "REGISTRY DEPLOYMENT MATCHES REVIEWED PINS"
+                : evidence.deployment.status === "drift" ? "REGISTRY DEPLOYMENT DRIFT · EVIDENCE NOT VERIFIED"
+                  : "REGISTRY DEPLOYMENT UNKNOWN · EVIDENCE NOT VERIFIED"}</p>
+              {evidence.deployment.status === "verified"
+                ? <p>Implementation and proxy owner of all three registries matched the reviewed pins at this block.</p>
+                : <ul>{describeDeploymentCheck(evidence.deployment).map((reason) => <li key={reason}>{reason}</li>)}</ul>}
+            </div>
+            {evidence.validation?.state === "responded" ? <div className="evidence-claim">
+              <p className="eyebrow">VALIDATOR-SPECIFIC RESPONSE</p>
+              <p><strong>{evidence.validation.response}/100</strong> · {evidence.validation.tag || "No tag"}</p>
+              <ExactIdentifier label="Validator" value={evidence.validation.validator} />
+              <ExactIdentifier label="Request hash" value={evidence.validation.requestHash} />
+              <p>Attributed from ValidationResponse event {evidence.validation.responseEvent.transactionHash} at block {evidence.validation.responseEvent.blockNumber}.
+                This response belongs to the named validator; it is not a general safety certification.</p>
+            </div> : null}
+            {evidence.validation?.state === "pending_or_unobserved" ? <div className="evidence-claim">
+              <p className="eyebrow">VALIDATION PENDING OR UNOBSERVED</p>
+              <p><strong>Pending</strong> · no validator response is attributed</p>
+              <ExactIdentifier label="Named validator" value={evidence.validation.namedValidator} />
+              <ExactIdentifier label="Request hash" value={evidence.validation.requestHash} />
+              <p>{evidence.validation.reason}</p>
+            </div> : null}
+          </> : <>
+            <div className="evidence-claim">
+              <p className="eyebrow">LEGACY RECORD · DEPLOYMENT NOT CHECKED</p>
+              <p>Saved before registry implementation pins and pending-validation detection. Refresh to re-observe.</p>
+            </div>
+            {evidence.validation ? <div className="evidence-claim">
+              <p className="eyebrow">LEGACY VALIDATION STATUS · NOT ATTRIBUTED</p>
+              <p>Registry getter value {evidence.validation.response}/100 with no observed ValidationResponse event. It may be a pending request, so no validator response is attributed.</p>
+              <ExactIdentifier label="Named validator" value={evidence.validation.validator} />
+              <ExactIdentifier label="Request hash" value={evidence.validation.requestHash} />
+            </div> : null}
+          </>}
           <details><summary>Source and limitations</summary>
             <p>Arc public RPC · ERC-8004 {evidence.source.specificationStatus} · source {evidence.source.sourceRevision}</p>
             <ul>{evidence.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul>

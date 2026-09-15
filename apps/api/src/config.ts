@@ -354,8 +354,8 @@ const EnvironmentSchema = z.object({
     if (!config.ARC_OBSERVATION_ENABLED) {
       context.addIssue({ code: "custom", path: ["AGENT_REGISTRY_ENABLED"], message: "Agent registry evidence requires Arc observation" });
     }
-    if (config.SOURCE_MAX_SUBCALLS < 10) {
-      context.addIssue({ code: "custom", path: ["SOURCE_MAX_SUBCALLS"], message: "Agent registry evidence requires ten bounded source subcalls" });
+    if (config.SOURCE_MAX_SUBCALLS < 16) {
+      context.addIssue({ code: "custom", path: ["SOURCE_MAX_SUBCALLS"], message: "Agent registry evidence requires sixteen bounded source subcalls" });
     }
   }
   if (config.AGENT_JOBS_ENABLED) {

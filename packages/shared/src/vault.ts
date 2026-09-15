@@ -7,7 +7,7 @@ import {
 } from "./evidence.js";
 import { ARC_TESTNET } from "./network.js";
 import { ArcAccountSnapshotSchema, ArcTransactionEvidenceSchema } from "./arc-observation.js";
-import { AgentRegistryEvidenceSchema } from "./agent-registry-evidence.js";
+import { StoredAgentRegistryEvidenceSchema } from "./agent-registry-evidence.js";
 import { JobEvidenceSchema } from "./job-evidence.js";
 import { X402ReceiptBundleSchema, GatewayTransferObservationSchema } from "./x402-evidence.js";
 import { AgentImportSchema } from "./agent-import.js";
@@ -99,7 +99,8 @@ export const AgentRegistryObservationRecordSchema = z.strictObject({
   kind: z.literal("agent_registry_observation"),
   permissionReceiptId: WorkspaceRecordIdSchema,
   linkedAgentProfileRecordId: WorkspaceRecordIdSchema.nullable(),
-  observation: AgentRegistryEvidenceSchema,
+  // New observations are v2; original M05 v1 records stay readable as unattributed legacy data.
+  observation: StoredAgentRegistryEvidenceSchema,
 });
 
 export const JobObservationRecordSchema = z.strictObject({
