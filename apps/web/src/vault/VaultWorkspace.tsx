@@ -60,7 +60,17 @@ import {
 import { CapabilityRequestError, requestCapabilities } from "../api/capabilities.js";
 import { OpenArcRequestError } from "../api/client.js";
 import { PermissionFinalizationError, runCapabilityPermissionFlow } from "../api/permission-flow.js";
+import { subscribeVaultSessionEnd } from "../app/vault-session-lock.js";
 
+import {
+  VAULT_COORDINATION_CHANNEL,
+  handleCoordinationMessage,
+  handleLocalSessionEnd,
+  type CoordinationMessage,
+  type CoordinationTarget,
+  type VaultScreen,
+} from "./coordination.js";
+import { assertStoredWorkspaceRevision } from "./revision-guard.js";
 import {
   observeVaultDatabase,
   readStorageStatus,
@@ -99,22 +109,7 @@ import type {
 } from "./types.js";
 
 type WorkspaceView = "overview" | "agents" | "activity" | "policies" | "evidence" | "settings" | "sources" | "jobs" | "payments" | "agent-reports" | "investigations";
-type Screen =
-  | { phase: "probing" }
-  | { phase: "unsupported" }
-  | { phase: "empty" }
-  | { phase: "locked"; meta: PublicVaultMeta }
-  | { phase: "unlocking"; meta: PublicVaultMeta }
-  | { phase: "unlocked"; workspace: UnlockedWorkspace }
-  | { phase: "locking"; meta: PublicVaultMeta }
-  | { phase: "deleting"; meta: PublicVaultMeta | null }
-  | { phase: "fatal"; message: string };
-
-type CoordinationMessage = {
-  sender: string;
-  type: "changed" | "lock" | "deleting";
-  vaultId: string;
-};
+type Screen = VaultScreen;
 
 type SessionGuard = {
   signal: AbortSignal;
@@ -246,6 +241,17 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
     }
   }, [clearPrivateState, enterDeleting]);
 
+  const coordinationTarget = useCallback((): CoordinationTarget => ({
+    sender: () => senderRef.current,
+    unlocked: () => unlockedRef.current,
+    screen: () => screenRef.current,
+    generation: () => generationRef.current,
+    clearPrivateState,
+    setScreen,
+    setNotice,
+    readMeta: readVaultMeta,
+  }), [clearPrivateState]);
+
   const broadcast = useCallback((type: CoordinationMessage["type"], vaultId: string) => {
     channelRef.current?.postMessage({ sender: senderRef.current, type, vaultId } satisfies CoordinationMessage);
   }, []);
@@ -338,72 +344,22 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
   useEffect(() => {
     if (typeof BroadcastChannel === "undefined" || typeof crypto.randomUUID !== "function") return;
     senderRef.current = crypto.randomUUID();
-    const channel = new BroadcastChannel("openarc-vault-coordination-v1");
+    const channel = new BroadcastChannel(VAULT_COORDINATION_CHANNEL);
     channelRef.current = channel;
-    channel.onmessage = (event: MessageEvent<unknown>) => {
-      const value = event.data;
-      if (!isCoordinationMessage(value) || value.sender === senderRef.current) return;
-      const current = unlockedRef.current;
-      const currentScreen = screenRef.current;
-      const currentMeta =
-        current?.meta ??
-        (currentScreen.phase === "locked" ||
-        currentScreen.phase === "unlocking" ||
-        currentScreen.phase === "locking" ||
-        currentScreen.phase === "deleting"
-          ? currentScreen.meta
-          : null);
-      if (!currentMeta && currentScreen.phase === "empty") {
-        void readVaultMeta()
-          .then((meta) => {
-            if (!meta || meta.vaultId !== value.vaultId) return;
-            clearPrivateState(
-              meta.deletionPending ? { phase: "deleting", meta } : { phase: "locked", meta },
-              meta.deletionPending
-                ? "Another tab is deleting this workspace. Workspace controls are unavailable."
-                : "An encrypted workspace was created or restored in another tab. Unlock it here to continue.",
-            );
-          })
-          .catch((cause) => {
-            clearPrivateState({ phase: "fatal", message: vaultErrorMessage(cause) });
-          });
-        return;
-      }
-      if (!currentMeta || currentMeta.vaultId !== value.vaultId) return;
-      if (value.type === "deleting") {
-        void readVaultMeta().then((meta) => {
-          if (meta?.vaultId === value.vaultId && meta.deletionPending) {
-            clearPrivateState({ phase: "deleting", meta }, "Another tab is deleting this workspace.");
-          }
-        }).catch(() => undefined);
-      } else {
-        clearPrivateState(
-          { phase: "locking", meta: currentMeta },
-          value.type === "changed"
-            ? "Workspace changed in another tab. Unlock again to load the latest encrypted revision."
-            : "Workspace locked from another tab.",
-        );
-        // A coordination message is only a hint, not authoritative metadata.
-        // Do not expose a form against the old revision: the next poll could
-        // otherwise clear credentials entered into that stale form again.
-        const boundaryGeneration = generationRef.current;
-        void readVaultMeta().then((meta) => {
-          if (boundaryGeneration !== generationRef.current) return;
-          setScreen(meta
-            ? meta.deletionPending ? { phase: "deleting", meta } : { phase: "locked", meta }
-            : { phase: "empty" });
-        }).catch((cause) => {
-          if (boundaryGeneration !== generationRef.current) return;
-          setScreen({ phase: "fatal", message: vaultErrorMessage(cause) });
-          setNotice(null);
-        });
-      }
-    };
+    const target = coordinationTarget();
+    channel.onmessage = (event: MessageEvent<unknown>) => handleCoordinationMessage(event.data, target);
     return () => {
       channelRef.current = null;
       channel.close();
     };
-  }, [clearPrivateState]);
+  }, [coordinationTarget]);
+
+  // Logout, account change or session expiry in THIS document (P08-02). Other
+  // tabs receive the existing `lock` coordination message instead.
+  useEffect(() => {
+    const target = coordinationTarget();
+    return subscribeVaultSessionEnd(() => handleLocalSessionEnd(target));
+  }, [coordinationTarget]);
 
   useEffect(() => {
     if (screen.phase !== "unlocked" && screen.phase !== "locked") return;
@@ -868,6 +824,7 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
           if (unlockedRef.current !== expected) throw new Error("Vault session changed");
         },
         save: (workspace, receipts, assertActive, signal) => saveWorkspaceRecords(workspace, receipts, assertActive, signal),
+        verifyStored: (workspace) => assertStoredWorkspaceRevision(workspace),
         request: requestCapabilities,
         onCommitted: (workspace) => {
           expected = workspace;
@@ -928,6 +885,7 @@ export function VaultWorkspace({ build }: { build: BuildInfo }) {
           broadcast("changed", saved.meta.vaultId);
           return saved;
         },
+        verifyStored: (workspace) => assertStoredWorkspaceRevision(workspace),
         request: (requestInput, signal) => requestInput.kind === "account"
           ? requestArcAccountSnapshot(requestInput.request, signal)
           : requestArcTransactionEvidence(requestInput.request, signal),
@@ -2357,12 +2315,6 @@ function recordCounts(records: readonly WorkspaceRecord[]) {
 function viewFromLocation(): WorkspaceView {
   const value = new URLSearchParams(window.location.search).get("view");
   return VIEWS.some((item) => item.id === value) ? (value as WorkspaceView) : "overview";
-}
-
-function isCoordinationMessage(value: unknown): value is CoordinationMessage {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Record<string, unknown>;
-  return typeof candidate.sender === "string" && typeof candidate.vaultId === "string" && (candidate.type === "changed" || candidate.type === "lock" || candidate.type === "deleting");
 }
 
 function downloadJson(value: unknown, filename: string) {

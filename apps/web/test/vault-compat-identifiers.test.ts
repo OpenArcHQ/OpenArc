@@ -344,15 +344,36 @@ describe("P08-00 Private Vault identifier freeze", { timeout: 60_000 }, () => {
   });
 
   it("item 10: BroadcastChannel name and coordination message shape", async () => {
-    const source = await readFile(path.resolve(import.meta.dirname, "../src/vault/VaultWorkspace.tsx"), "utf8");
-    expect(source, rule(10, "BroadcastChannel name openarc-vault-coordination-v1")).toContain('new BroadcastChannel("openarc-vault-coordination-v1")');
-    expect(source.match(/new BroadcastChannel\(/gu)?.length, rule(10, "exactly one Vault coordination channel")).toBe(1);
-    expect(source.replace(/\s+/gu, " "), rule(10, 'message {sender, type: "changed"|"lock"|"deleting", vaultId}'))
+    // The channel name, message shape and predicate live in coordination.ts
+    // (extracted verbatim from VaultWorkspace.tsx by P08-02). Every Vault
+    // BroadcastChannel must be built from that single frozen constant, and every
+    // writer must post the frozen message shape.
+    const vaultDir = path.resolve(import.meta.dirname, "../src/vault");
+    const coordination = await readFile(path.join(vaultDir, "coordination.ts"), "utf8");
+    expect(coordination, rule(10, "BroadcastChannel name openarc-vault-coordination-v1")).toContain(
+      'export const VAULT_COORDINATION_CHANNEL = "openarc-vault-coordination-v1";');
+    expect(coordination.match(/openarc-vault-coordination/gu)?.length, rule(10, "exactly one channel name literal")).toBe(1);
+    expect(coordination.replace(/\s+/gu, " "), rule(10, 'message {sender, type: "changed"|"lock"|"deleting", vaultId}'))
       .toContain('type CoordinationMessage = { sender: string; type: "changed" | "lock" | "deleting"; vaultId: string; };');
-    expect(source, rule(10, "coordination message predicate")).toContain(
+    expect(coordination, rule(10, "coordination message predicate")).toContain(
       'typeof candidate.sender === "string" && typeof candidate.vaultId === "string" && (candidate.type === "changed" || candidate.type === "lock" || candidate.type === "deleting")');
-    expect(source, rule(10, "coordination message writer")).toContain(
+    const { readdir } = await import("node:fs/promises");
+    const constructions: string[] = [];
+    for (const file of (await readdir(vaultDir)).filter((name) => /\.tsx?$/u.test(name))) {
+      const source = await readFile(path.join(vaultDir, file), "utf8");
+      for (const match of source.matchAll(/new BroadcastChannel\(([^)]*)\)/gu)) constructions.push(`${file}:${match[1]}`);
+      expect(source.includes("openarc-vault-coordination") && file !== "coordination.ts", rule(10, `no duplicate channel literal in ${file}`)).toBe(false);
+    }
+    expect(constructions.length, rule(10, "at least one Vault coordination channel")).toBeGreaterThan(0);
+    for (const construction of constructions) {
+      expect(construction.split(":")[1], rule(10, `channel built from the frozen constant (${construction})`)).toBe("VAULT_COORDINATION_CHANNEL");
+    }
+    const workspace = await readFile(path.join(vaultDir, "VaultWorkspace.tsx"), "utf8");
+    expect(workspace, rule(10, "coordination message writer")).toContain(
       "channelRef.current?.postMessage({ sender: senderRef.current, type, vaultId } satisfies CoordinationMessage)");
+    const bridge = await readFile(path.join(vaultDir, "session-bridge.ts"), "utf8");
+    expect(bridge, rule(10, "session-end lock writer")).toContain(
+      'channel.postMessage({ sender: crypto.randomUUID(), type: "lock", vaultId } satisfies CoordinationMessage)');
   });
 
   it("item 11: lock rotates only coordinationRevision and deletion sets the deletionPending marker", async () => {
