@@ -39,6 +39,18 @@ import { ApprovalQueuePanel } from "./ApprovalQueuePanel.js";
 import { ActionDetailPanel, ActionDecisionView } from "./ActionDetailPanel.js";
 import { ApprovalDetailPanel } from "./ApprovalDetailPanel.js";
 import { ActionExposurePanel } from "./ActionExposurePanel.js";
+import { commerceGrantsEnabledFromEnv } from "./grant-availability.js";
+import { parseGrantRoute, type GrantRoute } from "./grant-routes.js";
+import {
+  GrantController,
+  initialGrantControllerState,
+  renderGrantState,
+  suppressStaleGrantContext,
+  type GrantControllerState,
+  type GrantReadCoordinator,
+} from "./grant-controller.js";
+import { GrantLookupPanel } from "./GrantLookupPanel.js";
+import { GrantDetailPanel } from "./GrantDetailPanel.js";
 import { parseSessionRoute, type SessionRoute } from "./session-routes.js";
 import {
   SessionController,
@@ -102,6 +114,7 @@ import listingCssUrl from "./market-listing.css?url";
 import policyCssUrl from "./control-policy.css?url";
 import sessionCssUrl from "./commerce-session.css?url";
 import actionCssUrl from "./control-action.css?url";
+import grantCssUrl from "./control-grant.css?url";
 
 /**
  * Protected organization workspace.
@@ -124,7 +137,8 @@ type AppPath =
   | "/app/sessions/new"
   | "/app/actions"
   | "/app/actions/approvals"
-  | "/app/actions/exposure";
+  | "/app/actions/exposure"
+  | "/app/grants";
 
 type WorkspacePath =
   | AppPath
@@ -134,6 +148,7 @@ type WorkspacePath =
   | { readonly kind: "session-detail"; readonly sessionId: string }
   | { readonly kind: "action-detail"; readonly actionId: string }
   | { readonly kind: "approval-detail"; readonly approvalId: string }
+  | { readonly kind: "grant-detail"; readonly grantId: string }
   | "unknown";
 
 function useTenantStyles(): void {
@@ -181,6 +196,22 @@ function useSessionStyles(active: boolean): void {
     link.rel = "stylesheet";
     link.href = sessionCssUrl;
     link.dataset.sessionStyle = "true";
+    document.head.append(link);
+    return () => link.remove();
+  }, [active]);
+}
+
+/**
+ * Mounts the scoped control-grant stylesheet for the feature lifetime only.
+ * With the grant flag off this never runs, so the stylesheet is never fetched.
+ */
+function useGrantStyles(active: boolean): void {
+  useEffect(() => {
+    if (!active) return;
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = grantCssUrl;
+    link.dataset.grantStyle = "true";
     document.head.append(link);
     return () => link.remove();
   }, [active]);
@@ -238,6 +269,13 @@ function currentPath(): WorkspacePath {
     if (action.kind === "approval-detail") {
       return { kind: "approval-detail", approvalId: action.approvalId };
     }
+    return "unknown";
+  }
+  if (raw.startsWith("/app/grants")) {
+    const grant = parseGrantRoute(raw);
+    if (grant === null) return "unknown";
+    if (grant.kind === "lookup") return "/app/grants";
+    if (grant.kind === "detail") return { kind: "grant-detail", grantId: grant.grantId };
     return "unknown";
   }
   if (raw.startsWith("/app/")) return "unknown";
@@ -309,6 +347,19 @@ function isActionWorkspacePath(path: WorkspacePath): boolean {
   return actionRouteOf(path) !== null;
 }
 
+/** The route object for a grant workspace path, or null when not a grant. */
+function grantRouteOf(path: WorkspacePath): GrantRoute | null {
+  if (path === "/app/grants") return { kind: "lookup" };
+  if (typeof path === "object" && path.kind === "grant-detail") {
+    return { kind: "detail", grantId: path.grantId };
+  }
+  return null;
+}
+
+function isGrantWorkspacePath(path: WorkspacePath): boolean {
+  return grantRouteOf(path) !== null;
+}
+
 export default function TenantApp() {
   const enabled = useMemo(() => tenantReadsEnabled() && accountAccessEnabled(), []);
   const writesEnabled = useMemo(
@@ -348,6 +399,12 @@ export default function TenantApp() {
   // capability probe. All defaults false, so a disabled deployment makes ZERO
   // action requests.
   const actionsEnabled = useMemo(() => commerceActionsEnabledFromEnv(), []);
+  // The authorization-grant console is a strict superset of the commerce-action
+  // and commerce-session consoles and has its own server authority plus its own
+  // separate PUBLIC credentialless capability probe. It defaults to false, so a
+  // disabled deployment constructs no grant controller, no grant client and no
+  // stylesheet, and makes ZERO grant requests — the capability probe included.
+  const grantsEnabled = useMemo(() => commerceGrantsEnabledFromEnv(), []);
   const [state, setState] = useState<TenantViewControllerState>(initialTenantState);
   const [mutationState, setMutationState] = useState<TenantMutationState>(initialTenantMutationState);
   const [machineState, setMachineState] = useState<MachineConsoleState>(initialMachineConsoleState);
@@ -381,6 +438,11 @@ export default function TenantApp() {
   // external hidden/pagehide boundary, committed inside the same flushSync as
   // the controller clear so no previous form frame is painted.
   const [actionFormGeneration, setActionFormGeneration] = useState(0);
+  const [grantState, setGrantState] = useState<GrantControllerState>(initialGrantControllerState);
+  // Monotonic privacy generation that remounts the grant lookup form subtree on
+  // an external hidden/pagehide boundary, committed inside the same flushSync as
+  // the controller clear so no previous form frame is painted.
+  const [grantFormGeneration, setGrantFormGeneration] = useState(0);
   const [selectedProfile, setSelectedProfile] = useState<MachineCredentialTarget | null>(null);
   const [path, setPath] = useState<WorkspacePath>(currentPath);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -395,12 +457,14 @@ export default function TenantApp() {
   const policyControllerRef = useRef<PolicyController | null>(null);
   const sessionControllerRef = useRef<SessionController | null>(null);
   const actionControllerRef = useRef<ActionController | null>(null);
+  const grantControllerRef = useRef<GrantController | null>(null);
   const sessionSelectedAgentRef = useRef<string | null>(null);
   const boundMachineContextRef = useRef<MachineRenderContext | null>(null);
   const boundListingContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
   const boundPolicyContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
   const boundSessionContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
   const boundActionContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
+  const boundGrantContextRef = useRef<{ accountId: string; organizationId: string; role: string | null } | null>(null);
   const listingOpenRef = useRef<((listingId: string) => void) | null>(null);
   const policyOpenRef = useRef<((policyId: string) => void) | null>(null);
   const accountRef = useRef<AccountFlowController | null>(null);
@@ -430,6 +494,7 @@ export default function TenantApp() {
   usePolicyStyles(policyEnabled);
   useSessionStyles(sessionsEnabled);
   useActionStyles(actionsEnabled);
+  useGrantStyles(grantsEnabled);
 
   useEffect(() => {
     const onPopState = () => setPath(currentPath());
@@ -596,6 +661,27 @@ export default function TenantApp() {
         })
       : null;
     actionControllerRef.current = actionController;
+    // The authorization-grant controller is constructed ONLY when its own flag
+    // and all prerequisites are enabled. It mounts no request until a protected
+    // grant route initializes the independent public credentialless capability
+    // gate. With it off, ZERO grant or grant-capability requests are made, and
+    // it never calls any of the three agent-audience or three provider-audience
+    // grant routes — the only two places a raw grant token exists on the wire.
+    const grantReads: GrantReadCoordinator = {
+      currentOrganizationId: () => controller.currentOrganizationId(),
+      currentRole: () => controller.currentRole(),
+      currentAccountId: () =>
+        account.state.session.signedIn ? account.state.session.accountId : null,
+      abortPendingReads: () => controller.abortPendingReads(),
+    };
+    const grantController = grantsEnabled
+      ? new GrantController({
+          account,
+          reads: grantReads,
+          onState: setGrantState,
+        })
+      : null;
+    grantControllerRef.current = grantController;
     const onVisibility = () => {
       if (document.visibilityState === "hidden") {
         // The hidden boundary is external and synchronous: a browser may
@@ -612,9 +698,11 @@ export default function TenantApp() {
           policyController?.clear();
           sessionController?.clear();
           actionController?.clear();
+          grantController?.clear();
           setPolicyFormGeneration((value) => value + 1);
           setSessionFormGeneration((value) => value + 1);
           setActionFormGeneration((value) => value + 1);
+          setGrantFormGeneration((value) => value + 1);
           invalidateSessionPolicies();
         });
       }
@@ -628,9 +716,11 @@ export default function TenantApp() {
         policyController?.clear();
         sessionController?.clear();
         actionController?.clear();
+        grantController?.clear();
         setPolicyFormGeneration((value) => value + 1);
         setSessionFormGeneration((value) => value + 1);
         setActionFormGeneration((value) => value + 1);
+        setGrantFormGeneration((value) => value + 1);
         invalidateSessionPolicies();
       });
     };
@@ -647,6 +737,7 @@ export default function TenantApp() {
       policyController?.dispose();
       sessionController?.dispose();
       actionController?.dispose();
+      grantController?.dispose();
       if (controllerRef.current === controller) controllerRef.current = null;
       if (writeControllerRef.current === writeController) writeControllerRef.current = null;
       if (machineControllerRef.current === machineController) machineControllerRef.current = null;
@@ -654,9 +745,10 @@ export default function TenantApp() {
       if (policyControllerRef.current === policyController) policyControllerRef.current = null;
       if (sessionControllerRef.current === sessionController) sessionControllerRef.current = null;
       if (actionControllerRef.current === actionController) actionControllerRef.current = null;
+      if (grantControllerRef.current === grantController) grantControllerRef.current = null;
       if (accountRef.current === account) accountRef.current = null;
     };
-  }, [enabled, known, writesEnabled, machineEnabled, listingEnabled, policyEnabled, sessionsEnabled, actionsEnabled, invalidateSessionPolicies]);
+  }, [enabled, known, writesEnabled, machineEnabled, listingEnabled, policyEnabled, sessionsEnabled, actionsEnabled, grantsEnabled, invalidateSessionPolicies]);
 
   // Clear the create/version selection when leaving the listing subtree.
   useEffect(() => {
@@ -687,6 +779,12 @@ export default function TenantApp() {
   useEffect(() => {
     if (isActionWorkspacePath(path)) return;
     actionControllerRef.current?.clear();
+  }, [path]);
+
+  // Clear every grant artifact when leaving the grant subtree.
+  useEffect(() => {
+    if (isGrantWorkspacePath(path)) return;
+    grantControllerRef.current?.clear();
   }, [path]);
 
   // A selected-agent change invalidates the picker binding and aborts any
@@ -726,6 +824,7 @@ export default function TenantApp() {
       setSessionSelectedAgent(null);
       sessionControllerRef.current?.clear();
       actionControllerRef.current?.clear();
+      grantControllerRef.current?.clear();
     }
   }, [accountId]);
 
@@ -741,6 +840,7 @@ export default function TenantApp() {
     policyControllerRef.current?.reconcileRole(role);
     sessionControllerRef.current?.reconcileRole(role);
     actionControllerRef.current?.reconcileRole(role);
+    grantControllerRef.current?.reconcileRole(role);
     const machineController = machineControllerRef.current;
     if (machineController === null) return;
     // Role is authoritative from the current server context. Reconcile it
@@ -765,6 +865,7 @@ export default function TenantApp() {
     setSessionSelectedAgent(null);
     sessionControllerRef.current?.clear();
     actionControllerRef.current?.clear();
+    grantControllerRef.current?.clear();
     invalidateSessionPolicies();
   }, [organizationId, invalidateSessionPolicies]);
 
@@ -822,6 +923,35 @@ export default function TenantApp() {
     if (route === null) return;
     void actionController.initialize(route);
   }, [path, actionsEnabled, organizationId, role, accountId]);
+
+  // Initialize the grant controller only for a protected grant route. The
+  // public credentialless capability probe runs first; when it is not
+  // `enabled`, no grant request is made and an honest unavailable state is
+  // rendered. The lookup route issues no request at all: there is no grant list
+  // endpoint and this console will not invent one.
+  useEffect(() => {
+    const grantController = grantControllerRef.current;
+    if (grantController === null) return;
+    const route = grantRouteOf(path);
+    if (route === null) return;
+    void grantController.initialize(route);
+  }, [path, grantsEnabled, organizationId, role, accountId]);
+
+  // After the render where the grant context is current, record the bound
+  // account/organization/role so the NEXT transition render suppresses
+  // synchronously before any child can read a stale grant detail or revoke.
+  useEffect(() => {
+    if (
+      grantControllerRef.current === null ||
+      !isGrantWorkspacePath(path) ||
+      organizationId === null ||
+      accountId === null
+    ) {
+      boundGrantContextRef.current = null;
+      return;
+    }
+    boundGrantContextRef.current = { accountId, organizationId, role };
+  }, [path, organizationId, accountId, role]);
 
   // After the render where the action context is current, record the bound
   // account/organization/role so the NEXT transition render suppresses
@@ -982,6 +1112,14 @@ export default function TenantApp() {
         { accountId, organizationId, role },
       ));
 
+  const suppressGrant =
+    grantControllerRef.current !== null &&
+    (suppressPriorMutation ||
+      suppressStaleGrantContext(
+        boundGrantContextRef.current,
+        { accountId, organizationId, role },
+      ));
+
   // The policy create editor is keyed by its FULL bound context plus the
   // external privacy generation. A context change remounts it in the SAME
   // render (so no stale caps/allowlists/expiry/agent selection survive), and a
@@ -1001,6 +1139,11 @@ export default function TenantApp() {
   // change remounts it and no typed exposure subject or pending confirmation
   // can survive a same-route organization/role transition.
   const actionFormKey = `${accountId ?? "anon"}|${organizationId ?? "none"}|${role ?? "none"}|${actionFormGeneration}`;
+
+  // The grant console subtree is keyed by its FULL bound context so a context
+  // change remounts it and no typed grant id or pending confirmation can
+  // survive a same-route organization/role transition.
+  const grantFormKey = `${accountId ?? "anon"}|${organizationId ?? "none"}|${role ?? "none"}|${grantFormGeneration}`;
 
   useEffect(() => {
     if (!drawerOpen) return;
@@ -1060,6 +1203,7 @@ export default function TenantApp() {
     policyControllerRef.current?.clearSensitive();
     sessionControllerRef.current?.clear();
     actionControllerRef.current?.clear();
+    grantControllerRef.current?.clear();
     setListingCreating(false);
     setListingProviderId(null);
     setListingBaseVersion(null);
@@ -1123,6 +1267,14 @@ export default function TenantApp() {
       `/app/actions/approvals/${encodeURIComponent(route.approvalId)}`,
     );
     setPath({ kind: "approval-detail", approvalId: route.approvalId });
+  }, []);
+
+  const openGrant = useCallback((grantId: string) => {
+    const route = parseGrantRoute(`/app/grants/${encodeURIComponent(grantId)}`);
+    if (route === null || route.kind !== "detail") return;
+    setDrawerOpen(false);
+    window.history.pushState(null, "", `/app/grants/${encodeURIComponent(route.grantId)}`);
+    setPath({ kind: "grant-detail", grantId: route.grantId });
   }, []);
 
   // Bounded current-organization policy picker via the accepted PolicyClient
@@ -1374,6 +1526,11 @@ export default function TenantApp() {
             actionFormKey={actionFormKey}
             onOpenAction={openAction}
             onOpenApproval={openApproval}
+            grantsEnabled={grantsEnabled}
+            grantState={renderGrantState(suppressGrant, grantState)}
+            grantController={suppressGrant ? null : grantControllerRef.current}
+            grantFormKey={grantFormKey}
+            onOpenGrant={openGrant}
           />
         </main>
 
@@ -1410,6 +1567,7 @@ function Rail(props: RailProps) {
     { path: "/app/budgets", label: "Budgets" },
     { path: "/app/sessions", label: "Sessions" },
     { path: "/app/actions", label: "Actions" },
+    { path: "/app/grants", label: "Grants" },
   ];
   return (
     <nav
@@ -1561,6 +1719,11 @@ interface WorkspaceProps {
   actionFormKey: string;
   onOpenAction: (actionId: string) => void;
   onOpenApproval: (approvalId: string) => void;
+  grantsEnabled: boolean;
+  grantState: GrantControllerState;
+  grantController: GrantController | null;
+  grantFormKey: string;
+  onOpenGrant: (grantId: string) => void;
 }
 
 function Workspace(props: WorkspaceProps) {
@@ -1605,6 +1768,14 @@ function Workspace(props: WorkspaceProps) {
     // constructed and the section is honestly unavailable. With the flag on the
     // controller's independent public capability gate decides the rendered state.
     if (!props.actionsEnabled) return <NotAvailable onNavigate={props.onNavigate} />;
+  }
+
+  const grantRoute = grantRouteOf(props.path);
+  if (grantRoute !== null) {
+    // A grant route is known (not "unknown"): with the flag off nothing was
+    // constructed and the section is honestly unavailable. With the flag on the
+    // controller's independent public capability gate decides the rendered state.
+    if (!props.grantsEnabled) return <NotAvailable onNavigate={props.onNavigate} />;
   }
 
   const sessionRoute = sessionRouteOf(props.path);
@@ -1812,6 +1983,20 @@ function Workspace(props: WorkspaceProps) {
         formKey={props.actionFormKey}
         onOpenAction={props.onOpenAction}
         onOpenApproval={props.onOpenApproval}
+        onNavigate={props.onNavigate}
+      />
+    );
+  }
+
+  if (grantRoute !== null) {
+    return (
+      <GrantWorkspace
+        key={`grant-context:${props.grantFormKey}`}
+        route={grantRoute}
+        state={props.grantState}
+        controller={props.grantController}
+        formKey={props.grantFormKey}
+        onOpenGrant={props.onOpenGrant}
         onNavigate={props.onNavigate}
       />
     );
@@ -2652,6 +2837,101 @@ function SessionWorkspace(props: {
         </>
       )}
     </div>
+  );
+}
+
+interface GrantWorkspaceProps {
+  route: GrantRoute;
+  state: GrantControllerState;
+  controller: GrantController | null;
+  formKey: string;
+  onOpenGrant: (grantId: string) => void;
+  onNavigate: (path: AppPath) => void;
+}
+
+/**
+ * The authorization-grant console shell.
+ *
+ * The independent public capability probe runs before any grant request, so a
+ * deployment without the grant surface renders an honest unavailable state and
+ * issues zero requests. Nothing here is a demo: every field comes from the
+ * server or is not shown at all, and there is no earnings, reputation or
+ * payment card anywhere on this surface.
+ */
+function GrantWorkspace(props: GrantWorkspaceProps) {
+  const controller = props.controller;
+  if (props.route.kind === "invalid") {
+    return (
+      <p className="tenant-status tenant-status--warning" role="status">
+        That grant address is not valid. No request was made.
+      </p>
+    );
+  }
+  if (props.state.capability === "unknown" || props.state.capability === "checking") {
+    return (
+      <p className="tenant-status" role="status">
+        Checking authorization-grant availability…
+      </p>
+    );
+  }
+  if (props.state.capability === "unavailable") {
+    return (
+      <section aria-labelledby="grant-unavailable-title">
+        <p className="tenant-eyebrow">AUTHORIZATION GRANTS</p>
+        <h1 className="tenant-title" id="grant-unavailable-title">
+          Authorization grants are not available in this deployment
+        </h1>
+        <p className="tenant-status tenant-status--warning" role="status">
+          The public grant capability manifest does not enable the grant console here. No grant
+          request was made and no grant record is implied.
+        </p>
+      </section>
+    );
+  }
+  if (!props.state.canRead) {
+    return <GrantNoAccess />;
+  }
+  return (
+    <div className="tenant-grants-console">
+      <p className="tenant-eyebrow">AUTHORIZATION GRANTS</p>
+      <h1 className="tenant-title">Authorization grants</h1>
+      <p className="tenant-status tenant-status--warning" role="status">
+        This console reads and revokes authorization grants. It connects no wallet, signs nothing,
+        moves no money, and never reports a payment, settlement, delivery or refund. Revoking
+        retires permission; it does not get money back.
+      </p>
+      {props.route.kind === "lookup" ? (
+        <GrantLookupPanel
+          state={props.state}
+          controller={controller}
+          onOpenGrant={props.onOpenGrant}
+          formKey={props.formKey}
+        />
+      ) : null}
+      {props.route.kind === "detail" ? (
+        <GrantDetailPanel
+          state={props.state}
+          controller={controller}
+          grantId={props.route.grantId}
+          onBack={() => props.onNavigate("/app/grants")}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function GrantNoAccess() {
+  return (
+    <section aria-labelledby="grant-no-access-title">
+      <p className="tenant-eyebrow">NOT ALLOWED</p>
+      <h1 className="tenant-title" id="grant-no-access-title">
+        You do not have access to authorization grants
+      </h1>
+      <p className="tenant-status tenant-status--warning" role="status">
+        Your role in this organization cannot read authorization grants. No grant request was made
+        and no grant record is implied.
+      </p>
+    </section>
   );
 }
 
