@@ -41,6 +41,8 @@ export * from "./commerce/control-grant.js";
 export * from "./commerce/control-grant-model.js";
 export * from "./commerce/control-grant-wire.js";
 export * from "./commerce/control-grant-capabilities.js";
+export * from "./commerce/control-payment-wire.js";
+export * from "./commerce/control-payment-capabilities.js";
 export * from "./commerce/erc8183-manifest.js";
 export * from "./commerce/erc8183-job-mirror.js";
 export * from "./commerce/evidence-v2.js";
