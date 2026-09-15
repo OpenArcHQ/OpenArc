@@ -327,6 +327,7 @@ describe('durability migration and readiness', () => {
       '0011_control_action_reads',
       '0012_authorization_grants',
       '0013_commerce_session_reads',
+      '0014_grant_mutation_reads',
     ]);
     const helpers = await admin.query<{ proname: string; owner: string }>(
       `SELECT p.proname, r.rolname AS owner
@@ -457,6 +458,7 @@ describe('durability migration and readiness', () => {
       'read_agent_commerce_action_mutation_status',
       'read_agent_commerce_session_mutation_status',
       'read_agent_credential_mutation_status',
+      'read_agent_grant_mutation_status',
       'read_agent_mutation_status',
       'read_agent_session',
       'read_authorization_grant',
@@ -468,6 +470,7 @@ describe('durability migration and readiness', () => {
       'read_commerce_session_by_token',
       'read_human_commerce_action_mutation_status',
       'read_human_commerce_session_mutation_status',
+      'read_human_grant_mutation_status',
       'read_lifecycle_mutation_status',
       'read_market_mutation_status',
       'read_organization_mutation_status',

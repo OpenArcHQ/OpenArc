@@ -355,6 +355,38 @@ export interface CommerceGrantRevokeDbResult extends CommerceGrantMutationDbResu
   readonly reservationStatus: string;
 }
 
+/**
+ * Lost-response recovery answer for a grant mutation. Closed two-state shape:
+ * a committed receipt or `not_found`, never a third state and never a partial
+ * receipt. `not_found` carries no field besides `status`, so a miss discloses
+ * nothing about another organization, buyer or audience.
+ */
+export type CommerceGrantMutationStatus =
+  | { readonly status: 'committed'; readonly receipt: CommerceGrantTransactionReceipt }
+  | { readonly status: 'not_found' };
+
+/**
+ * The audience a mutation-status projection speaks for. It is an explicit
+ * non-transposable label rather than a boolean precisely so the human and the
+ * agent projections can never be swapped by an argument-order mistake: a
+ * transposed boolean is still a valid call, a transposed label is not a value
+ * of this type at all.
+ */
+export type CommerceGrantStatusAudience = 'human' | 'agent';
+
+/**
+ * The exact schema3 receipt columns the two status helpers project. Every
+ * field is re-validated before it reaches a receipt; the declared driver types
+ * are a convenience, never the trust boundary.
+ */
+interface GrantReceiptRow extends Record<string, unknown> {
+  readonly out_mutation_id: string;
+  readonly out_operation: string;
+  readonly out_resource_type: string;
+  readonly out_resource_id: string;
+  readonly out_committed_at: string | Date;
+}
+
 /** Provider claim result. It carries no buyer organization, policy or account. */
 export interface CommerceGrantClaimDbResult {
   readonly replayed: boolean;
@@ -828,6 +860,65 @@ export class ControlGrantStore {
   }
 
   /**
+   * Buyer lost-response recovery for a grant mutation the BROWSER performed.
+   *
+   * It answers only for `control.grant.revoke` and only when the receipt was
+   * earned by this exact actor under this exact presented browser session, so
+   * a co-owner's receipt, a second live session's receipt and an agent-issued
+   * receipt are all the same safe `not_found`. It never reconstructs a grant
+   * token: the receipt carries the grant id and the commit instant and nothing
+   * else.
+   */
+  async getHumanMutationStatus(
+    humanSessionHash: unknown,
+    organizationId: unknown,
+    mutationId: unknown,
+  ): Promise<CommerceGrantMutationStatus> {
+    const hash = requireHash(humanSessionHash);
+    const organization = requireOrganization(organizationId);
+    const mutation = requireMutationInput(mutationId);
+    return this.#withTransaction(async (client) => {
+      const result = await client.query<GrantReceiptRow>(
+        `SELECT out_mutation_id, out_operation, out_resource_type, out_resource_id,
+                out_committed_at::text AS out_committed_at
+           FROM openarc_durable.read_human_grant_mutation_status($1, $2, $3::uuid)`,
+        [hash, organization, mutation],
+      );
+      return this.#projectMutationStatus(mutation, requireAtMostOne(result.rows), 'human');
+    });
+  }
+
+  /**
+   * Agent lost-response recovery for a grant mutation the COMMERCE BEARER
+   * performed. There is no organization argument: the buyer organization is
+   * DB-derived from the presented session and re-asserted here, so a presenter
+   * can never widen its own scope. It answers only for `control.grant.issue`
+   * and `control.grant.replace`.
+   */
+  async getAgentMutationStatus(
+    commerceTokenHash: unknown,
+    mutationId: unknown,
+  ): Promise<CommerceGrantMutationStatus> {
+    const hash = requireHash(commerceTokenHash);
+    const mutation = requireMutationInput(mutationId);
+    return this.#withTransaction(async (client) => {
+      const result = await client.query<GrantReceiptRow & { out_organization_id: string }>(
+        `SELECT out_mutation_id, out_operation, out_resource_type, out_resource_id,
+                out_committed_at::text AS out_committed_at, out_organization_id
+           FROM openarc_durable.read_agent_grant_mutation_status($1, $2::uuid)`,
+        [hash, mutation],
+      );
+      const row = requireAtMostOne(result.rows);
+      if (row === undefined) return { status: 'not_found' } as const;
+      // A committed agent row must carry the DB-derived buyer organization.
+      if (typeof row.out_organization_id !== 'string' || !ORG_ID.test(row.out_organization_id)) {
+        failOutput();
+      }
+      return this.#projectMutationStatus(mutation, row, 'agent');
+    });
+  }
+
+  /**
    * Provider historical claim recovery keyed by the provider's OWN attempt id.
    * A NEW valid session for the SAME provider recovers the minimal claim fact
    * plus a `grantRevoked` flag, because retirement alone is not evidence of
@@ -946,6 +1037,49 @@ export class ControlGrantStore {
       resourceId: grantId,
       committedAt,
     };
+  }
+
+  /**
+   * Strict committed-or-not-found projection. No row is `not_found`; a row is
+   * only ever a receipt after EVERY column has been re-validated, including
+   * that the echoed mutation id is the one that was asked for and that the
+   * operation belongs to this audience.
+   */
+  #projectMutationStatus(
+    mutation: string,
+    row: GrantReceiptRow | undefined,
+    audience: CommerceGrantStatusAudience,
+  ): CommerceGrantMutationStatus {
+    if (row === undefined) return { status: 'not_found' } as const;
+    if (row.out_mutation_id !== mutation) failOutput();
+    const operation = this.#requireStatusOperation(row.out_operation, audience);
+    if (row.out_resource_type !== CONTROL_GRANT_RESOURCE_TYPE) failOutput();
+    const grantId = row.out_resource_id;
+    if (typeof grantId !== 'string' || !GRANT_ID.test(grantId)) failOutput();
+    const committedAt = iso(row.out_committed_at);
+    return {
+      status: 'committed' as const,
+      receipt: this.#receiptFrom(operation, mutation, grantId, committedAt),
+    };
+  }
+
+  /**
+   * The agent status reader may only ever surface issue/replace; the human
+   * status reader may only ever surface revoke. A provider claim receipt is
+   * surfaced by NEITHER: it has its own attempt-keyed recovery read. The
+   * audience is named explicitly so the two projections can never be
+   * transposed.
+   */
+  #requireStatusOperation(
+    value: unknown,
+    audience: CommerceGrantStatusAudience,
+  ): CommerceGrantOperation {
+    if (audience === 'agent') {
+      if (value !== 'control.grant.issue' && value !== 'control.grant.replace') failOutput();
+      return value;
+    }
+    if (value !== 'control.grant.revoke') failOutput();
+    return value;
   }
 
   #projectMetadata(row: Record<string, unknown>): CommerceGrantMetadata {
@@ -1128,6 +1262,8 @@ export class ControlGrantStore {
       { name: 'revoke_authorization_grant', args: 'human_session_hash text, organization_id text, grant_id_input text, mutation_id uuid, key_hash text, request_digest text, session_context_digest text' },
       { name: 'read_authorization_grant', args: 'human_session_hash text, organization_id text, grant_id_input text' },
       { name: 'read_provider_grant_attempt_status', args: 'provider_session_hash text, attempt_id_input uuid' },
+      { name: 'read_human_grant_mutation_status', args: 'human_session_hash text, organization_id text, mutation_id uuid' },
+      { name: 'read_agent_grant_mutation_status', args: 'commerce_token_hash text, mutation_id uuid' },
     ];
     // The closed cores, the two lock chains, the provider identity resolver
     // and the claim digest helper must stay unreachable from the runtime.

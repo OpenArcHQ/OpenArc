@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  GrantMutationStatusUnavailableError,
   createCommerceGrantSessionReadAdapter,
   createCommerceGrantStoreAdapter,
 } from "../src/control/grant-store-adapter.js";
@@ -305,6 +304,17 @@ class FakeGrantStore {
     this.calls.push({ name: "readProviderAttemptStatus", args });
     return providerAttemptStatus();
   }
+  async getHumanMutationStatus(...args: unknown[]): Promise<unknown> {
+    this.calls.push({ name: "getHumanMutationStatus", args });
+    return {
+      status: "committed",
+      receipt: grantReceipt("control.grant.revoke"),
+    };
+  }
+  async getAgentMutationStatus(...args: unknown[]): Promise<unknown> {
+    this.calls.push({ name: "getAgentMutationStatus", args });
+    return { status: "not_found" };
+  }
 }
 
 describe("the grant store adapter", () => {
@@ -406,27 +416,57 @@ describe("the grant store adapter", () => {
     expect(revoke.actionStatus).toBe("cancelled");
   });
 
-  it("reports the two unbound mutation-status reads as an UNAVAILABLE dependency", async () => {
+  it("binds the two mutation-status reads onto the real DB14 store reads", async () => {
     const { port, store } = adapter();
-    for (const call of [
-      port.getAgentCommerceGrantMutationStatus("session", MUTATION),
-      port.getHumanCommerceGrantMutationStatus("session", ORG, MUTATION),
-    ]) {
-      await expect(call).rejects.toBeInstanceOf(
-        GrantMutationStatusUnavailableError,
-      );
-    }
-    // The accepted DB12 store exposes no grant mutation-status read, so the
-    // adapter reaches NO store method rather than faking a `not_found` (which
-    // would be a false negative on a money-adjacent recovery read).
-    expect(store.calls).toEqual([]);
-    const error = new GrantMutationStatusUnavailableError();
-    // It carries DB12's own UNAVAILABLE code, never OUTCOME_UNKNOWN, so the
-    // service maps it to the fixed retryable-outage 503 and never to the
-    // terminal double-spend 500.
-    expect(error.code).toBe("CONTROL_GRANT_STORE_UNAVAILABLE");
-    expect(error.message).not.toContain(MUTATION);
-    expect(error.message).not.toContain(ORG);
+    // The 503 stub is GONE: both ports now reach a real store method with the
+    // caller arguments intact and in order, and return the store's own closed
+    // committed-or-not-found answer verbatim.
+    const agent = await port.getAgentCommerceGrantMutationStatus(
+      "session",
+      MUTATION,
+    );
+    const human = await port.getHumanCommerceGrantMutationStatus(
+      "human-hash",
+      ORG,
+      MUTATION,
+    );
+    expect(store.calls.map((call) => call.name)).toEqual([
+      "getAgentMutationStatus",
+      "getHumanMutationStatus",
+    ]);
+    expect(store.calls[0]?.args).toEqual(["session", MUTATION]);
+    expect(store.calls[1]?.args).toEqual(["human-hash", ORG, MUTATION]);
+    // A miss stays a bare `not_found`; the adapter adds no echoed identifier.
+    expect(agent).toEqual({ status: "not_found" });
+    expect(Object.keys(agent)).toEqual(["status"]);
+    // A committed receipt crosses unchanged and is the REVOKE receipt on the
+    // human lane, never an agent issue/replace one.
+    expect(human).toEqual({
+      status: "committed",
+      receipt: grantReceipt("control.grant.revoke"),
+    });
+    expect(Object.keys(human).sort()).toEqual(["receipt", "status"]);
+    // The adapter never reaches for the grant projection or a mutation to
+    // synthesize an answer.
+    expect(
+      store.calls.every(
+        (call) =>
+          call.name === "getAgentMutationStatus" ||
+          call.name === "getHumanMutationStatus",
+      ),
+    ).toBe(true);
+    // No stub error class survives in the adapter module.
+    expect(
+      Object.keys(
+        (await import("../src/control/grant-store-adapter.js")) as Record<
+          string,
+          unknown
+        >,
+      ).sort(),
+    ).toEqual([
+      "createCommerceGrantSessionReadAdapter",
+      "createCommerceGrantStoreAdapter",
+    ]);
   });
 
   it("binds the commerce-session read as a pure rename", async () => {

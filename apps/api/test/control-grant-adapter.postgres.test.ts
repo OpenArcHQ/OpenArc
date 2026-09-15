@@ -11,10 +11,7 @@ import {
 } from "@openarc/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import {
-  GrantMutationStatusUnavailableError,
-  createCommerceGrantStoreAdapter,
-} from "../src/control/grant-store-adapter.js";
+import { createCommerceGrantStoreAdapter } from "../src/control/grant-store-adapter.js";
 import type { CommerceGrantStorePort } from "../src/control/grant-ports.js";
 import {
   adminPool,
@@ -117,6 +114,10 @@ const REQUIRED_HELPERS: readonly string[] = [
   "revoke_authorization_grant",
   "read_authorization_grant",
   "read_provider_grant_attempt_status",
+  // DB14 lost-response recovery. Their absence is exactly what forced the two
+  // status ports to report the dependency UNAVAILABLE before this migration.
+  "read_human_grant_mutation_status",
+  "read_agent_grant_mutation_status",
   // The agent write path resolves its commerce chain before the grant helper.
   "resolve_commerce_action_context",
   "lock_action_human",
@@ -222,6 +223,23 @@ describe("the adapter binds the real DB12 grant store", () => {
             metadata(),
           ),
       },
+      {
+        name: "getHumanCommerceGrantMutationStatus",
+        run: () =>
+          port.getHumanCommerceGrantMutationStatus(
+            unknownHash("human-session"),
+            ORGANIZATION,
+            canonicalUuid(),
+          ),
+      },
+      {
+        name: "getAgentCommerceGrantMutationStatus",
+        run: () =>
+          port.getAgentCommerceGrantMutationStatus(
+            unknownHash("commerce-session"),
+            canonicalUuid(),
+          ),
+      },
     ];
 
     for (const call of calls) {
@@ -255,23 +273,38 @@ describe("the adapter binds the real DB12 grant store", () => {
     }
   });
 
-  it("refuses the two mutation-status reads as an unavailable dependency", async () => {
-    // DB12 exposes no grant mutation-status helper and migration 0012 declares
-    // none, so the adapter reports the dependency unavailable rather than
-    // faking a `not_found` on a money-adjacent recovery read.
-    await expect(
+  it("serves the two mutation-status reads from real SQL instead of a 503", async () => {
+    // The dependency is no longer missing: both reads reach their DB14
+    // SECURITY DEFINER helper through the restricted tenant role and are
+    // refused by the DATABASE on AUTHORITY for an unseeded tenant. A stub that
+    // short-circuits before the SQL could not produce a real
+    // `ControlGrantStoreError` from DB12's own vocabulary.
+    const agent = await storeRefusal(
       port.getAgentCommerceGrantMutationStatus(
         unknownHash("commerce-session"),
         canonicalUuid(),
       ),
-    ).rejects.toBeInstanceOf(GrantMutationStatusUnavailableError);
-    await expect(
+    );
+    const human = await storeRefusal(
       port.getHumanCommerceGrantMutationStatus(
         unknownHash("human-session"),
         ORGANIZATION,
         canonicalUuid(),
       ),
-    ).rejects.toBeInstanceOf(GrantMutationStatusUnavailableError);
+    );
+    for (const error of [agent, human]) {
+      expect(VOCABULARY).toContain(error.code);
+      // An unknown authority is refused as an authority failure, never as a
+      // missing dependency and never as a mis-shaped argument.
+      expect(AUTHORITY_REFUSALS.has(error.code)).toBe(true);
+      expect(error.code).not.toBe("CONTROL_GRANT_STORE_UNAVAILABLE");
+      expect(error.code).not.toBe("CONTROL_GRANT_STORE_INPUT_INVALID");
+      // It is never the terminal double-spend code either.
+      expect(error.code).not.toBe("CONTROL_GRANT_STORE_OUTCOME_UNKNOWN");
+      expect(error.message).not.toContain(ORGANIZATION);
+      expect(error.message).not.toContain(unknownHash("human-session"));
+      expect(error.message).not.toContain(unknownHash("commerce-session"));
+    }
   });
 
   it("keeps the adapter's error vocabulary identical to the store's", () => {
@@ -280,7 +313,11 @@ describe("the adapter binds the real DB12 grant store", () => {
     // particular must remain a real member.
     expect(VOCABULARY).toContain("CONTROL_GRANT_STORE_UNAVAILABLE");
     expect(VOCABULARY).toContain("CONTROL_GRANT_STORE_OUTCOME_UNKNOWN");
-    expect(new GrantMutationStatusUnavailableError().code).toBe(
+    // `CONTROL_GRANT_STORE_UNAVAILABLE` still means a genuine outage and is
+    // still produced by the store itself; it is no longer produced by a
+    // hard-coded "this dependency does not exist" stub in the adapter, which
+    // now exports only its two factory functions.
+    expect(new ControlGrantStoreError("CONTROL_GRANT_STORE_UNAVAILABLE").code).toBe(
       "CONTROL_GRANT_STORE_UNAVAILABLE",
     );
   });

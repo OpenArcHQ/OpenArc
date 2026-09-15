@@ -673,6 +673,216 @@ describe('revoke and safe status', () => {
   });
 });
 
+function statusRow(overrides: Row = {}): Row {
+  return {
+    out_mutation_id: MUTATION,
+    out_operation: 'control.grant.revoke',
+    out_resource_type: 'authorization_grant',
+    out_resource_id: GRANT,
+    out_committed_at: '2026-09-12 10:02:00.000000+00',
+    ...overrides,
+  };
+}
+
+function humanStatusStore(rows: Row[]): { store: ControlGrantStore; pool: FakePool } {
+  return storeWith([
+    { when: (text) => text.includes('read_human_grant_mutation_status'), rows },
+  ]);
+}
+
+function agentStatusStore(rows: Row[]): { store: ControlGrantStore; pool: FakePool } {
+  return storeWith([
+    { when: (text) => text.includes('read_agent_grant_mutation_status'), rows },
+  ]);
+}
+
+describe('grant mutation-status recovery', () => {
+  it('projects a committed human revoke receipt and a bare not_found', async () => {
+    const found = humanStatusStore([statusRow()]);
+    const status = await found.store.getHumanMutationStatus(HASH, ORG, MUTATION);
+    expect(status).toEqual({
+      status: 'committed',
+      receipt: {
+        mutationId: MUTATION,
+        operation: 'control.grant.revoke',
+        resourceType: CONTROL_GRANT_RESOURCE_TYPE,
+        resourceId: GRANT,
+        committedAt: '2026-09-12T10:02:00.000000Z',
+      },
+    });
+    // The helper is reached by name, with the caller arguments in order.
+    expect(
+      found.pool.clients[0]?.calls.find((call) =>
+        call.text.includes('read_human_grant_mutation_status'))?.values,
+    ).toEqual([HASH, ORG, MUTATION]);
+    const missing = humanStatusStore([]);
+    const empty = await missing.store.getHumanMutationStatus(HASH, ORG, MUTATION);
+    expect(empty).toEqual({ status: 'not_found' });
+    // A miss carries NOTHING besides the discriminator.
+    expect(Object.keys(empty)).toEqual(['status']);
+  });
+
+  it('projects the two committed agent receipts and a bare not_found', async () => {
+    for (const operation of ['control.grant.issue', 'control.grant.replace'] as const) {
+      const found = agentStatusStore([
+        statusRow({ out_operation: operation, out_organization_id: ORG }),
+      ]);
+      const status = await found.store.getAgentMutationStatus(TOKEN_HASH, MUTATION);
+      expect(status).toEqual({
+        status: 'committed',
+        receipt: {
+          mutationId: MUTATION,
+          operation,
+          resourceType: CONTROL_GRANT_RESOURCE_TYPE,
+          resourceId: GRANT,
+          committedAt: '2026-09-12T10:02:00.000000Z',
+        },
+      });
+      expect(
+        found.pool.clients[0]?.calls.find((call) =>
+          call.text.includes('read_agent_grant_mutation_status'))?.values,
+      ).toEqual([TOKEN_HASH, MUTATION]);
+    }
+    const missing = agentStatusStore([]);
+    const empty = await missing.store.getAgentMutationStatus(TOKEN_HASH, MUTATION);
+    expect(empty).toEqual({ status: 'not_found' });
+    expect(Object.keys(empty)).toEqual(['status']);
+  });
+
+  it('never lets one audience surface the other audience\u2019s operation', async () => {
+    // The projections are keyed by an explicit non-transposable audience label,
+    // so a row that somehow carried the WRONG audience's operation is a fixed
+    // UNAVAILABLE, never a receipt the caller was not entitled to.
+    for (const operation of ['control.grant.issue', 'control.grant.replace', 'control.grant.claim']) {
+      const store = humanStatusStore([statusRow({ out_operation: operation })]);
+      await expectCode(
+        store.store.getHumanMutationStatus(HASH, ORG, MUTATION),
+        'CONTROL_GRANT_STORE_UNAVAILABLE',
+      );
+    }
+    for (const operation of ['control.grant.revoke', 'control.grant.claim']) {
+      const store = agentStatusStore([
+        statusRow({ out_operation: operation, out_organization_id: ORG }),
+      ]);
+      await expectCode(
+        store.store.getAgentMutationStatus(TOKEN_HASH, MUTATION),
+        'CONTROL_GRANT_STORE_UNAVAILABLE',
+      );
+    }
+  });
+
+  it('refuses a row whose mutation id, resource or organization does not answer the request', async () => {
+    const OTHER_MUTATION = '00000000-0000-4000-8000-0000000000f2';
+    const cases: { rows: Row[]; agent?: boolean }[] = [
+      { rows: [statusRow({ out_mutation_id: OTHER_MUTATION })] },
+      { rows: [statusRow({ out_resource_type: 'commerce_action' })] },
+      { rows: [statusRow({ out_resource_id: ACTION })] },
+      { rows: [statusRow({ out_resource_id: null })] },
+      { rows: [statusRow({ out_committed_at: 'not-a-timestamp' })] },
+    ];
+    for (const entry of cases) {
+      await expectCode(
+        humanStatusStore(entry.rows).store.getHumanMutationStatus(HASH, ORG, MUTATION),
+        'CONTROL_GRANT_STORE_UNAVAILABLE',
+      );
+    }
+    // The agent reader additionally re-asserts the DB-DERIVED buyer org.
+    for (const org of [null, 'openarc:org:not-canonical', 'a'.repeat(64)]) {
+      await expectCode(
+        agentStatusStore([
+          statusRow({ out_operation: 'control.grant.issue', out_organization_id: org }),
+        ]).store.getAgentMutationStatus(TOKEN_HASH, MUTATION),
+        'CONTROL_GRANT_STORE_UNAVAILABLE',
+      );
+    }
+    // More than one row for a single mutation id is never a receipt.
+    await expectCode(
+      humanStatusStore([statusRow(), statusRow()]).store.getHumanMutationStatus(HASH, ORG, MUTATION),
+      'CONTROL_GRANT_STORE_UNAVAILABLE',
+    );
+  });
+
+  it('rejects a malformed hash, organization or mutation id before any SQL', async () => {
+    const human = humanStatusStore([statusRow()]);
+    for (const bad of ['', 'not-a-hash', `${HASH}\n`, null, 7]) {
+      await expectCode(
+        human.store.getHumanMutationStatus(bad, ORG, MUTATION),
+        'CONTROL_GRANT_STORE_INPUT_INVALID',
+      );
+    }
+    for (const bad of ['', ORG.toUpperCase(), 'openarc:org:zz', null]) {
+      await expectCode(
+        human.store.getHumanMutationStatus(HASH, bad, MUTATION),
+        'CONTROL_GRANT_STORE_INPUT_INVALID',
+      );
+    }
+    for (const bad of ['', MUTATION.toUpperCase(), `${MUTATION}\n`, null]) {
+      await expectCode(
+        human.store.getHumanMutationStatus(HASH, ORG, bad),
+        'CONTROL_GRANT_STORE_INPUT_INVALID',
+      );
+    }
+    const agent = agentStatusStore([statusRow({ out_operation: 'control.grant.issue', out_organization_id: ORG })]);
+    for (const bad of ['', 'not-a-hash', `${TOKEN_HASH}\n`, null]) {
+      await expectCode(
+        agent.store.getAgentMutationStatus(bad, MUTATION),
+        'CONTROL_GRANT_STORE_INPUT_INVALID',
+      );
+    }
+    await expectCode(
+      agent.store.getAgentMutationStatus(TOKEN_HASH, 'nope'),
+      'CONTROL_GRANT_STORE_INPUT_INVALID',
+    );
+    // Not one statement was issued for any rejected input.
+    expect(human.pool.connectCalls).toBe(0);
+    expect(agent.pool.connectCalls).toBe(0);
+  });
+
+  it('maps a database authority failure onto the fixed non-echoing vocabulary', async () => {
+    for (const [code, expected] of [
+      ['28000', 'CONTROL_GRANT_STORE_SESSION_INVALID'],
+      ['42501', 'CONTROL_GRANT_STORE_FORBIDDEN'],
+      ['22023', 'CONTROL_GRANT_STORE_INPUT_INVALID'],
+    ] as const) {
+      const human = storeWith([
+        { when: (text) => text.includes('read_human_grant_mutation_status'), throws: { code, message: `boom ${ORG} ${MUTATION}` } },
+      ]);
+      await expectCode(human.store.getHumanMutationStatus(HASH, ORG, MUTATION), expected);
+      const agent = storeWith([
+        { when: (text) => text.includes('read_agent_grant_mutation_status'), throws: { code, message: `boom ${TOKEN_HASH}` } },
+      ]);
+      await expectCode(agent.store.getAgentMutationStatus(TOKEN_HASH, MUTATION), expected);
+    }
+    // The raised message never survives into the store error.
+    const leaky = storeWith([
+      { when: (text) => text.includes('read_human_grant_mutation_status'), throws: { code: '42501', message: `${HASH} ${ORG}` } },
+    ]);
+    try {
+      await leaky.store.getHumanMutationStatus(HASH, ORG, MUTATION);
+      throw new Error('expected a rejection');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ControlGrantStoreError);
+      expect((error as Error).message).not.toContain(HASH);
+      expect((error as Error).message).not.toContain(ORG);
+    }
+  });
+
+  it('carries no token, hash or digest in any recovered receipt', async () => {
+    const human = await humanStatusStore([statusRow()])
+      .store.getHumanMutationStatus(HASH, ORG, MUTATION);
+    const agent = await agentStatusStore([
+      statusRow({ out_operation: 'control.grant.issue', out_organization_id: ORG }),
+    ]).store.getAgentMutationStatus(TOKEN_HASH, MUTATION);
+    for (const payload of [JSON.stringify(human), JSON.stringify(agent)]) {
+      expect(payload).not.toContain(HASH);
+      expect(payload).not.toContain(TOKEN_HASH);
+      expect(payload).not.toContain(digestCommerceGrantToken(RAW_TOKEN));
+      // No 64-hex value of any kind survives into a status answer.
+      expect(/[0-9a-f]{64}/.test(payload)).toBe(false);
+    }
+  });
+});
+
 describe('construction', () => {
   it('rejects a pool without connect and adapts a raw pg pool', () => {
     expect(() => new ControlGrantStore(null as unknown as TenantPool)).toThrow(ControlGrantStoreError);

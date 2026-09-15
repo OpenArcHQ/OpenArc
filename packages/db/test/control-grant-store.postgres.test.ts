@@ -19,6 +19,7 @@ import {
   migratorUrl,
   resetSchema,
   tenantUrl,
+  workerUrl,
 } from './postgres-fixture.js';
 
 /**
@@ -614,6 +615,7 @@ describe('schema12 manifest, ownership and ACLs', () => {
       '0011_control_action_reads',
       '0012_authorization_grants',
       '0013_commerce_session_reads',
+      '0014_grant_mutation_reads',
     ]);
     const tables = await admin.query<{ n: number; enabled: boolean; forced: boolean }>(
       `SELECT count(*)::int AS n, bool_and(c.relrowsecurity) AS enabled,
@@ -1300,5 +1302,502 @@ describe('no raw grant secret anywhere', () => {
     // A second independent secret never digests to the stored hash.
     expect(digestCommerceGrantToken(`oag_v1_${randomBytes(32).toString('base64url')}`))
       .not.toBe(issued.tokenHash);
+  }, 60000);
+});
+
+/* ── DB14 grant mutation-status recovery ────────────────────────────────── */
+
+const ISSUE_SESSION_DOMAIN = 'openarc.control.grant.issue.session.v1';
+const REPLACE_SESSION_DOMAIN = 'openarc.control.grant.replace.session.v1';
+const REVOKE_SESSION_DOMAIN = 'openarc.control.grant.revoke.session.v1';
+
+/** A canonical uuid v4 that names no recorded mutation. */
+function unknownMutation(seed: number): string {
+  return uuid(990000 + seed);
+}
+
+async function waitForLockWait(): Promise<void> {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    const probe = await admin.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`,
+    );
+    if ((probe.rows[0]?.n ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('no lock wait observed');
+}
+
+async function shortenSession(hash: string, seconds: number): Promise<void> {
+  await admin.query(
+    `UPDATE openarc_auth.sessions
+        SET expires_at = clock_timestamp() + make_interval(secs => $2)
+      WHERE token_hash = $1`,
+    [hash, seconds],
+  );
+}
+
+async function waitUntilSessionExpired(hash: string): Promise<void> {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    const probe = await admin.query<{ expired: boolean }>(
+      `SELECT clock_timestamp() >= expires_at AS expired
+         FROM openarc_auth.sessions WHERE token_hash = $1`,
+      [hash],
+    );
+    if (probe.rows[0]?.expired === true) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('session did not expire');
+}
+
+/** A co-owner: a DIFFERENT active owner of the SAME buyer organization. */
+async function seedCoOwner(org: string, seed: number): Promise<Owner> {
+  const account = await seedAccount(seed);
+  const hash = await seedSession(seed, account);
+  await admin.query(
+    'INSERT INTO openarc_tenant.memberships (organization_id, account_id, role, status) VALUES ($1, $2, $3, $4)',
+    [org, account, 'owner', 'active'],
+  );
+  return { account, hash, org };
+}
+
+/**
+ * A digest over every durable table a grant mutation can touch. A read that
+ * changed ANY byte of ANY of them would move this value, which a bare row
+ * count cannot detect (an update or a swap keeps the count identical).
+ */
+async function durableDigest(): Promise<string> {
+  const result = await admin.query<{ d: string }>(
+    `SELECT md5(coalesce(string_agg(x, '|' ORDER BY x), '')) AS d FROM (
+        SELECT t::text AS x FROM openarc_durable.authorization_grants t
+        UNION ALL SELECT t::text FROM openarc_durable.authorization_grant_tokens t
+        UNION ALL SELECT t::text FROM openarc_durable.authorization_grant_claims t
+        UNION ALL SELECT t::text FROM openarc_durable.idempotency_records t
+        UNION ALL SELECT t::text FROM openarc_durable.audit_events t
+        UNION ALL SELECT t::text FROM openarc_durable.outbox_events t
+        UNION ALL SELECT t::text FROM openarc_durable.budget_reservations t
+        UNION ALL SELECT t::text FROM openarc_durable.budget_events t
+        UNION ALL SELECT t::text FROM openarc_durable.commerce_actions t
+        UNION ALL SELECT t::text FROM openarc_durable.commerce_sessions t
+        UNION ALL SELECT t::text FROM openarc_durable.commerce_session_handoffs t
+      ) s`,
+  );
+  return result.rows[0]!.d;
+}
+
+/** An issued -> replaced -> revoked grant whose three receipts are all real. */
+interface Recoverable {
+  readonly chain: Chain;
+  readonly action: string;
+  readonly grant: string;
+  readonly raw: string;
+  readonly tokenHash: string;
+  readonly replacedRaw: string;
+  readonly replacedTokenHash: string;
+  readonly issueMutation: string;
+  readonly replaceMutation: string;
+}
+
+async function seedRecoverable(buyerSeed: number, sellerSeed: number): Promise<Recoverable> {
+  const chain = await seedCrossChain(buyerSeed, sellerSeed);
+  const requirement = await seedRequirement(chain, buyerSeed);
+  const action = actionId(buyerSeed);
+  await coreAuthorize(chain, requirement, action);
+  const raw = rawGrantToken(buyerSeed);
+  const tokenHash = digestCommerceGrantToken(raw);
+  const issueMutation = grantMutation(buyerSeed);
+  const issued = await coreIssue(chain, action, tokenHash, {
+    mutation: issueMutation,
+    // The REAL per-operation session context digest the production wrapper
+    // would have computed for this exact commerce bearer.
+    context: contextDigest(ISSUE_SESSION_DOMAIN, chain.commerceTokenHash),
+  });
+  const grant = issued.rows[0]!.out_grant_id as string;
+  const replacedRaw = rawGrantToken(buyerSeed + 400);
+  const replacedTokenHash = digestCommerceGrantToken(replacedRaw);
+  const replaceMutation = grantMutation(90000 + buyerSeed);
+  await coreReplace(chain, grant, replacedTokenHash, {
+    mutation: replaceMutation,
+    context: contextDigest(REPLACE_SESSION_DOMAIN, chain.commerceTokenHash),
+  });
+  return {
+    chain, action, grant, raw, tokenHash,
+    replacedRaw, replacedTokenHash, issueMutation, replaceMutation,
+  };
+}
+
+async function revokeVia(seeded: Recoverable, seed: number): Promise<{
+  mutation: string;
+  receipt: { mutationId: string; operation: string; resourceType: string; resourceId: string; committedAt: string };
+}> {
+  const mutation = grantMutation(95000 + seed);
+  const revoked = await store.revokeGrant(
+    seeded.chain.buyer.hash, seeded.chain.buyer.org, seeded.grant,
+    { idempotencyKey: key(95000 + seed), mutationId: mutation },
+  );
+  return { mutation, receipt: revoked.receipt };
+}
+
+describe('schema14 grant mutation-status recovery', () => {
+  it('recovers the exact committed human revoke receipt and nothing else', async () => {
+    const seeded = await seedRecoverable(90, 1090);
+    const { mutation, receipt } = await revokeVia(seeded, 90);
+
+    const recovered = await store.getHumanMutationStatus(
+      seeded.chain.buyer.hash, seeded.chain.buyer.org, mutation,
+    );
+    // The recovery read reproduces the ORIGINAL receipt byte for byte, which
+    // is the whole point: a buyer whose revoke response was lost learns that
+    // the revoke committed instead of retrying a money-adjacent mutation.
+    expect(recovered).toEqual({ status: 'committed', receipt });
+    expect(recovered).toEqual({
+      status: 'committed',
+      receipt: {
+        mutationId: mutation,
+        operation: 'control.grant.revoke',
+        resourceType: 'authorization_grant',
+        resourceId: seeded.grant,
+        committedAt: expect.any(String),
+      },
+    });
+    // An unknown mutation id under the SAME valid current authority is a bare
+    // not_found, never an error that would distinguish it from a foreign one.
+    const missing = await store.getHumanMutationStatus(
+      seeded.chain.buyer.hash, seeded.chain.buyer.org, unknownMutation(1),
+    );
+    expect(missing).toEqual({ status: 'not_found' });
+    expect(Object.keys(missing)).toEqual(['status']);
+  }, 60000);
+
+  it('recovers the committed agent issue and replace receipts', async () => {
+    const seeded = await seedRecoverable(91, 1091);
+
+    const issue = await store.getAgentMutationStatus(
+      seeded.chain.commerceTokenHash, seeded.issueMutation,
+    );
+    expect(issue).toEqual({
+      status: 'committed',
+      receipt: {
+        mutationId: seeded.issueMutation,
+        operation: 'control.grant.issue',
+        resourceType: 'authorization_grant',
+        resourceId: seeded.grant,
+        committedAt: expect.any(String),
+      },
+    });
+    const replace = await store.getAgentMutationStatus(
+      seeded.chain.commerceTokenHash, seeded.replaceMutation,
+    );
+    expect(replace).toEqual({
+      status: 'committed',
+      receipt: {
+        mutationId: seeded.replaceMutation,
+        operation: 'control.grant.replace',
+        resourceType: 'authorization_grant',
+        resourceId: seeded.grant,
+        committedAt: expect.any(String),
+      },
+    });
+    // Same grant, two DISTINCT mutations, two distinct receipts.
+    expect(seeded.issueMutation).not.toBe(seeded.replaceMutation);
+    const missing = await store.getAgentMutationStatus(
+      seeded.chain.commerceTokenHash, unknownMutation(2),
+    );
+    expect(missing).toEqual({ status: 'not_found' });
+    expect(Object.keys(missing)).toEqual(['status']);
+  }, 60000);
+
+  it('never lets one audience recover the other audience’s receipt', async () => {
+    const seeded = await seedRecoverable(92, 1092);
+    const { mutation: revokeMutation } = await revokeVia(seeded, 92);
+
+    // The buyer cookie cannot recover the agent's issue or replace receipt,
+    // even though schema12 records the buyer's own account as their actor.
+    for (const agentMutation of [seeded.issueMutation, seeded.replaceMutation]) {
+      const denied = await store.getHumanMutationStatus(
+        seeded.chain.buyer.hash, seeded.chain.buyer.org, agentMutation,
+      );
+      expect(denied).toEqual({ status: 'not_found' });
+    }
+    // ...and the agent bearer cannot recover the buyer's revoke receipt.
+    const hidden = await store.getAgentMutationStatus(
+      seeded.chain.commerceTokenHash, revokeMutation,
+    );
+    expect(hidden).toEqual({ status: 'not_found' });
+    // Each miss is byte-identical to a genuinely unknown mutation.
+    expect(hidden).toEqual(
+      await store.getAgentMutationStatus(seeded.chain.commerceTokenHash, unknownMutation(3)),
+    );
+    // The actor column alone does NOT separate the audiences: the agent rows
+    // really are recorded against the buyer's own account, so the separation
+    // must come from the operation filter and the session-context digest.
+    const actors = await admin.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM openarc_durable.idempotency_records r
+        WHERE r.mutation_id = ANY ($1::uuid[]) AND r.actor_account_id = $2`,
+      [[seeded.issueMutation, seeded.replaceMutation, revokeMutation], seeded.chain.buyer.account],
+    );
+    expect(actors.rows[0]!.n).toBe(3);
+  }, 60000);
+
+  it('denies a wrong organization, a co-owner and a foreign commerce session', async () => {
+    const seeded = await seedRecoverable(93, 1093);
+    const { mutation } = await revokeVia(seeded, 93);
+
+    // A buyer presenting the SELLER's organization holds no membership there:
+    // a fixed authority refusal that never depends on the row existing.
+    await expectStoreCode(
+      store.getHumanMutationStatus(seeded.chain.buyer.hash, seeded.chain.seller.org, mutation),
+      'CONTROL_GRANT_STORE_FORBIDDEN',
+    );
+    await expectStoreCode(
+      store.getHumanMutationStatus(
+        seeded.chain.buyer.hash, seeded.chain.seller.org, unknownMutation(4),
+      ),
+      'CONTROL_GRANT_STORE_FORBIDDEN',
+    );
+    // The seller IS authorized for its own organization, so the wrong-org
+    // attempt degrades to an indistinguishable not_found rather than leaking.
+    const sellerView = await store.getHumanMutationStatus(
+      seeded.chain.seller.hash, seeded.chain.seller.org, mutation,
+    );
+    expect(sellerView).toEqual({ status: 'not_found' });
+
+    // A DIFFERENT active owner of the SAME organization passes authority and
+    // still recovers nothing: the receipt is bound to the acting account and
+    // to the exact presented browser session.
+    const coOwner = await seedCoOwner(seeded.chain.buyer.org, 9300);
+    const coView = await store.getHumanMutationStatus(coOwner.hash, coOwner.org, mutation);
+    expect(coView).toEqual({ status: 'not_found' });
+    expect(coView).toEqual(
+      await store.getHumanMutationStatus(coOwner.hash, coOwner.org, unknownMutation(5)),
+    );
+
+    // A SECOND live session for the SAME buyer account recovers nothing
+    // either: the receipt is pinned to the session-context digest of the exact
+    // browser session the revoke was authorized with, not merely to the actor.
+    const secondHash = await seedSession(9301, seeded.chain.buyer.account);
+    const secondView = await store.getHumanMutationStatus(
+      secondHash, seeded.chain.buyer.org, mutation,
+    );
+    expect(secondView).toEqual({ status: 'not_found' });
+    expect(secondView).toEqual(
+      await store.getHumanMutationStatus(secondHash, seeded.chain.buyer.org, unknownMutation(12)),
+    );
+    // The original session still recovers it, so the miss above is the binding
+    // and not a broken fixture.
+    expect(
+      await store.getHumanMutationStatus(seeded.chain.buyer.hash, seeded.chain.buyer.org, mutation),
+    ).toMatchObject({ status: 'committed' });
+
+    // A foreign buyer's live commerce session recovers neither agent receipt.
+    const foreign = await seedCrossChain(94, 1094);
+    for (const agentMutation of [seeded.issueMutation, seeded.replaceMutation]) {
+      expect(
+        await store.getAgentMutationStatus(foreign.commerceTokenHash, agentMutation),
+      ).toEqual({ status: 'not_found' });
+    }
+    // A canonical hash that names no consumed handoff at all is refused with
+    // the SAME authority code a revoked or foreign session receives, so a miss
+    // there discloses nothing about which sessions exist.
+    await expectStoreCode(
+      store.getAgentMutationStatus(HEX_A, seeded.issueMutation),
+      'CONTROL_GRANT_STORE_FORBIDDEN',
+    );
+    await expectStoreCode(
+      store.getAgentMutationStatus(HEX_A, unknownMutation(11)),
+      'CONTROL_GRANT_STORE_FORBIDDEN',
+    );
+  }, 90000);
+
+  it('denies a revoked or expired authority on both lanes', async () => {
+    const seeded = await seedRecoverable(95, 1095);
+    const { mutation } = await revokeVia(seeded, 95);
+
+    // An EXPIRED browser session is refused, on the found and the not-found
+    // path alike. The row's own expiry-window constraint forbids back-dating
+    // it, so the fixture lets it lapse for real.
+    await shortenSession(seeded.chain.buyer.hash, 1);
+    await waitUntilSessionExpired(seeded.chain.buyer.hash);
+    for (const target of [mutation, unknownMutation(6)]) {
+      await expectStoreCode(
+        store.getHumanMutationStatus(seeded.chain.buyer.hash, seeded.chain.buyer.org, target),
+        'CONTROL_GRANT_STORE_SESSION_INVALID',
+      );
+    }
+    // A REVOKED (deleted) browser session is refused the same way.
+    await admin.query('DELETE FROM openarc_auth.sessions WHERE token_hash = $1', [
+      seeded.chain.buyer.hash,
+    ]);
+    await expectStoreCode(
+      store.getHumanMutationStatus(seeded.chain.buyer.hash, seeded.chain.buyer.org, mutation),
+      'CONTROL_GRANT_STORE_SESSION_INVALID',
+    );
+
+    // A REVOKED commerce session recovers nothing on the agent lane.
+    const agentSide = await seedRecoverable(96, 1096);
+    expect(
+      await store.getAgentMutationStatus(agentSide.chain.commerceTokenHash, agentSide.issueMutation),
+    ).toMatchObject({ status: 'committed' });
+    await admin.query(
+      `UPDATE openarc_durable.commerce_sessions SET revoked_at = clock_timestamp()
+        WHERE organization_id = $1`,
+      [agentSide.chain.buyer.org],
+    );
+    for (const target of [agentSide.issueMutation, unknownMutation(7)]) {
+      await expectStoreCode(
+        store.getAgentMutationStatus(agentSide.chain.commerceTokenHash, target),
+        'CONTROL_GRANT_STORE_FORBIDDEN',
+      );
+    }
+    // An EXPIRED commerce session is refused too.
+    const expired = await seedRecoverable(97, 1097);
+    // The session's own trigger and CHECK constraints forbid extending an
+    // expiry, pushing it to or below issuance, or moving it before the recorded
+    // exchange. The fixture therefore shortens it to the exchange instant --
+    // the earliest value they all accept, and already in the past.
+    await admin.query(
+      `UPDATE openarc_durable.commerce_sessions
+          SET expires_at = greatest(exchanged_at, issued_at + interval '1 millisecond')
+        WHERE organization_id = $1`,
+      [expired.chain.buyer.org],
+    );
+    await expectStoreCode(
+      store.getAgentMutationStatus(expired.chain.commerceTokenHash, expired.issueMutation),
+      'CONTROL_GRANT_STORE_FORBIDDEN',
+    );
+  }, 120000);
+
+  it('revalidates the current authority on the NOT-FOUND path after a lock wait', async () => {
+    const seeded = await seedRecoverable(98, 1098);
+    // The reader holds the schema10 human preamble BEFORE and AFTER the read.
+    // Block the organization row it locks, start a not-found read, let the
+    // session lapse while it waits, then release: the call must be refused
+    // rather than returning the safe not_found it had already computed.
+    await shortenSession(seeded.chain.buyer.hash, 2);
+    const blocker = await admin.connect();
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query(
+        'SELECT 1 FROM openarc_tenant.organizations WHERE organization_id = $1 FOR UPDATE',
+        [seeded.chain.buyer.org],
+      );
+      const pending = store.getHumanMutationStatus(
+        seeded.chain.buyer.hash, seeded.chain.buyer.org, unknownMutation(8),
+      );
+      await waitForLockWait();
+      await waitUntilSessionExpired(seeded.chain.buyer.hash);
+      await blocker.query('COMMIT');
+      await expectStoreCode(pending, 'CONTROL_GRANT_STORE_SESSION_INVALID');
+    } finally {
+      await blocker.query('ROLLBACK').catch(() => {});
+      blocker.release();
+    }
+    // The revalidation is structural, not incidental: each reader calls its
+    // authority preamble TWICE and the receipt is emitted only afterwards.
+    const definitions = await admin.query<{ proname: string; body: string; volatile: string; secdef: boolean; config: string[] }>(
+      `SELECT p.proname, pg_get_functiondef(p.oid) AS body, p.provolatile AS volatile,
+              p.prosecdef AS secdef, coalesce(p.proconfig, ARRAY[]::text[]) AS config
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'openarc_durable'
+          AND p.proname IN ('read_human_grant_mutation_status', 'read_agent_grant_mutation_status')`,
+    );
+    expect(definitions.rows).toHaveLength(2);
+    for (const row of definitions.rows) {
+      const preamble = row.proname === 'read_human_grant_mutation_status'
+        ? 'lock_action_reader'
+        : 'lock_action_commerce_state';
+      expect([row.proname, row.body.split(preamble).length - 1]).toEqual([row.proname, 2]);
+      expect([row.proname, row.body.lastIndexOf(preamble) < row.body.lastIndexOf('RETURN NEXT')])
+        .toEqual([row.proname, true]);
+      // STABLE: PostgreSQL itself forbids the reader from writing.
+      expect([row.proname, row.volatile]).toEqual([row.proname, 's']);
+      expect([row.proname, row.secdef]).toEqual([row.proname, true]);
+      expect([row.proname, row.config]).toEqual([row.proname, ['search_path=pg_catalog']]);
+    }
+  }, 90000);
+
+  it('returns no token hash, session hash or digest and never mutates a row', async () => {
+    const seeded = await seedRecoverable(99, 1099);
+    const { mutation } = await revokeVia(seeded, 99);
+    const before = await counts();
+    const beforeDigest = await durableDigest();
+
+    const answers: unknown[] = [
+      await store.getHumanMutationStatus(seeded.chain.buyer.hash, seeded.chain.buyer.org, mutation),
+      await store.getHumanMutationStatus(
+        seeded.chain.buyer.hash, seeded.chain.buyer.org, unknownMutation(9),
+      ),
+      await store.getAgentMutationStatus(seeded.chain.commerceTokenHash, seeded.issueMutation),
+      await store.getAgentMutationStatus(seeded.chain.commerceTokenHash, seeded.replaceMutation),
+      await store.getAgentMutationStatus(seeded.chain.commerceTokenHash, unknownMutation(10)),
+    ];
+    for (const answer of answers) {
+      const payload = JSON.stringify(answer);
+      expect(payload).not.toContain(seeded.raw);
+      expect(payload).not.toContain(seeded.replacedRaw);
+      expect(payload).not.toContain(seeded.tokenHash);
+      expect(payload).not.toContain(seeded.replacedTokenHash);
+      expect(payload).not.toContain(seeded.chain.commerceTokenHash);
+      expect(payload).not.toContain(seeded.chain.buyer.hash);
+      expect(payload).not.toContain(seeded.chain.agentSessionHash);
+      expect(payload).not.toContain(contextDigest(REVOKE_SESSION_DOMAIN, seeded.chain.buyer.hash));
+      expect(payload).not.toContain(contextDigest(ISSUE_SESSION_DOMAIN, seeded.chain.commerceTokenHash));
+      // Nothing 64-hex-shaped survives into ANY status answer at all.
+      expect(/[0-9a-f]{64}/.test(payload)).toBe(false);
+    }
+    // Counts are unchanged AND every durable row is byte-identical: an update
+    // or a swap that preserved the counts would still move the digest.
+    expect(await counts()).toEqual(before);
+    expect(await durableDigest()).toBe(beforeDigest);
+  }, 90000);
+
+  it('grants EXECUTE to the restricted runtime alone and nothing to PUBLIC', async () => {
+    const acl = await admin.query<{
+      proname: string; owner: string; app_exec: boolean; public_exec: number;
+      auth_exec: boolean; worker_exec: boolean; migrator_exec: boolean;
+    }>(
+      `SELECT p.proname, r.rolname AS owner,
+              has_function_privilege('openarc_tenant_app', p.oid, 'EXECUTE') AS app_exec,
+              has_function_privilege('openarc_auth_app', p.oid, 'EXECUTE') AS auth_exec,
+              has_function_privilege('openarc_worker_app', p.oid, 'EXECUTE') AS worker_exec,
+              has_function_privilege('openarc_migrator', p.oid, 'EXECUTE') AS migrator_exec,
+              (SELECT count(*)::int FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE') AS public_exec
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+         JOIN pg_roles r ON r.oid = p.proowner
+        WHERE n.nspname = 'openarc_durable'
+          AND p.proname IN ('read_human_grant_mutation_status', 'read_agent_grant_mutation_status')`,
+    );
+    expect(acl.rows).toHaveLength(2);
+    for (const row of acl.rows) {
+      expect([row.proname, row.owner]).toEqual([row.proname, 'openarc_migrator']);
+      expect([row.proname, row.app_exec]).toEqual([row.proname, true]);
+      // PUBLIC holds nothing, and no other runtime role was widened.
+      expect([row.proname, row.public_exec]).toEqual([row.proname, 0]);
+      expect([row.proname, row.auth_exec]).toEqual([row.proname, false]);
+      expect([row.proname, row.worker_exec]).toEqual([row.proname, false]);
+      expect([row.proname, row.migrator_exec]).toEqual([row.proname, true]);
+    }
+    // A live non-granted runtime role is refused by PostgreSQL itself. If
+    // PUBLIC held EXECUTE this call would have reached the function body.
+    const worker = createDatabasePool(workerUrl());
+    try {
+      const refusal = await rawError(
+        worker.query(
+          'SELECT * FROM openarc_durable.read_human_grant_mutation_status($1, $2, $3::uuid)',
+          [HEX_A, orgId(1), uuid(1)],
+        ),
+      );
+      expect(refusal.code).toBe('42501');
+      const agentRefusal = await rawError(
+        worker.query(
+          'SELECT * FROM openarc_durable.read_agent_grant_mutation_status($1, $2::uuid)',
+          [HEX_A, uuid(1)],
+        ),
+      );
+      expect(agentRefusal.code).toBe('42501');
+    } finally {
+      await worker.end();
+    }
   }, 60000);
 });

@@ -17,7 +17,7 @@ import type {
 } from "./grant-ports.js";
 
 /**
- * Binds the authorization-grant service ports to the real DB12
+ * Binds the authorization-grant service ports to the real DB12/DB14
  * `ControlGrantStore`.
  *
  * This adapter is deliberately thin and does exactly two things: it renames
@@ -27,6 +27,14 @@ import type {
  * re-validated by the service against the accepted shared grant wire schemas.
  * It never widens a scope, never retries, never swallows an error, never logs
  * and never inspects a token or a digest beyond passing it straight through.
+ *
+ * ALL NINE port operations are bound to a real store call. The two grant
+ * mutation-status reads used to have no DB backing at all — migration 0012
+ * declared no such helper — so they reported the dependency UNAVAILABLE rather
+ * than fake a `not_found`, which on a money-adjacent recovery read would be a
+ * false negative telling a caller their mutation does not exist when it may
+ * have committed. Migration 0014 adds the two SECURITY DEFINER readers and the
+ * store exposes them, so nothing here reports a missing dependency any more.
  *
  * The store import is type-only and therefore erased; the concrete store is
  * injected, so the service remains testable with fakes.
@@ -53,21 +61,20 @@ export function createCommerceGrantStoreAdapter(
     },
 
     /**
-     * NOT SERVED BY DB12.
+     * Agent lost-response recovery, served by DB14
+     * `read_agent_grant_mutation_status` through the store.
      *
-     * The accepted `ControlGrantStore` exposes no grant mutation-status read and
-     * migration 0012 declares no such SECURITY DEFINER helper, so there is
-     * nothing honest to bind here. The frozen registry still requires the route
-     * to exist, so the dependency reports itself UNAVAILABLE in the store's own
-     * vocabulary and the service maps it to the fixed non-echoing 503. It is
-     * deliberately NOT faked with a null, a `not_found`, a receipt reconstructed
-     * from another table, or a read borrowed from the commerce-action store
-     * (whose status helpers answer only for action operations and would
-     * therefore report `not_found` for a real, committed grant mutation — a
-     * false negative on a money-adjacent recovery read).
+     * The store answers the closed committed-or-not-found shape and admits
+     * ONLY the two agent operations, so no browser revoke and no provider claim
+     * receipt can arrive on this lane. Nothing is reshaped here beyond widening
+     * the closed union to the port's pre-validation envelope; the service
+     * re-parses it against the accepted agent status schema.
      */
-    getAgentCommerceGrantMutationStatus(): Promise<CommerceGrantMutationDbStatus> {
-      return Promise.reject(new GrantMutationStatusUnavailableError());
+    getAgentCommerceGrantMutationStatus(
+      commerceSessionHash: unknown,
+      mutationId: unknown,
+    ): Promise<CommerceGrantMutationDbStatus> {
+      return grants.getAgentMutationStatus(commerceSessionHash, mutationId);
     },
 
     /* -- commerce_grant_claim (provider) ------------------------------- */
@@ -149,9 +156,25 @@ export function createCommerceGrantStoreAdapter(
       return { organizationId, grantId, item };
     },
 
-    /** NOT SERVED BY DB12 — see the agent status note above. */
-    getHumanCommerceGrantMutationStatus(): Promise<CommerceGrantMutationDbStatus> {
-      return Promise.reject(new GrantMutationStatusUnavailableError());
+    /**
+     * Buyer lost-response recovery, served by DB14
+     * `read_human_grant_mutation_status` through the store. This is the read
+     * the grant console depends on: it is the only safe way a buyer learns
+     * whether a revoke whose response was lost actually committed. The store
+     * admits ONLY `control.grant.revoke`, so a browser cookie can never be
+     * handed an agent issue/replace or a provider claim receipt, and neither
+     * the organization nor the mutation id is echoed onto the answer.
+     */
+    getHumanCommerceGrantMutationStatus(
+      humanSessionHash: unknown,
+      organizationId: unknown,
+      mutationId: unknown,
+    ): Promise<CommerceGrantMutationDbStatus> {
+      return grants.getHumanMutationStatus(
+        humanSessionHash,
+        organizationId,
+        mutationId,
+      );
     },
 
     /**
@@ -182,25 +205,6 @@ export function createCommerceGrantStoreAdapter(
       };
     },
   };
-}
-
-/**
- * The fixed, input-free "this dependency does not exist in this deployment"
- * failure for the two grant mutation-status reads.
- *
- * It carries DB12's own `CONTROL_GRANT_STORE_UNAVAILABLE` code so the service's
- * structural error mapping treats it exactly like any other unavailable
- * dependency: a fixed non-echoing 503. It is deliberately NOT
- * `CONTROL_GRANT_STORE_OUTCOME_UNKNOWN` (which is terminal and means a write
- * may have committed) and NOT a caller error. It echoes no input.
- */
-export class GrantMutationStatusUnavailableError extends Error {
-  readonly code = "CONTROL_GRANT_STORE_UNAVAILABLE";
-
-  constructor() {
-    super("ControlGrantStore is not available.");
-    this.name = "GrantMutationStatusUnavailableError";
-  }
 }
 
 /**
