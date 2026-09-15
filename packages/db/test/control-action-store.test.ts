@@ -274,6 +274,98 @@ describe('OutboxStore commerce_action claim boundary', () => {
   });
 });
 
+/**
+ * Regression for a queue-blocking defect: DB7 really emits four listing-version
+ * lifecycle events and the worker registers handlers for all four, but the
+ * claim projection had no case for them and fell through to the fixed
+ * UNAVAILABLE error. Because one unprojectable row fails the WHOLE batch, a
+ * single published listing version stalled every notification permanently.
+ *
+ * These four legitimately target a listing's FIRST version, so unlike
+ * `market.listing.version.created` — which is only emitted for version >= 2,
+ * version 1 being reported by `market.listing.created` — they must accept `@1`.
+ */
+describe('OutboxStore listing_version lifecycle claim boundary', () => {
+  const EVENT = '00000000-0000-4000-8000-0000000000f1';
+  const MUTATION = '00000000-0000-4000-8000-0000000000f2';
+  const ORG = 'openarc:org:00000000-0000-4000-8000-0000000000f3';
+  const LISTING = 'openarc:listing:00000000-0000-4000-8000-0000000000f4';
+
+  const LIFECYCLE_EVENTS = [
+    'market.listing.origin_review.recorded',
+    'market.listing.version.published',
+    'market.listing.version.paused',
+    'market.listing.version.retired',
+  ] as const;
+
+  function lifecycleRow(resourceId: string, eventType: string): Row {
+    return {
+      event_id: EVENT,
+      organization_id: ORG,
+      mutation_id: MUTATION,
+      resource_type: 'listing_version',
+      resource_id: resourceId,
+      event_type: eventType,
+      payload_version: 1,
+      lease_generation: '1',
+      lease_until: new Date('2026-09-15T10:00:30.000Z'),
+      attempt_count: 0,
+    };
+  }
+
+  it('projects all four lifecycle events, including on a listing first version', async () => {
+    for (const eventType of LIFECYCLE_EVENTS) {
+      for (const version of ['1', '2', '999999999']) {
+        const pool = new FakePool(
+          () =>
+            new FakeClient([
+              { when: () => true, rows: [lifecycleRow(`${LISTING}@${version}`, eventType)] },
+            ]),
+        );
+        const claimed = await new OutboxStore(pool).claim({ limit: 1 });
+        expect(claimed).toHaveLength(1);
+        expect(claimed[0]?.resourceType).toBe('listing_version');
+        expect(claimed[0]?.eventType).toBe(eventType);
+        expect(claimed[0]?.resourceId).toBe(`${LISTING}@${version}`);
+      }
+    }
+  });
+
+  it('still rejects a malformed lifecycle resource without widening the boundary', async () => {
+    const bad = [
+      `${LISTING}@0`,
+      `${LISTING}@01`,
+      `${LISTING}@`,
+      LISTING,
+      `${LISTING}@1\n`,
+      `${LISTING}@1 `,
+      'openarc:listing:00000000-0000-4000-8000-0000000000f4@1x',
+    ];
+    for (const resourceId of bad) {
+      const pool = new FakePool(
+        () =>
+          new FakeClient([
+            {
+              when: () => true,
+              rows: [lifecycleRow(resourceId, 'market.listing.version.published')],
+            },
+          ]),
+      );
+      await expectCodeOutbox(new OutboxStore(pool).claim({ limit: 1 }), 'OUTBOX_STORE_UNAVAILABLE');
+    }
+  });
+
+  it('keeps version.created excluding a first version', async () => {
+    const pool = new FakePool(
+      () =>
+        new FakeClient([
+          { when: () => true, rows: [lifecycleRow(`${LISTING}@1`, 'market.listing.version.created')] },
+        ]),
+    );
+    await expectCodeOutbox(new OutboxStore(pool).claim({ limit: 1 }), 'OUTBOX_STORE_UNAVAILABLE');
+  });
+});
+
 async function expectCodeOutbox(promise: Promise<unknown>, code: string): Promise<void> {
   try {
     await promise;

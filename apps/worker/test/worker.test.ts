@@ -1420,3 +1420,80 @@ describe('runtime lifecycle', () => {
     expect(ended).toBe(1);
   });
 });
+
+/**
+ * Regression for an unbounded retry: a claim failure is not always transient.
+ * A durable row the store cannot project fails the whole batch every time, so
+ * the loop previously spun at `idleMaxMs` forever and stalled the queue
+ * silently. The bound makes the condition visible to the supervisor.
+ */
+describe('bounded consecutive claim errors', () => {
+  it('stops after the configured number of consecutive claim failures', async () => {
+    let claims = 0;
+    const store = {
+      claim: async () => {
+        claims += 1;
+        throw new Error('unprojectable row');
+      },
+      complete: async () => ({ applied: true }),
+      fail: async () => ({ applied: true }),
+    };
+    const records: { status: string; count?: number }[] = [];
+    const loop = new WorkerLoop({
+      store: store as never,
+      claimLimit: 10,
+      pollMs: 1,
+      idleMaxMs: 2,
+      maxConsecutiveClaimErrors: 3,
+      logger: { log: (record) => records.push(record as never) },
+    } as never);
+    await loop.run();
+    expect(claims).toBe(3);
+    expect(records.filter((r) => r.status === 'claim_error')).toHaveLength(3);
+    expect(records.some((r) => r.status === 'stopping' && r.count === 3)).toBe(true);
+  });
+
+  it('resets the counter after a successful claim', async () => {
+    let calls = 0;
+    const store = {
+      claim: async () => {
+        calls += 1;
+        // fail, fail, succeed-empty, then fail three times to trip the bound
+        if (calls === 3) return [];
+        throw new Error('unprojectable row');
+      },
+      complete: async () => ({ applied: true }),
+      fail: async () => ({ applied: true }),
+    };
+    const records: { status: string; count?: number }[] = [];
+    const loop = new WorkerLoop({
+      store: store as never,
+      claimLimit: 10,
+      pollMs: 1,
+      idleMaxMs: 2,
+      maxConsecutiveClaimErrors: 3,
+      logger: { log: (record) => records.push(record as never) },
+    } as never);
+    await loop.run();
+    // Without the reset the bound would trip at call 3; with it, the loop needs
+    // three FURTHER consecutive failures, so it stops at call 6.
+    expect(calls).toBe(6);
+    expect(records.filter((r) => r.status === 'claim_error')).toHaveLength(5);
+    expect(records.some((r) => r.status === 'claim_empty')).toBe(true);
+  });
+
+  it('rejects an out-of-range bound instead of accepting it', () => {
+    for (const bound of [0, -1, 1001, 1.5, Number.NaN]) {
+      expect(
+        () =>
+          new WorkerLoop({
+            store: {} as never,
+            claimLimit: 10,
+            pollMs: 1,
+            idleMaxMs: 2,
+            maxConsecutiveClaimErrors: bound,
+          } as never),
+      ).toThrow(/maxConsecutiveClaimErrors/u);
+    }
+  });
+});
