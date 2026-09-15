@@ -39,7 +39,11 @@ import { CommerceEvidenceClassSchema, type CommerceEvidenceClass } from "./state
  */
 
 export const EVIDENCE_V2_SCHEMA_VERSION = "openarc.evidence.v2" as const;
-export const EVIDENCE_V2_CONFLICT_RULE_VERSION = "openarc.evidence.v2.conflict.v1" as const;
+/**
+ * v2: agreeing facts from different sources are `corroborated`, not a
+ * `multiple_sources` conflict. v1 reported agreement as uncertainty.
+ */
+export const EVIDENCE_V2_CONFLICT_RULE_VERSION = "openarc.evidence.v2.conflict.v2" as const;
 export const EVIDENCE_V2_PAYMENT_CERTAINTY_RULE_VERSION = "openarc.evidence.v2.payment-certainty.v1" as const;
 
 // ───────────────────────── source classes (decision 1) ─────────────────────────
@@ -433,7 +437,7 @@ const variants = <const E extends z.ZodRawShape>(extra: E) =>
     z.strictObject({
       ...base, ...extra,
       kind: z.literal("grant_state"),
-      source: sourceFor(["local"]),
+      source: sourceFor(["local", "openarc_derived"]),
       subject: grantSubject,
       chain: z.null(),
       normalized: z.strictObject({ status: z.enum(["issued", "replaced", "claimed", "revoked", "expired"]) }),
@@ -525,7 +529,7 @@ export type EvidenceV2FactKind = (typeof EVIDENCE_V2_FACT_KINDS)[number];
 /** Authority matrix: the only source classes each fact kind admits. */
 export const EVIDENCE_V2_KIND_SOURCE_CLASSES: Readonly<Record<EvidenceV2FactKind, readonly EvidenceV2SourceClass[]>> = Object.freeze({
   authorization_decision: ["local", "openarc_derived"],
-  grant_state: ["local"],
+  grant_state: ["local", "openarc_derived"],
   listing_state: ["local", "provider"],
   budget_exposure: ["local"],
   payment_observation: ["facilitator", "gateway"],
@@ -566,6 +570,9 @@ function checkFact(fact: FactShape, context: z.RefinementCtx): void {
   }
   if (fact.subject.kind === "action" && fact.scope.actionId !== fact.subject.canonicalId) {
     fail("Action subject must match the action scope", ["scope", "actionId"]);
+  }
+  if (fact.kind === "grant_state" && fact.source.class === "openarc_derived" && fact.normalized.status !== "expired") {
+    fail("An OpenArc-derived grant fact can only be a derived expiry", ["source", "class"]);
   }
   if (fact.kind === "arc_transaction" && fact.subject.canonicalId !== `${ARC_TESTNET.caip2}:tx:${fact.normalized.transactionHash}`) {
     fail("Transaction subject must name the observed transaction", ["subject", "canonicalId"]);
@@ -757,6 +764,11 @@ export function evidenceV2JobStateFromMirror(status: Erc8183JobStatusFact): Evid
 
 // ───────────────────────── conflicts (decision 7) ─────────────────────────
 
+/**
+ * `multiple_sources` stays in the vocabulary for compatibility, but rule v2
+ * never emits it: sources that agree are `corroborated`, and sources that
+ * disagree are reported by the specific mismatch reasons.
+ */
 export const EVIDENCE_V2_CONFLICT_REASONS = [
   "chain_anchor_mismatch",
   "evidence_id_reused",
@@ -766,13 +778,33 @@ export const EVIDENCE_V2_CONFLICT_REASONS = [
 ] as const;
 export type EvidenceV2ConflictReason = (typeof EVIDENCE_V2_CONFLICT_REASONS)[number];
 
+export interface EvidenceV2ResolvedSource {
+  readonly class: EvidenceV2SourceClass;
+  readonly sourceId: string;
+  readonly origin: string;
+}
+
 export type EvidenceV2ConflictResolution =
   | {
       readonly outcome: "resolved";
       readonly ruleVersion: typeof EVIDENCE_V2_CONFLICT_RULE_VERSION;
       readonly kind: EvidenceV2FactKind;
       readonly subject: EvidenceV2Subject;
-      readonly source: { readonly class: EvidenceV2SourceClass; readonly sourceId: string; readonly origin: string };
+      readonly source: EvidenceV2ResolvedSource;
+      readonly status: string;
+      readonly finality: EvidenceV2Finality | null;
+      readonly evidenceIds: readonly string[];
+      readonly firstObservedAt: string;
+      readonly lastObservedAt: string;
+    }
+  | {
+      /** Two or more distinct sources report the same status, normalized fields and chain anchor. */
+      readonly outcome: "corroborated";
+      readonly ruleVersion: typeof EVIDENCE_V2_CONFLICT_RULE_VERSION;
+      readonly kind: EvidenceV2FactKind;
+      readonly subject: EvidenceV2Subject;
+      /** Every distinct source, sorted, at least two. */
+      readonly sources: readonly EvidenceV2ResolvedSource[];
       readonly status: string;
       readonly finality: EvidenceV2Finality | null;
       readonly evidenceIds: readonly string[];
@@ -815,11 +847,13 @@ function compareFacts(left: EvidenceV2Fact, right: EvidenceV2Fact): number {
 
 /**
  * Deterministic resolution for facts of one kind about one subject. Never
- * last-write-wins: more than one source, or one source reporting different
- * statuses, normalized fields or chain anchors, is an explicit `conflict`
- * listing every fact. Identical re-observations resolve; the result depends
- * only on the set of facts, never on input order, and finality never regresses
- * from `finalized` when an unfinalized observation arrives later.
+ * last-write-wins: different statuses, normalized fields or chain anchors, or
+ * a reused evidence ID with different content, is an explicit `conflict`
+ * listing every fact. Facts that agree resolve: from one source they are
+ * `resolved`, from several distinct sources they are `corroborated` and list
+ * every source. The result depends only on the set of facts, never on input
+ * order, and finality never regresses from `finalized` when an unfinalized
+ * observation arrives later.
  */
 export function resolveEvidenceConflict(input: readonly EvidenceV2Fact[]): EvidenceV2ConflictResolution {
   if (input.length === 0) throw new EvidenceV2ConflictInputError("empty");
@@ -842,8 +876,6 @@ export function resolveEvidenceConflict(input: readonly EvidenceV2Fact[]): Evide
     if (prior !== undefined && prior !== json) reasons.add("evidence_id_reused");
     idContent.set(fact.evidenceId, json);
   }
-  const sourceKey = (fact: EvidenceV2Fact) => canonicalJson([fact.source.class, fact.source.sourceId, fact.source.origin]);
-  if (new Set(facts.map(sourceKey)).size > 1) reasons.add("multiple_sources");
   if (new Set(facts.map(evidenceV2FactStatus)).size > 1) reasons.add("status_mismatch");
   if (new Set(facts.map((fact) => canonicalJson([fact.normalized, fact.occurredAt]))).size > 1) reasons.add("normalized_mismatch");
   const anchorKey = (fact: EvidenceV2Fact) =>
@@ -867,12 +899,34 @@ export function resolveEvidenceConflict(input: readonly EvidenceV2Fact[]): Evide
   const latest = facts[facts.length - 1] as EvidenceV2Fact;
   const finality: EvidenceV2Finality | null = earliest.chain === null ? null
     : facts.some((fact) => fact.chain?.finality === "finalized") ? "finalized" : "unfinalized";
+  const sourcesByKey = new Map<string, EvidenceV2ResolvedSource>();
+  for (const fact of facts) {
+    const source = { class: fact.source.class, sourceId: fact.source.sourceId, origin: fact.source.origin };
+    sourcesByKey.set(canonicalJson([source.class, source.sourceId, source.origin]), source);
+  }
+  const sources = [...sourcesByKey.entries()]
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([, source]) => Object.freeze(source));
+  if (sources.length > 1) {
+    return Object.freeze({
+      outcome: "corroborated",
+      ruleVersion: EVIDENCE_V2_CONFLICT_RULE_VERSION,
+      kind: earliest.kind,
+      subject: earliest.subject,
+      sources: Object.freeze(sources),
+      status: evidenceV2FactStatus(earliest),
+      finality,
+      evidenceIds,
+      firstObservedAt: earliest.observedAt,
+      lastObservedAt: latest.observedAt,
+    });
+  }
   return Object.freeze({
     outcome: "resolved",
     ruleVersion: EVIDENCE_V2_CONFLICT_RULE_VERSION,
     kind: earliest.kind,
     subject: earliest.subject,
-    source: Object.freeze({ class: earliest.source.class, sourceId: earliest.source.sourceId, origin: earliest.source.origin }),
+    source: sources[0] as EvidenceV2ResolvedSource,
     status: evidenceV2FactStatus(earliest),
     finality,
     evidenceIds,

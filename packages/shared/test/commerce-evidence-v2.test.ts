@@ -81,6 +81,7 @@ const common = (n: number) => ({
 const control = { class: "local", sourceId: "openarc.control", origin: "openarc:control-plane", adapterVersion: "openarc.control-projection.v1" } as const;
 const gatewaySource = { class: "gateway", sourceId: "circle_gateway_testnet", origin: "https://gateway-api-testnet.circle.com", adapterVersion: "openarc.gateway-transfer.v2" } as const;
 const chainSource = { class: "onchain", sourceId: "arc_rpc_testnet", origin: "https://rpc.testnet.arc.io", adapterVersion: "openarc.arc-observer.v1" } as const;
+const facilitatorSource = { ...gatewaySource, class: "facilitator", sourceId: "x402_facilitator" } as const;
 const anchor = (finality: "finalized" | "unfinalized" = "finalized", blockHash = BLOCK_HASH) =>
   ({ network: "eip155:5042002", blockNumber: "1200", blockHash, finality }) as const;
 
@@ -184,9 +185,15 @@ describe("evidence v2 source classes (decision 1)", () => {
         if (sourceClass === "provider") candidate.actor = { kind: "provider", providerId: PROVIDER };
         const allowed = EVIDENCE_V2_KIND_SOURCE_CLASSES[kind].includes(sourceClass);
         const scopedOk = sourceClass !== "provider" || (fact.scope.providerId === PROVIDER);
-        expect(EvidenceV2FactSchema.safeParse(candidate).success, `${kind}/${sourceClass}`).toBe(allowed && scopedOk);
+        // An OpenArc-derived grant fact can only be a derived expiry; the fixture grant is claimed.
+        const derivedOk = !(kind === "grant_state" && sourceClass === "openarc_derived");
+        expect(EvidenceV2FactSchema.safeParse(candidate).success, `${kind}/${sourceClass}`).toBe(allowed && scopedOk && derivedOk);
       }
     }
+    const derivedExpiry = { ...grantFact(), source: { ...control, class: "openarc_derived", origin: "openarc:reconciler" },
+      actor: { kind: "system", component: "reconciler" }, normalized: { status: "expired" } };
+    expect(EvidenceV2FactSchema.safeParse(derivedExpiry).success).toBe(true);
+    expect(EvidenceV2FactSchema.safeParse({ ...derivedExpiry, normalized: { status: "revoked" } }).success).toBe(false);
     expect(Object.values(EVIDENCE_V2_KIND_SOURCE_CLASSES).flat()).not.toContain("signed");
     expect(Object.values(EVIDENCE_V2_KIND_SOURCE_CLASSES).flat()).not.toContain("agent_reported");
   });
@@ -610,12 +617,58 @@ describe("evidence v2 conflict resolution (decision 7)", () => {
     expect(resolveEvidenceConflict([pendingPayment(), pendingPayment()])).toMatchObject({ outcome: "resolved", evidenceIds: [evd(6)] });
   });
 
-  it("flags two sources about the same object as an explicit conflict listing both", () => {
-    const gateway = pendingPayment(6);
-    const facilitator = { ...pendingPayment(17), source: { ...gatewaySource, class: "facilitator", sourceId: "x402_facilitator" } } as EvidenceV2Fact;
-    const result = resolveEvidenceConflict([gateway, facilitator]);
-    expect(result).toMatchObject({ outcome: "conflict", reasons: ["multiple_sources"], evidenceIds: [evd(6), evd(17)] });
-    expect(result.outcome === "conflict" && result.facts).toEqual([gateway, facilitator]);
+  it("corroborates agreeing facts from different sources, listing every source, for every input order", () => {
+    const gateway = pendingPayment(6, T1);
+    const facilitator = { ...pendingPayment(17, T2), source: facilitatorSource } as EvidenceV2Fact;
+    const gatewayAgain = pendingPayment(26, T3);
+    const expected = { outcome: "corroborated", ruleVersion: EVIDENCE_V2_CONFLICT_RULE_VERSION, kind: "payment_observation",
+      subject: { kind: "action", canonicalId: ACTION },
+      sources: [
+        { class: "facilitator", sourceId: "x402_facilitator", origin: "https://gateway-api-testnet.circle.com" },
+        { class: "gateway", sourceId: "circle_gateway_testnet", origin: "https://gateway-api-testnet.circle.com" },
+      ],
+      status: "pending", finality: null, evidenceIds: [evd(6), evd(17), evd(26)].sort(), firstObservedAt: T1, lastObservedAt: T3 };
+    for (const order of permutations([gateway, facilitator, gatewayAgain])) {
+      const result = resolveEvidenceConflict(order);
+      expect(result).toEqual(expected);
+      expect(result).not.toHaveProperty("reasons");
+    }
+    expect(resolveEvidenceConflict([gateway, facilitator, facilitator])).toMatchObject({ outcome: "corroborated", evidenceIds: [evd(6), evd(17)] });
+  });
+
+  it("corroborates agreeing chain observations from two sources without regressing finality or lastObservedAt", () => {
+    const backupSource = { ...chainSource, sourceId: "arc_rpc_backup", origin: "https://rpc-backup.testnet.arc.io" } as const;
+    const finalizedEarly = arcTxFact(8, "finalized", T1);
+    const unfinalizedLate = { ...arcTxFact(18, "unfinalized", T3), source: backupSource } as EvidenceV2Fact;
+    const unfinalizedMiddle = arcTxFact(28, "unfinalized", T2);
+    for (const order of permutations([finalizedEarly, unfinalizedLate, unfinalizedMiddle])) {
+      expect(resolveEvidenceConflict(order)).toMatchObject({ outcome: "corroborated", status: "success", finality: "finalized",
+        firstObservedAt: T1, lastObservedAt: T3,
+        sources: [{ class: "onchain", sourceId: "arc_rpc_backup" }, { class: "onchain", sourceId: "arc_rpc_testnet" }] });
+    }
+  });
+
+  it("keeps a real disagreement between different sources a conflict and never reports multiple_sources", () => {
+    const cases: [EvidenceV2Fact[], string[]][] = [
+      // status and payload differ
+      [[pendingPayment(6), { ...committedPayment(15), source: facilitatorSource } as EvidenceV2Fact], ["normalized_mismatch", "status_mismatch"]],
+      // payload only
+      [[pendingPayment(6), { ...pendingPayment(17), source: facilitatorSource,
+        normalized: { ...pendingPayment().normalized, amountAtomic: "2000000" } } as EvidenceV2Fact], ["normalized_mismatch"]],
+      // anchor only
+      [[arcTxFact(8), { ...arcTxFact(18, "finalized", T2, OTHER_BLOCK_HASH), source: { ...chainSource, sourceId: "arc_rpc_backup" } } as EvidenceV2Fact],
+        ["chain_anchor_mismatch"]],
+      // reused evidence ID with different content
+      [[pendingPayment(6, T1), { ...pendingPayment(6, T2), source: facilitatorSource } as EvidenceV2Fact], ["evidence_id_reused"]],
+    ];
+    for (const [facts, reasons] of cases) {
+      for (const order of permutations(facts)) {
+        const result = resolveEvidenceConflict(order);
+        expect(result).toMatchObject({ outcome: "conflict", reasons });
+        expect(result.outcome === "conflict" && result.reasons).not.toContain("multiple_sources");
+        expect(result.outcome === "conflict" && result.facts).toHaveLength(2);
+      }
+    }
   });
 
   it("flags the same source reporting a different status as a conflict, never last-write-wins", () => {
@@ -670,7 +723,7 @@ describe("evidence v2 conflict resolution (decision 7)", () => {
 describe("evidence v2 versioning (decision 8)", () => {
   it("versions the module and leaves the legacy investigation rule-version allowlist unchanged", () => {
     expect(EVIDENCE_V2_SCHEMA_VERSION).toBe("openarc.evidence.v2");
-    expect(EVIDENCE_V2_CONFLICT_RULE_VERSION).toBe("openarc.evidence.v2.conflict.v1");
+    expect(EVIDENCE_V2_CONFLICT_RULE_VERSION).toBe("openarc.evidence.v2.conflict.v2");
     expect(EVIDENCE_V2_PAYMENT_CERTAINTY_RULE_VERSION).toBe("openarc.evidence.v2.payment-certainty.v1");
     for (const fact of ALL_FACTS) {
       expect(EvidenceV2FactSchema.safeParse({ ...clone(fact), schemaVersion: "openarc.evidence.v1" }).success).toBe(false);
