@@ -214,6 +214,8 @@ describe('tenant migration and schema2 boundary', () => {
       '0007_market_lifecycle',
       '0008_control_policies',
       '0009_control_sessions',
+      '0010_control_actions',
+      '0011_control_action_reads',
     ]);
     expect(applied.rows[1]?.checksum).toBe(checksum);
   });

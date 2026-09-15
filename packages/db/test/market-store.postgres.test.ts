@@ -258,6 +258,8 @@ describe('schema6 manifest and ACLs', () => {
       '0007_market_lifecycle',
       '0008_control_policies',
       '0009_control_sessions',
+      '0010_control_actions',
+      '0011_control_action_reads',
     ]);
     const helpers = await admin.query<{
       proname: string;

@@ -394,6 +394,8 @@ describe('schema9 manifest, ownership, ACLs and readiness', () => {
       '0007_market_lifecycle',
       '0008_control_policies',
       '0009_control_sessions',
+      '0010_control_actions',
+      '0011_control_action_reads',
     ]);
     const tables = await admin.query<{ relname: string; owner: string; rls: boolean; forced: boolean }>(
       `SELECT c.relname, r.rolname AS owner, c.relrowsecurity AS rls, c.relforcerowsecurity AS forced

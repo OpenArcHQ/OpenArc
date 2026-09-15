@@ -67,9 +67,9 @@ describe('postgres migrations', () => {
     const pool = createDatabasePool(migratorUrl());
     try {
       await migrate(pool);
-      expect(await readSchemaVersion(pool)).toBe(9);
+      expect(await readSchemaVersion(pool)).toBe(11);
       await migrate(pool);
-      expect(await readSchemaVersion(pool)).toBe(9);
+      expect(await readSchemaVersion(pool)).toBe(11);
     } finally {
       await pool.end();
     }
@@ -118,7 +118,7 @@ describe('postgres migrations', () => {
       const broken: SqlMigration[] = [
         ...base,
         {
-          id: '0010_synthetic',
+          id: '0012_synthetic',
           sql: 'CREATE TABLE openarc_auth.synthetic_rollback (id int); SELECT 1/0;',
         },
       ];
@@ -129,23 +129,23 @@ describe('postgres migrations', () => {
           "SELECT to_regclass('openarc_auth.synthetic_rollback') IS NOT NULL AS exists",
         );
         const meta = await client.query<{ n: number }>(
-          "SELECT count(*)::int AS n FROM openarc_meta.schema_migrations WHERE id = '0010_synthetic'",
+          "SELECT count(*)::int AS n FROM openarc_meta.schema_migrations WHERE id = '0012_synthetic'",
         );
         expect(table.rows[0]?.exists).toBe(false);
         expect(meta.rows[0]?.n).toBe(0);
       } finally {
         client.release();
       }
-      expect(await readSchemaVersion(pool)).toBe(9);
+      expect(await readSchemaVersion(pool)).toBe(11);
       const fixed: SqlMigration[] = [
         ...base,
-        { id: '0010_synthetic', sql: 'CREATE TABLE openarc_auth.synthetic_ok (id int);' },
+        { id: '0012_synthetic', sql: 'CREATE TABLE openarc_auth.synthetic_ok (id int);' },
       ];
       await migrate(pool, fixed);
       const check = await pool.connect();
       try {
         const result = await check.query<{ n: number }>(
-          "SELECT count(*)::int AS n FROM openarc_meta.schema_migrations WHERE id = '0010_synthetic'",
+          "SELECT count(*)::int AS n FROM openarc_meta.schema_migrations WHERE id = '0012_synthetic'",
         );
         expect(result.rows[0]?.n).toBe(1);
       } finally {
@@ -186,7 +186,7 @@ describe('postgres migrations', () => {
       await migrate(pool, base);
       const client = await pool.connect();
       try {
-        await client.query("UPDATE openarc_meta.schema_migrations SET id = '0010_renamed' WHERE id = '0001_auth'");
+        await client.query("UPDATE openarc_meta.schema_migrations SET id = '0012_renamed' WHERE id = '0001_auth'");
       } finally {
         client.release();
       }
@@ -204,7 +204,7 @@ describe('postgres migrations', () => {
       await migrate(pool, base);
       const upgrade: SqlMigration[] = [
         ...base,
-        { id: '0010_upgrade', sql: 'CREATE TABLE openarc_auth.upgrade_ok (id int);' },
+        { id: '0012_upgrade', sql: 'CREATE TABLE openarc_auth.upgrade_ok (id int);' },
       ];
       await migrate(pool, upgrade);
       const client = await pool.connect();
@@ -227,7 +227,7 @@ describe('postgres migrations', () => {
     const second = createDatabasePool(migratorUrl());
     try {
       await Promise.all([migrate(first), migrate(second)]);
-      expect(await readSchemaVersion(first)).toBe(9);
+      expect(await readSchemaVersion(first)).toBe(11);
     } finally {
       await first.end();
       await second.end();
@@ -253,7 +253,7 @@ describe('postgres migrations', () => {
       } finally {
         client.release();
       }
-      expect(await readSchemaVersion(app)).toBe(9);
+      expect(await readSchemaVersion(app)).toBe(11);
     } finally {
       await app.end();
     }
