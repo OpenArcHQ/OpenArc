@@ -397,6 +397,7 @@ describe('schema9 manifest, ownership, ACLs and readiness', () => {
       '0010_control_actions',
       '0011_control_action_reads',
       '0012_authorization_grants',
+      '0013_commerce_session_reads',
     ]);
     const tables = await admin.query<{ relname: string; owner: string; rls: boolean; forced: boolean }>(
       `SELECT c.relname, r.rolname AS owner, c.relrowsecurity AS rls, c.relforcerowsecurity AS forced
@@ -1912,5 +1913,298 @@ describe('readiness rejects weakened or removed DB9 controls', () => {
       'ALTER TABLE openarc_durable.commerce_session_handoffs DISABLE TRIGGER commerce_session_handoffs_mutation',
     );
     await expectCode(store.readiness(), 'COMMERCE_SESSION_STORE_UNAVAILABLE');
+  });
+});
+
+/**
+ * schema13 bearer read acceptance. The agent lane presents ONLY a
+ * commerce-session token, so this read must resolve it with no organization or
+ * session id, must report revocation/expiry truthfully so the service can
+ * reject explicitly, must be indistinguishable on every miss, must leak no
+ * digest, must mutate nothing and must stay executable by the restricted
+ * runtime role alone.
+ */
+describe('schema13 commerce-session bearer read', () => {
+  interface SeededBearer {
+    readonly owner: SeededOwner;
+    readonly machine: SeededMachine;
+    readonly bearer: string;
+    readonly handoff: string;
+    readonly metadata: Awaited<ReturnType<CommerceSessionStore['exchangeCommerceSession']>>['metadata'];
+  }
+
+  async function seedExchanged(seed: number): Promise<SeededBearer> {
+    const owner = await seedOwner(seed);
+    const machine = await seedMachine(owner, seed);
+    const handoff = sha256(`handoff:${seed}`);
+    await store.issueCommerceSession(owner.hash, owner.org, issueInput(machine, seed), {
+      idempotencyKey: key(seed),
+      mutationId: mutationId(seed),
+    });
+    const bearer = sha256(`session-token:${seed}`);
+    const exchanged = await store.exchangeCommerceSession(
+      machine.tokenHash,
+      handoff,
+      { tokenHash: bearer, hashVersion: 1 },
+      { idempotencyKey: key(seed + 1), mutationId: mutationId(seed + 1) },
+    );
+    return { owner, machine, bearer, handoff, metadata: exchanged.metadata };
+  }
+
+  /** Exact content digest of both schema9 session tables, every column included. */
+  async function sessionTablesDigest(): Promise<{ digest: string; sessions: number; handoffs: number }> {
+    const result = await admin.query<{ digest: string; sessions: number; handoffs: number }>(
+      `SELECT md5(
+                coalesce((SELECT string_agg(s::text, '|' ORDER BY s::text)
+                            FROM openarc_durable.commerce_sessions s), '')
+                || '#' ||
+                coalesce((SELECT string_agg(h::text, '|' ORDER BY h::text)
+                            FROM openarc_durable.commerce_session_handoffs h), '')
+              ) AS digest,
+              (SELECT count(*)::int FROM openarc_durable.commerce_sessions) AS sessions,
+              (SELECT count(*)::int FROM openarc_durable.commerce_session_handoffs) AS handoffs`,
+    );
+    return result.rows[0] as { digest: string; sessions: number; handoffs: number };
+  }
+
+  it('resolves an exchanged live session with exact metadata and no digest of any kind', async () => {
+    const seeded = await seedExchanged(900);
+    const read = await store.getCommerceSessionByHash(seeded.bearer);
+    expect(read).not.toBeNull();
+    // Byte-exact agreement with the metadata the exchange itself committed.
+    expect(read).toEqual(seeded.metadata);
+    expect(read?.organizationId).toBe(seeded.owner.org);
+    expect(read?.subjectAgentId).toBe(seeded.machine.agent);
+    expect(read?.policyId).toBe(seeded.machine.policy);
+    expect(read?.exchangedAt).not.toBeNull();
+    expect(read?.revokedAt).toBeNull();
+    expect(read?.schemaVersion).toBe('openarc.control.commerce-session.v1');
+    expect(read?.scopes).toEqual(['commerce.authorize']);
+    expect(read?.decimals).toBe(6);
+
+    // No token hash, handoff hash, human session hash, machine session hash,
+    // credential id or ANY 64-hex digest is representable in the output.
+    const serialized = JSON.stringify(read);
+    expect(serialized).not.toContain(seeded.bearer);
+    expect(serialized).not.toContain(seeded.handoff);
+    expect(serialized).not.toContain(seeded.owner.hash);
+    expect(serialized).not.toContain(seeded.machine.tokenHash);
+    expect(serialized).not.toContain(seeded.machine.credential);
+    expect(serialized).not.toMatch(/[0-9a-f]{64}/);
+  });
+
+  it('resolves a REVOKED session carrying its real revokedAt rather than vanishing', async () => {
+    const seeded = await seedExchanged(910);
+    const revoked = await store.revokeCommerceSession(
+      seeded.owner.hash,
+      seeded.owner.org,
+      mutationId(910),
+      { idempotencyKey: key(912), mutationId: mutationId(912) },
+    );
+    expect(revoked.metadata.revokedAt).not.toBeNull();
+
+    const read = await store.getCommerceSessionByHash(seeded.bearer);
+    // The store REPORTS; the service is the one that rejects. A hidden row
+    // would downgrade an explicit rejection into a not-found.
+    expect(read).not.toBeNull();
+    expect(read?.revokedAt).toBe(revoked.metadata.revokedAt);
+    expect(read?.sessionId).toBe(mutationId(910));
+    expect(read).toEqual(revoked.metadata);
+    expect(JSON.stringify(read)).not.toMatch(/[0-9a-f]{64}/);
+  });
+
+  it('resolves an EXPIRED session carrying its real expiresAt', async () => {
+    const seeded = await seedExchanged(920);
+    await expireCommerceSession(mutationId(920));
+    const expired = await admin.query<{ expires_at: string; expired: boolean }>(
+      `SELECT expires_at::text AS expires_at, clock_timestamp() >= expires_at AS expired
+         FROM openarc_durable.commerce_sessions WHERE session_id = $1::uuid`,
+      [mutationId(920)],
+    );
+    expect(expired.rows[0]?.expired).toBe(true);
+
+    const read = await store.getCommerceSessionByHash(seeded.bearer);
+    expect(read).not.toBeNull();
+    expect(read?.revokedAt).toBeNull();
+    expect(read?.sessionId).toBe(mutationId(920));
+    // The projected expiry is the row's real, shortened expiry, not the
+    // original issuance window.
+    expect(read?.expiresAt).not.toBe(seeded.metadata.expiresAt);
+    expect(Date.parse(read?.expiresAt as string)).toBeLessThan(
+      Date.parse(seeded.metadata.expiresAt),
+    );
+    expect(Date.parse(read?.expiresAt as string)).toBeLessThanOrEqual(Date.now());
+    // The human status reader agrees the session is expired; the bearer read
+    // still resolves it so the service can reject it explicitly.
+    expect(await statusOf(seeded.owner.hash, seeded.owner.org, mutationId(920))).toBe('expired');
+  });
+
+  it('never resolves an issued-but-unexchanged handoff as a live session', async () => {
+    const owner = await seedOwner(930);
+    const machine = await seedMachine(owner, 930);
+    const handoff = sha256('handoff:930');
+    await store.issueCommerceSession(owner.hash, owner.org, issueInput(machine, 930), {
+      idempotencyKey: key(930),
+      mutationId: mutationId(930),
+    });
+    expect(await statusOf(owner.hash, owner.org, mutationId(930))).toBe('handoff_pending');
+    // The pending handoff row exists but carries no token hash at all.
+    const pending = await admin.query<{ token_hash: string | null; consumed_at: string | null }>(
+      `SELECT token_hash, consumed_at::text AS consumed_at
+         FROM openarc_durable.commerce_session_handoffs WHERE handoff_hash = $1`,
+      [handoff],
+    );
+    expect(pending.rows[0]).toEqual({ token_hash: null, consumed_at: null });
+
+    // Neither the handoff hash nor the token that has not been minted resolves.
+    expect(await store.getCommerceSessionByHash(handoff)).toBeNull();
+    expect(await store.getCommerceSessionByHash(sha256('session-token:930'))).toBeNull();
+
+    // Only after a real exchange does the SAME bearer resolve.
+    await store.exchangeCommerceSession(
+      machine.tokenHash,
+      handoff,
+      { tokenHash: sha256('session-token:930'), hashVersion: 1 },
+      { idempotencyKey: key(931), mutationId: mutationId(931) },
+    );
+    expect((await store.getCommerceSessionByHash(sha256('session-token:930')))?.sessionId).toBe(
+      mutationId(930),
+    );
+    // The handoff hash is still not a bearer.
+    expect(await store.getCommerceSessionByHash(handoff)).toBeNull();
+  });
+
+  it('makes an unknown hash and another organization indistinguishable', async () => {
+    const first = await seedExchanged(940);
+    const second = await seedExchanged(950);
+    expect(first.owner.org).not.toBe(second.owner.org);
+
+    // Each bearer resolves ONLY its own organization's session.
+    expect((await store.getCommerceSessionByHash(first.bearer))?.organizationId).toBe(first.owner.org);
+    expect((await store.getCommerceSessionByHash(second.bearer))?.organizationId).toBe(second.owner.org);
+    expect((await store.getCommerceSessionByHash(first.bearer))?.sessionId).toBe(mutationId(940));
+    expect((await store.getCommerceSessionByHash(second.bearer))?.sessionId).toBe(mutationId(950));
+
+    // Every non-bearer digest is the SAME empty answer, whatever it names: an
+    // unrelated hash, the other organization's handoff, its human session, its
+    // machine session, or a hash of nothing at all. A miss therefore reveals
+    // nothing about whether a session exists elsewhere.
+    const misses = [
+      sha256('never-issued-anything'),
+      'f'.repeat(64),
+      '0'.repeat(64),
+      second.handoff,
+      second.owner.hash,
+      second.machine.tokenHash,
+      first.handoff,
+      first.owner.hash,
+      first.machine.tokenHash,
+    ];
+    for (const miss of misses) {
+      expect(await store.getCommerceSessionByHash(miss)).toBeNull();
+    }
+
+    // A non-canonical bearer is the fixed input error, never a row.
+    await expectCode(
+      store.getCommerceSessionByHash(first.bearer.toUpperCase()),
+      'COMMERCE_SESSION_STORE_INPUT_INVALID',
+    );
+    await expectCode(store.getCommerceSessionByHash('nope'), 'COMMERCE_SESSION_STORE_INPUT_INVALID');
+  });
+
+  it('performs no mutation: identical row counts and table digest before and after', async () => {
+    const seeded = await seedExchanged(960);
+    const before = await sessionTablesDigest();
+    const beforeCounts = await counts(seeded.owner.org);
+
+    // Every reachable outcome: a hit, a miss and a rejected input.
+    expect(await store.getCommerceSessionByHash(seeded.bearer)).not.toBeNull();
+    expect(await store.getCommerceSessionByHash(sha256('absent'))).toBeNull();
+    expect(await store.getCommerceSessionByHash(seeded.handoff)).toBeNull();
+    await expectCode(store.getCommerceSessionByHash('short'), 'COMMERCE_SESSION_STORE_INPUT_INVALID');
+    for (let repeat = 0; repeat < 5; repeat += 1) {
+      await store.getCommerceSessionByHash(seeded.bearer);
+    }
+
+    const after = await sessionTablesDigest();
+    expect(after).toEqual(before);
+    expect(after.sessions).toBe(before.sessions);
+    expect(after.handoffs).toBe(before.handoffs);
+    // No durability, audit or outbox evidence is produced by a read either.
+    expect(await counts(seeded.owner.org)).toEqual(beforeCounts);
+
+    // PostgreSQL itself forbids the helper from writing: it is STABLE.
+    const volatility = await admin.query<{ provolatile: string }>(
+      `SELECT p.provolatile FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'openarc_durable' AND p.proname = 'read_commerce_session_by_token'`,
+    );
+    expect(volatility.rows[0]?.provolatile).toBe('s');
+  });
+
+  it('grants execute to the restricted runtime role alone and never to PUBLIC', async () => {
+    const acl = await admin.query<{
+      owner: string;
+      secdef: boolean;
+      config: string[];
+      args: string;
+      app_exec: boolean;
+      worker_exec: boolean;
+      auth_exec: boolean;
+      public_grants: number;
+    }>(
+      `SELECT r.rolname AS owner,
+              p.prosecdef AS secdef,
+              coalesce(p.proconfig, ARRAY[]::text[]) AS config,
+              pg_get_function_identity_arguments(p.oid) AS args,
+              has_function_privilege('openarc_tenant_app', p.oid, 'EXECUTE') AS app_exec,
+              has_function_privilege('openarc_worker_app', p.oid, 'EXECUTE') AS worker_exec,
+              has_function_privilege('openarc_auth_app', p.oid, 'EXECUTE') AS auth_exec,
+              (SELECT count(*)::int
+                 FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE') AS public_grants
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+         JOIN pg_roles r ON r.oid = p.proowner
+        WHERE n.nspname = 'openarc_durable' AND p.proname = 'read_commerce_session_by_token'`,
+    );
+    expect(acl.rows).toHaveLength(1);
+    expect(acl.rows[0]).toMatchObject({
+      owner: 'openarc_migrator',
+      secdef: true,
+      args: 'commerce_token_hash text',
+      app_exec: true,
+      worker_exec: false,
+      auth_exec: false,
+      public_grants: 0,
+    });
+    expect(acl.rows[0]?.config).toContain('search_path=pg_catalog');
+
+    // The restricted runtime really can execute it, and the other runtime roles
+    // really cannot: PUBLIC holds nothing to inherit.
+    const seeded = await seedExchanged(970);
+    expect((await store.getCommerceSessionByHash(seeded.bearer))?.sessionId).toBe(mutationId(970));
+    expect(
+      (
+        await rawError(
+          worker.query('SELECT * FROM openarc_durable.read_commerce_session_by_token($1)', [
+            seeded.bearer,
+          ]),
+        )
+      ).code,
+    ).toBe('42501');
+    expect(
+      (
+        await rawError(
+          auth.query('SELECT * FROM openarc_durable.read_commerce_session_by_token($1)', [
+            seeded.bearer,
+          ]),
+        )
+      ).code,
+    ).toBe('42501');
+    // And it still cannot be used as a back door to the tables themselves.
+    expect(
+      (await rawError(tenant.query('SELECT count(*) FROM openarc_durable.commerce_session_handoffs')))
+        .code,
+    ).toBe('42501');
   });
 });

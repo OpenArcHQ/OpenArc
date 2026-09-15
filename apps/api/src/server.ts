@@ -7,17 +7,97 @@ import { startMachineRuntime, type StartedMachineRuntime } from "./machine/runti
 import { startControlRuntime, type StartedControlRuntime } from "./control/runtime.js";
 import { startCommerceSessionRuntime, type StartedCommerceSessionRuntime } from "./control/session-runtime.js";
 import { startCommerceActionRuntime, type StartedCommerceActionRuntime } from "./control/action-runtime.js";
+import {
+  createCommerceActionStoreAdapter,
+  createCommerceSessionReadAdapter,
+} from "./control/action-store-adapter.js";
 import { ArcAccountService } from "./arc/account-service.js";
 import { AgentRegistryService } from "./arc/agent-registry-service.js";
 import { JobService } from "./arc/job-service.js";
 import { ArcRpcClient } from "./arc/rpc-client.js";
 import { ArcTransactionService } from "./arc/transaction-service.js";
 import { loadConfig } from "./config.js";
+import {
+  asCommerceSessionPool,
+  asControlActionPool,
+  asControlActionReadPool,
+  CommerceSessionStore,
+  ControlActionReadStore,
+  ControlActionStore,
+  createDatabasePool,
+} from "@openarc/db";
 import { connectBudgetRedis, SourceBudget } from "./limits/budget.js";
 import { AggregateMetrics } from "./ops/metrics.js";
 import { BoundedProviderClient } from "./providers/http.js";
 import { BoundedGatewayClient } from "./gateway/client.js";
 import { GatewayTransferService } from "./gateway/transfer-service.js";
+
+/**
+ * Opens the commerce-action family's ONE owned restricted pool and binds every
+ * seam the action runtime requires.
+ *
+ * The runtime deliberately owns no pool and constructs no repository, so the
+ * concrete DB10 mutation store, the DB11 read store and the DB9/DB13
+ * commerce-session read are all built here over that single pool, exactly as
+ * the commerce-session runtime builds its own. The `lifecycle` seam hands the
+ * runtime the initialize/readiness/close of what THIS function owns: the three
+ * stores are initialized once before any route may serve, readiness re-probes
+ * all three read-only, and `closePool` ends the one pool exactly once no matter
+ * how often it is reached (the runtime's construction-failure catch, the
+ * handle's `close()`, shutdown and the startup catch all funnel into it).
+ *
+ * The gate stays DEFAULT OFF: this is only reached when the flag is explicitly
+ * on. If the runtime still reports `built_disabled` — a seam missing or
+ * malformed — nothing is left open and no service is handed to `createApp`, so
+ * startup fails closed rather than serving a family the manifest advertises.
+ */
+async function startBoundCommerceActionRuntime(
+  tenantDatabaseUrl: string,
+  authSecret: string,
+  auth: NonNullable<StartedAuthRuntime>["service"],
+  rateLimitStore: NonNullable<StartedAuthRuntime>["rateLimitStore"],
+): Promise<StartedCommerceActionRuntime> {
+  const pool = createDatabasePool(tenantDatabaseUrl);
+  let poolClosed = false;
+  const closePool = async (): Promise<void> => {
+    if (poolClosed) return;
+    poolClosed = true;
+    await pool.end().catch(() => undefined);
+  };
+  try {
+    const mutations = new ControlActionStore(asControlActionPool(pool));
+    const reads = new ControlActionReadStore(asControlActionReadPool(pool));
+    const sessions = new CommerceSessionStore(asCommerceSessionPool(pool));
+    const started = await startCommerceActionRuntime({
+      enabled: true,
+      authSecret,
+      auth,
+      rateLimitStore,
+      store: createCommerceActionStoreAdapter(mutations, reads),
+      commerceSessions: createCommerceSessionReadAdapter(sessions),
+      lifecycle: {
+        initialize: async (): Promise<void> => {
+          await mutations.initialize();
+          await reads.initialize();
+          await sessions.initialize();
+        },
+        readiness: async (): Promise<void> => {
+          await mutations.readiness();
+          await reads.readiness();
+          await sessions.readiness();
+        },
+        close: closePool,
+      },
+    });
+    // A `built_disabled` outcome never runs the lifecycle, so the pool this
+    // function opened would otherwise leak. Release it here instead.
+    if (started.service === undefined) await closePool();
+    return started;
+  } catch (error) {
+    await closePool();
+    throw error;
+  }
+}
 
 async function start(): Promise<void> {
   const config = loadConfig();
@@ -115,20 +195,21 @@ async function start(): Promise<void> {
         })
       : undefined;
     // The commerce-action family is DEFAULT OFF and fails closed. The runtime
-    // owns no pool and constructs no repository: the DB10 commerce-action store
-    // and the commerce-session read are injected through their narrow seams, so
-    // until an integrator binds them the runtime reports `built_disabled`,
-    // exposes NO service and performs zero side effects. With the flag on and a
-    // seam unbound, `createApp` then fails startup rather than serving a family
-    // the capability manifest advertises. This runtime is opened, handed to
+    // owns no pool and constructs no repository, so every seam — the DB10
+    // mutation store, the DB11 read store and the DB9/DB13 commerce-session
+    // read — is built over one owned restricted pool by the helper below and
+    // injected. With any seam missing or malformed the runtime still reports
+    // `built_disabled`, exposes NO service and performs zero side effects, and
+    // `createApp` then fails startup rather than serving a family the
+    // capability manifest advertises. This runtime is opened, handed to
     // `createApp` and closed exactly like the commerce-session runtime above.
     commerceActionRuntimeHandle = config.COMMERCE_ACTIONS_ENABLED
-      ? await startCommerceActionRuntime({
-          enabled: true,
-          authSecret: config.AUTH_SECRET as string,
-          auth: authRuntimeHandle!.service,
-          rateLimitStore: authRuntimeHandle!.rateLimitStore,
-        })
+      ? await startBoundCommerceActionRuntime(
+          config.TENANT_DATABASE_URL as string,
+          config.AUTH_SECRET as string,
+          authRuntimeHandle!.service,
+          authRuntimeHandle!.rateLimitStore,
+        )
       : undefined;
     redis = config.ARC_OBSERVATION_ENABLED && config.REDIS_URL ? await connectBudgetRedis(config.REDIS_URL) : undefined;
     sourceBudget = redis && config.ABUSE_LIMIT_SECRET ? new SourceBudget(redis, {

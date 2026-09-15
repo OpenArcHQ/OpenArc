@@ -1,4 +1,5 @@
 import type {
+  CommerceSessionStore,
   ControlActionReadStore,
   ControlActionStore,
 } from "@openarc/db";
@@ -16,6 +17,7 @@ import type {
   CommerceApprovalListOptions,
   CommerceApprovalPageDbResult,
   CommerceExposureDbResult,
+  CommerceSessionReadPort,
 } from "./action-ports.js";
 
 /**
@@ -168,6 +170,33 @@ export function createCommerceActionStoreAdapter(
     ): Promise<CommerceApprovalDetailDbResult> {
       const detail = await reads.readApprovalById(humanSessionHash, organizationId, approvalId);
       return { organizationId: detail.organizationId, item: detail.item };
+    },
+  };
+}
+
+/**
+ * Binds the commerce-session read port to the real DB9/DB13 session store.
+ *
+ * The agent lane authenticates a commerce-session BEARER, so the service needs
+ * exactly one read: presented token hash -> safe session metadata. This adapter
+ * is a pure rename onto `CommerceSessionStore.getCommerceSessionByHash` and
+ * nothing else. It performs NO authority, financial, transport or validation
+ * work: it does not inspect, normalize, log or store the presented hash, does
+ * not widen the port beyond that single method, never swallows or relabels a
+ * store error (the service's own commerce-session error vocabulary depends on
+ * the raw code reaching it), and never substitutes a null for a failure. The
+ * service re-parses whatever comes back against the accepted shared metadata
+ * schema and is the only place that judges revocation or expiry.
+ *
+ * The store import is type-only and therefore erased; the concrete store is
+ * injected, so the binding stays testable with a fake.
+ */
+export function createCommerceSessionReadAdapter(
+  sessions: CommerceSessionStore,
+): CommerceSessionReadPort {
+  return {
+    getCommerceSessionByHash(tokenHash: unknown): Promise<unknown> {
+      return sessions.getCommerceSessionByHash(tokenHash);
     },
   };
 }

@@ -613,6 +613,73 @@ export class CommerceSessionStore {
     });
   }
 
+  /**
+   * Resolve a presented commerce-session BEARER token hash into safe session
+   * metadata, or null when that hash names no exchanged session.
+   *
+   * This is the ONE read the agent lane needs: `getCommerceSessionStatus`
+   * requires a HUMAN session hash plus an organization and a session id, so it
+   * can never resolve a bearer. The schema13 helper keys solely on the
+   * exchanged handoff's `token_hash`, so nothing the caller supplies other than
+   * that hash can influence the row, and the organization, subject, policy and
+   * session id are read back from the resolved row rather than echoed.
+   *
+   * It REPORTS, it does not judge. A revoked or expired session still resolves,
+   * carrying its real `revokedAt`/`expiresAt`, so the service can reject it
+   * explicitly instead of seeing an indistinguishable not-found. An unknown
+   * hash, a handoff hash, a human or machine session hash and an
+   * unexchanged handoff are all the identical `null`.
+   *
+   * Validation mirrors every other read in this module exactly: the driver row
+   * must carry the precise expected keyset (so an internal hash/parent column
+   * can never be silently stripped into a passing projection), every field is
+   * re-validated before projection, and a row whose identity is internally
+   * inconsistent raises the module's fixed UNAVAILABLE rather than being
+   * relabelled as a not-found or an input error.
+   */
+  async getCommerceSessionByHash(
+    tokenHash: unknown,
+  ): Promise<CommerceControlSessionMetadata | null> {
+    const hash = requireTokenHash(tokenHash);
+    return this.#withTransaction(async (client) => {
+      const result = await client.query<SessionRow>(
+        `SELECT out_session_id, out_organization_id, out_subject_agent_id, out_policy_id,
+                out_issued_at::text AS out_issued_at,
+                out_initial_expires_at::text AS out_initial_expires_at,
+                out_expires_at::text AS out_expires_at,
+                out_exchanged_at::text AS out_exchanged_at,
+                out_agent_session_id, out_credential_id,
+                out_revoked_at::text AS out_revoked_at
+           FROM openarc_durable.read_commerce_session_by_token($1)`,
+        [hash],
+      );
+      const row = requireAtMostOne(result.rows);
+      if (row === undefined) return null;
+      requireSessionRowKeys(row, false);
+      const metadata = this.#projectMetadata(
+        row,
+        row.out_organization_id,
+        row.out_subject_agent_id,
+        row.out_policy_id,
+      );
+      // A bearer only exists on a CONSUMED handoff, and the schema9 exchange
+      // shape constraint pairs that consumption with a non-null exchangedAt and
+      // a complete machine binding. A row reaching here unexchanged is a
+      // malformed/forged driver row, never a legitimate pending session, so it
+      // is the fixed UNAVAILABLE rather than a silent null.
+      if (metadata.exchangedAt === null) failOutput();
+      if (
+        metadata.organizationId !== row.out_organization_id ||
+        metadata.subjectAgentId !== row.out_subject_agent_id ||
+        metadata.policyId !== row.out_policy_id ||
+        metadata.sessionId !== row.out_session_id
+      ) {
+        failOutput();
+      }
+      return metadata;
+    });
+  }
+
   async getCommerceSessionStatus(
     humanSessionHash: unknown,
     organizationId: unknown,
@@ -1297,6 +1364,7 @@ export class CommerceSessionStore {
         args: 'human_session_hash text, organization_id text, session_id_input uuid, mutation_id uuid, key_hash text, request_digest text, session_context_digest text',
       },
       { name: 'read_commerce_session', args: 'human_session_hash text, organization_id text, session_id_input uuid' },
+      { name: 'read_commerce_session_by_token', args: 'commerce_token_hash text' },
       { name: 'list_commerce_sessions', args: 'human_session_hash text, organization_id text, after_session_id uuid, page_limit integer' },
       { name: 'read_human_commerce_session_mutation_status', args: 'human_session_hash text, organization_id text, mutation_id uuid' },
       { name: 'read_agent_commerce_session_mutation_status', args: 'agent_session_hash text, mutation_id uuid' },
@@ -1335,7 +1403,7 @@ export class CommerceSessionStore {
           AND p.prokind = 'f'
           AND p.proname IN (
             'issue_commerce_session', 'exchange_commerce_session', 'revoke_commerce_session',
-            'read_commerce_session', 'list_commerce_sessions',
+            'read_commerce_session', 'read_commerce_session_by_token', 'list_commerce_sessions',
             'read_human_commerce_session_mutation_status',
             'read_agent_commerce_session_mutation_status', 'lock_commerce_reader',
             'lock_commerce_writer', 'resolve_agent_session_context'

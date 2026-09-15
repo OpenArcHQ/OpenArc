@@ -863,3 +863,166 @@ describe('CommerceSessionStore strict projection canaries', () => {
     );
   });
 });
+
+/**
+ * schema13 bearer read. The agent lane presents only a commerce-session token,
+ * so the store must resolve it without an organization or session id, must
+ * report a revoked/expired session truthfully rather than hiding it, and must
+ * never let an internal hash column survive into the projection.
+ */
+describe('CommerceSessionStore bearer session read', () => {
+  const BY_TOKEN = (text: string): boolean => text.includes('read_commerce_session_by_token');
+
+  function bearerRow(overrides: Row = {}): Row {
+    return {
+      out_session_id: SESSION,
+      out_organization_id: ORG,
+      out_subject_agent_id: AGENT,
+      out_policy_id: POLICY,
+      out_issued_at: '2026-09-12 10:00:00.000001+00',
+      out_initial_expires_at: '2026-09-12 10:05:00.000000+00',
+      out_expires_at: '2026-09-12 10:05:00.000000+00',
+      out_exchanged_at: '2026-09-12 10:00:30.000000+00',
+      out_agent_session_id: CREDENTIAL,
+      out_credential_id: CREDENTIAL,
+      out_revoked_at: null,
+      ...overrides,
+    };
+  }
+
+  function pool(rows: Row[] | undefined, extra: Route[] = []): FakePool {
+    return new FakePool(
+      () => new FakeClient([...extra, { when: BY_TOKEN, ...(rows === undefined ? {} : { rows }) }]),
+    );
+  }
+
+  it('projects an exchanged session and passes the hash only as a bound parameter', async () => {
+    const fake = pool([bearerRow()]);
+    const metadata = await new CommerceSessionStore(fake).getCommerceSessionByHash(TOKEN);
+    expect(metadata).toEqual({
+      schemaVersion: 'openarc.control.commerce-session.v1',
+      sessionId: SESSION,
+      organizationId: ORG,
+      subjectAgentId: AGENT,
+      policyId: POLICY,
+      scopes: ['commerce.authorize'],
+      networkId: 'eip155:5042002',
+      asset: 'USDC',
+      representation: 'erc20',
+      decimals: 6,
+      issuedAt: '2026-09-12T10:00:00.000001Z',
+      expiresAt: '2026-09-12T10:05:00.000000Z',
+      exchangedAt: '2026-09-12T10:00:30.000000Z',
+      revokedAt: null,
+    });
+    // No token hash, machine binding or digest survives into the output.
+    expect(JSON.stringify(metadata)).not.toContain(TOKEN);
+    expect(JSON.stringify(metadata)).not.toContain(CREDENTIAL);
+    expect(/[0-9a-f]{64}/.test(JSON.stringify(metadata))).toBe(false);
+    // The bearer travels as a bound parameter, never interpolated into SQL.
+    const call = fake.clients[0]?.calls.find((entry) => BY_TOKEN(entry.text));
+    expect(call?.values).toEqual([TOKEN]);
+    expect(call?.text).not.toContain(TOKEN);
+  });
+
+  it('reports a revoked session instead of hiding it', async () => {
+    const metadata = await new CommerceSessionStore(
+      pool([bearerRow({ out_revoked_at: '2026-09-12 10:01:00.000000+00' })]),
+    ).getCommerceSessionByHash(TOKEN);
+    expect(metadata?.revokedAt).toBe('2026-09-12T10:01:00.000000Z');
+    expect(metadata?.sessionId).toBe(SESSION);
+  });
+
+  it('reports the real expiry of an exchange-shortened session', async () => {
+    const metadata = await new CommerceSessionStore(
+      pool([bearerRow({ out_expires_at: '2026-09-12 10:00:31.000000+00' })]),
+    ).getCommerceSessionByHash(TOKEN);
+    expect(metadata?.expiresAt).toBe('2026-09-12T10:00:31.000000Z');
+  });
+
+  it('returns null for a hash that names no exchanged session', async () => {
+    await expect(new CommerceSessionStore(pool([])).getCommerceSessionByHash(TOKEN)).resolves.toBeNull();
+  });
+
+  it('rejects a non-canonical bearer without connecting to the pool', async () => {
+    for (const bad of [undefined, null, 42, TOKEN.slice(0, 63), `${TOKEN}0`, TOKEN.toUpperCase(), `${TOKEN}\n`]) {
+      const fake = pool([bearerRow()]);
+      await expectCode(
+        new CommerceSessionStore(fake).getCommerceSessionByHash(bad),
+        'COMMERCE_SESSION_STORE_INPUT_INVALID',
+      );
+      expect(fake.connectCalls).toBe(0);
+    }
+  });
+
+  it('is a fixed UNAVAILABLE for an unexchanged, multi-row or leaking driver row', async () => {
+    const unexchanged = pool([
+      bearerRow({ out_exchanged_at: null, out_agent_session_id: null, out_credential_id: null }),
+    ]);
+    await expectCode(
+      new CommerceSessionStore(unexchanged).getCommerceSessionByHash(TOKEN),
+      'COMMERCE_SESSION_STORE_UNAVAILABLE',
+    );
+
+    const twoRows = pool([bearerRow(), bearerRow({ out_session_id: MUTATION })]);
+    await expectCode(
+      new CommerceSessionStore(twoRows).getCommerceSessionByHash(TOKEN),
+      'COMMERCE_SESSION_STORE_UNAVAILABLE',
+    );
+
+    // An extra internal column is rejected outright, never silently stripped.
+    const leaking = pool([{ ...bearerRow(), out_parent_human_session_hash: HASH }]);
+    await expectCode(
+      new CommerceSessionStore(leaking).getCommerceSessionByHash(TOKEN),
+      'COMMERCE_SESSION_STORE_UNAVAILABLE',
+    );
+
+    const missingColumn = pool([(() => {
+      const row = bearerRow();
+      delete row['out_initial_expires_at'];
+      return row;
+    })()]);
+    await expectCode(
+      new CommerceSessionStore(missingColumn).getCommerceSessionByHash(TOKEN),
+      'COMMERCE_SESSION_STORE_UNAVAILABLE',
+    );
+
+    // A half-paired machine binding is never a valid exchange.
+    const halfBound = pool([bearerRow({ out_credential_id: null })]);
+    await expectCode(
+      new CommerceSessionStore(halfBound).getCommerceSessionByHash(TOKEN),
+      'COMMERCE_SESSION_STORE_UNAVAILABLE',
+    );
+
+    // A malformed identity is UNAVAILABLE, never relabelled as input-invalid.
+    const badOrg = pool([bearerRow({ out_organization_id: 'openarc:org:nope' })]);
+    await expectCode(
+      new CommerceSessionStore(badOrg).getCommerceSessionByHash(TOKEN),
+      'COMMERCE_SESSION_STORE_UNAVAILABLE',
+    );
+  });
+
+  it('maps a driver failure to the fixed vocabulary without echoing detail', async () => {
+    const forbidden = new FakePool(
+      () => new FakeClient([{ when: BY_TOKEN, throws: { code: '42501', message: TOKEN } }]),
+    );
+    await expectCode(
+      new CommerceSessionStore(forbidden).getCommerceSessionByHash(TOKEN),
+      'COMMERCE_SESSION_STORE_FORBIDDEN',
+    );
+    const invalid = new FakePool(
+      () => new FakeClient([{ when: BY_TOKEN, throws: { code: '22023', message: TOKEN } }]),
+    );
+    await expectCode(
+      new CommerceSessionStore(invalid).getCommerceSessionByHash(TOKEN),
+      'COMMERCE_SESSION_STORE_INPUT_INVALID',
+    );
+    const unknown = new FakePool(
+      () => new FakeClient([{ when: BY_TOKEN, throws: { code: 'XX000', message: TOKEN } }]),
+    );
+    await expectCode(
+      new CommerceSessionStore(unknown).getCommerceSessionByHash(TOKEN),
+      'COMMERCE_SESSION_STORE_UNAVAILABLE',
+    );
+  });
+});
