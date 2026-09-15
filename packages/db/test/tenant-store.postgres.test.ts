@@ -220,6 +220,7 @@ describe('tenant migration and schema2 boundary', () => {
       '0013_commerce_session_reads',
       '0014_grant_mutation_reads',
       '0015_payment_attempts',
+      '0016_evidence_store',
     ]);
     expect(applied.rows[1]?.checksum).toBe(checksum);
   });
