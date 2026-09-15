@@ -213,6 +213,7 @@ const CONTROL_ACTION_STORE_ERROR_CODES = {
   CONTROL_ACTION_STORE_FORBIDDEN: true,
   CONTROL_ACTION_STORE_NOT_FOUND: true,
   CONTROL_ACTION_STORE_CONFLICT: true,
+  CONTROL_ACTION_STORE_EXPIRED: true,
   CONTROL_ACTION_STORE_IDEMPOTENCY_CONFLICT: true,
   CONTROL_ACTION_STORE_BUDGET_DENIED: true,
   CONTROL_ACTION_STORE_POTENTIAL_EXPOSURE: true,
@@ -259,6 +260,12 @@ function mapStoreError(error: unknown): never {
       // organization/action existence oracle is exposed by the transport.
       throw forbidden();
     case "CONTROL_ACTION_STORE_CONFLICT":
+      throw policyDenied();
+    // Terminal, and deliberately a 409 rather than a 401 or a 503. The target's
+    // own authority lapsed: re-authenticating and repeating cannot help, and a
+    // 5xx would invite a proxy or agent to retry a money-adjacent write. The
+    // caller must re-read current state, not resend.
+    case "CONTROL_ACTION_STORE_EXPIRED":
       throw policyDenied();
     case "CONTROL_ACTION_STORE_IDEMPOTENCY_CONFLICT":
       throw idempotencyConflict();

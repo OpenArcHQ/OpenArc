@@ -48,6 +48,7 @@ export const CONTROL_ACTION_STORE_ERROR_MESSAGES = {
   CONTROL_ACTION_STORE_FORBIDDEN: 'ControlActionStore caller is not permitted.',
   CONTROL_ACTION_STORE_NOT_FOUND: 'ControlActionStore target was not found.',
   CONTROL_ACTION_STORE_CONFLICT: 'ControlActionStore operation conflicts with existing state.',
+  CONTROL_ACTION_STORE_EXPIRED: 'ControlActionStore target authority has expired.',
   CONTROL_ACTION_STORE_REQUIREMENT_UNAVAILABLE:
     'ControlActionStore requirement is unavailable in production.',
   CONTROL_ACTION_STORE_BUDGET_DENIED: 'ControlActionStore budget denies the action.',
@@ -237,6 +238,26 @@ function requireAtMostOne<T>(rows: readonly T[]): T | undefined {
   return rows[0];
 }
 
+/**
+ * Exact RAISE literals SQL10 uses for state conflicts and expiry under 23514.
+ * Matching is on the full message, never a substring, so a CHECK constraint
+ * whose name merely contains one of these words cannot be misread.
+ */
+const EXPIRED_23514 = new Set(['commerce_expired']);
+const CONFLICT_23514 = new Set([
+  'commerce_cancel_conflict',
+  'commerce_decision_conflict',
+]);
+
+function classify23514(error: Record<string, unknown>): ControlActionStoreErrorCode {
+  const message = error['message'];
+  if (typeof message === 'string') {
+    if (EXPIRED_23514.has(message)) return 'CONTROL_ACTION_STORE_EXPIRED';
+    if (CONFLICT_23514.has(message)) return 'CONTROL_ACTION_STORE_CONFLICT';
+  }
+  return 'CONTROL_ACTION_STORE_INPUT_INVALID';
+}
+
 function normalizeError(error: unknown): ControlActionStoreError {
   if (error instanceof ControlActionStoreError) return error;
   if (error instanceof CommerceActionInputError) return new ControlActionStoreError('CONTROL_ACTION_STORE_INPUT_INVALID');
@@ -266,8 +287,17 @@ function normalizeError(error: unknown): ControlActionStoreError {
       case '22P02':
       case '22001':
       case '22003':
-      case '23514':
         return new ControlActionStoreError('CONTROL_ACTION_STORE_INPUT_INVALID');
+      // SQLSTATE 23514 carries three semantically different families in SQL10:
+      // expiry, state conflict, and genuine CHECK/operand violations. Collapsing
+      // them all into INPUT_INVALID is wrong on the recovery path: a caller that
+      // lost a response and retried was told to fix its input, when the truth
+      // was that the target had already moved on and it must stop and reconcile
+      // through the status read instead. The RAISE literals below are fixed,
+      // internal and never caller-controlled; anything else stays INPUT_INVALID,
+      // so an unrecognised CHECK violation still fails exactly as before.
+      case '23514':
+        return new ControlActionStoreError(classify23514(error));
       default:
         return new ControlActionStoreError('CONTROL_ACTION_STORE_UNAVAILABLE');
     }
