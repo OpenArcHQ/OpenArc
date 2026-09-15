@@ -175,7 +175,33 @@ const COMMERCE_SESSION_CASES: readonly EventCase[] = [
   },
 ];
 
-/** The exact closed inventory: 21 legacy tuples plus the 3 new tuples. */
+const COMMERCE_ACTION_CASES: readonly EventCase[] = [
+  {
+    resourceType: 'commerce_action',
+    eventType: 'control.commerce_action.authorized',
+    resourceId: 'openarc:action:00000000-0000-4000-8000-000000000060',
+  },
+  {
+    resourceType: 'commerce_action',
+    eventType: 'control.commerce_action.approved',
+    resourceId: 'openarc:action:00000000-0000-4000-8000-000000000061',
+  },
+  {
+    resourceType: 'commerce_action',
+    eventType: 'control.commerce_action.rejected',
+    resourceId: 'openarc:action:00000000-0000-4000-8000-000000000062',
+  },
+  {
+    resourceType: 'commerce_action',
+    eventType: 'control.commerce_action.cancelled',
+    resourceId: 'openarc:action:00000000-0000-4000-8000-000000000063',
+  },
+];
+
+/**
+ * The exact closed inventory: 21 legacy tuples, the 3 commerce-session tuples
+ * and the 4 notification-only commerce-action tuples.
+ */
 const EXPECTED_EVENT_KEYS: readonly string[] = [
   'organization|tenant.organization.created',
   'agent|tenant.agent.created',
@@ -201,6 +227,10 @@ const EXPECTED_EVENT_KEYS: readonly string[] = [
   'commerce_session|control.commerce_session.issued',
   'commerce_session|control.commerce_session.exchanged',
   'commerce_session|control.commerce_session.revoked',
+  'commerce_action|control.commerce_action.authorized',
+  'commerce_action|control.commerce_action.approved',
+  'commerce_action|control.commerce_action.rejected',
+  'commerce_action|control.commerce_action.cancelled',
 ];
 
 function eventFor(item: EventCase): ClaimedOutboxEvent {
@@ -381,7 +411,7 @@ describe('worker configuration', () => {
 });
 
 describe('notification handler registry', () => {
-  it('keeps the exact closed event inventory: 21 legacy tuples plus the 3 commerce-session tuples', () => {
+  it('keeps the exact closed event inventory: 21 legacy tuples plus the 3 commerce-session and 4 commerce-action tuples', () => {
     expect([...NOTIFICATION_EVENT_KEYS]).toEqual(EXPECTED_EVENT_KEYS);
     const registry = createHandlerRegistry();
     expect(Object.keys(registry).sort()).toEqual([...EXPECTED_EVENT_KEYS].sort());
@@ -390,7 +420,12 @@ describe('notification handler registry', () => {
   it('dispatches exactly the allowlisted events, including the five control policy tuples', async () => {
     const registry = createHandlerRegistry();
     expect(Object.keys(registry).sort()).toEqual([...NOTIFICATION_EVENT_KEYS].sort());
-    for (const item of [...SIX_CASES, ...POLICY_CASES, ...COMMERCE_SESSION_CASES]) {
+    for (const item of [
+      ...SIX_CASES,
+      ...POLICY_CASES,
+      ...COMMERCE_SESSION_CASES,
+      ...COMMERCE_ACTION_CASES,
+    ]) {
       const event = eventFor(item);
       const key = eventKeyOf(event);
       const handler = registry[key];
@@ -498,6 +533,131 @@ describe('notification handler registry', () => {
     const controller = new AbortController();
     controller.abort();
     const event = eventFor(COMMERCE_SESSION_CASES[0]!);
+    const handler = createHandlerRegistry()[eventKeyOf(event)];
+    expect(handler).toBeDefined();
+    expect(await handler?.(event, { signal: controller.signal })).toBeUndefined();
+  });
+
+  it('accepts each of the four commerce-action tuples with an exact canonical action id', async () => {
+    const registry = createHandlerRegistry();
+    for (const item of COMMERCE_ACTION_CASES) {
+      const event = eventFor(item);
+      const key = `${item.resourceType}|${item.eventType}`;
+      expect(eventKeyOf(event)).toBe(key);
+      expect(validateNotification(event)).toEqual(event);
+      const handler = registry[key];
+      expect(handler).toBeDefined();
+      await handler?.(event, { signal: new AbortController().signal });
+    }
+  });
+
+  it('keeps every commerce-action tuple in the registry with the exact key', () => {
+    const registry = createHandlerRegistry();
+    for (const item of COMMERCE_ACTION_CASES) {
+      const key = `${item.resourceType}|${item.eventType}`;
+      expect(NOTIFICATION_EVENT_KEYS).toContain(key);
+      expect(EXPECTED_EVENT_KEYS).toContain(key);
+      expect(registry[key as keyof typeof registry]).toBeTypeOf('function');
+    }
+  });
+
+  it('rejects mismatched commerce-action resource/event pairs', () => {
+    const mismatches = [
+      // Correct action namespace but a non-UUIDv4 resource (version nibble 1).
+      baseEvent({
+        resourceType: 'commerce_action',
+        eventType: 'control.commerce_action.authorized',
+        resourceId: 'openarc:action:00000000-0000-1000-8000-000000000060',
+      }),
+      // Wrong variant nibble.
+      baseEvent({
+        resourceType: 'commerce_action',
+        eventType: 'control.commerce_action.approved',
+        resourceId: 'openarc:action:00000000-0000-4000-7000-000000000061',
+      }),
+      // Wrong resource type for a commerce-action event type.
+      baseEvent({
+        resourceType: 'commerce_session',
+        eventType: 'control.commerce_action.authorized',
+        resourceId: 'openarc:action:00000000-0000-4000-8000-000000000060',
+      }),
+      // Wrong event type for the commerce_action resource type.
+      baseEvent({
+        resourceType: 'commerce_action',
+        eventType: 'control.commerce_session.issued',
+        resourceId: 'openarc:action:00000000-0000-4000-8000-000000000060',
+      }),
+      // Wrong namespace for an otherwise canonical UUIDv4.
+      baseEvent({
+        resourceType: 'commerce_action',
+        eventType: 'control.commerce_action.rejected',
+        resourceId: 'openarc:session:00000000-0000-4000-8000-000000000062',
+      }),
+    ];
+    for (const event of mismatches) {
+      expect(() => validateNotification(event)).toThrow(InvalidEventError);
+    }
+  });
+
+  it('rejects malformed commerce-action resources including case, version and trailing newlines', () => {
+    const malformed = [
+      'openarc:action:00000000-0000-4000-8000-00000000006', // short uuid
+      'openarc:action:00000000-0000-4000-8000-0000000000600', // long uuid
+      'openarc:action:00000000-0000-0000-8000-000000000060', // version nibble 0
+      'openarc:action:00000000-0000-4000-7000-000000000060', // variant 7
+      'openarc:action:00000000-0000-4000-8000-00000000006Z', // uppercase/non-hex
+      'OPENARC:ACTION:00000000-0000-4000-8000-000000000060', // wrong case prefix
+      'Openarc:action:00000000-0000-4000-8000-000000000060', // mixed case prefix
+      'openarc:action:00000000-0000-4000-8000-000000000060\n', // trailing LF
+      'openarc:action:00000000-0000-4000-8000-000000000060\r', // trailing CR
+      'openarc:action:00000000-0000-4000-8000-000000000060 ', // trailing space
+      '  openarc:action:00000000-0000-4000-8000-000000000060', // leading space
+      'openarc:action:00000000-0000-4000-8000-000000000060@2', // version suffix
+      'openarc:action:00000000-0000-4000-8000-000000000060\n\n', // two newlines
+      '00000000-0000-4000-8000-000000000060', // bare uuid, no namespace
+      'openarc:action:', // namespace only
+    ];
+    for (const resourceId of malformed) {
+      expect(() =>
+        validateNotification(
+          baseEvent({
+            resourceType: 'commerce_action',
+            eventType: 'control.commerce_action.authorized',
+            resourceId,
+          }),
+        ),
+      ).toThrow(InvalidEventError);
+    }
+    // Every valid tuple still passes with each exact resource.
+    for (const item of COMMERCE_ACTION_CASES) {
+      expect(() => validateNotification(eventFor(item))).not.toThrow();
+    }
+  });
+
+  it('rejects a private field on a commerce-action event without echoing it', () => {
+    const CANARY = 'CANARY-private-action-key-4d17';
+    const withCanary = baseEvent({
+      resourceType: 'commerce_action',
+      eventType: 'control.commerce_action.authorized',
+      resourceId: 'openarc:action:00000000-0000-4000-8000-000000000060',
+      privateCanary: CANARY,
+    });
+    let message = '';
+    try {
+      validateNotification(withCanary);
+    } catch (error) {
+      expect(error).toBeInstanceOf(InvalidEventError);
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toBe(INVALID_EVENT_MESSAGE);
+    expect(message).not.toContain(CANARY);
+    expect(JSON.stringify(withCanary)).toContain(CANARY);
+  });
+
+  it('consumes a commerce-action event with an already-aborted signal without side effects', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const event = eventFor(COMMERCE_ACTION_CASES[0]!);
     const handler = createHandlerRegistry()[eventKeyOf(event)];
     expect(handler).toBeDefined();
     expect(await handler?.(event, { signal: controller.signal })).toBeUndefined();

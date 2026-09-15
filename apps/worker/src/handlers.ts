@@ -12,9 +12,10 @@ import type { ClaimedOutboxEvent } from '@openarc/db';
  * The registry is a fixed, closed union of resourceType+eventType pairs already
  * accepted by ClaimedOutboxEvent (the original tenant events, four
  * notification-only credential events, the market listing and listing-version
- * lifecycle events, the five control policy events, and the three
- * notification-only commerce-session events). There are no dynamic callbacks,
- * user URLs or plugin handlers, and the original event is never JSON-logged.
+ * lifecycle events, the five control policy events, the three
+ * notification-only commerce-session events, and the four notification-only
+ * commerce-action events). There are no dynamic callbacks, user URLs or plugin
+ * handlers, and the original event is never JSON-logged.
  */
 
 export const INVALID_EVENT_MESSAGE = 'Durable notification event is invalid.';
@@ -61,7 +62,11 @@ export type NotificationEventKey =
   | 'budget_policy|control.policy.revoked'
   | 'commerce_session|control.commerce_session.issued'
   | 'commerce_session|control.commerce_session.exchanged'
-  | 'commerce_session|control.commerce_session.revoked';
+  | 'commerce_session|control.commerce_session.revoked'
+  | 'commerce_action|control.commerce_action.authorized'
+  | 'commerce_action|control.commerce_action.approved'
+  | 'commerce_action|control.commerce_action.rejected'
+  | 'commerce_action|control.commerce_action.cancelled';
 
 export type NotificationHandlerRegistry = Readonly<
   Record<NotificationEventKey, NotificationHandler>
@@ -92,6 +97,10 @@ export const NOTIFICATION_EVENT_KEYS: readonly NotificationEventKey[] = [
   'commerce_session|control.commerce_session.issued',
   'commerce_session|control.commerce_session.exchanged',
   'commerce_session|control.commerce_session.revoked',
+  'commerce_action|control.commerce_action.authorized',
+  'commerce_action|control.commerce_action.approved',
+  'commerce_action|control.commerce_action.rejected',
+  'commerce_action|control.commerce_action.cancelled',
 ];
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -137,6 +146,12 @@ function isPolicyRevisionResource(value: string): boolean {
 // other suffix can never satisfy the anchor. This mirrors the durable outbox
 // projection exactly, without the `$`-before-newline relaxation.
 const COMMERCE_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\s\S])/;
+
+// Commerce action resource: the exact canonical lower-case openarc:action:
+// prefix plus a UUIDv4 (version nibble exactly 4, variant 8/9/a/b) and an
+// absolute end, so a trailing LF/CR, a suffix or any other coercion can never
+// satisfy the anchor. This mirrors the accepted durable outbox type.
+const COMMERCE_ACTION_ID = /^openarc:action:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\s\S])/;
 
 // The exact safe metadata keyset accepted at the handler boundary. Anything
 // else (a private canary, an internal digest, a raw body) is rejected rather
@@ -289,6 +304,12 @@ export function validateNotification(raw: unknown): ClaimedOutboxEvent {
     case 'commerce_session|control.commerce_session.revoked':
       if (!COMMERCE_SESSION_ID.test(resourceId)) throw new InvalidEventError();
       break;
+    case 'commerce_action|control.commerce_action.authorized':
+    case 'commerce_action|control.commerce_action.approved':
+    case 'commerce_action|control.commerce_action.rejected':
+    case 'commerce_action|control.commerce_action.cancelled':
+      if (!COMMERCE_ACTION_ID.test(resourceId)) throw new InvalidEventError();
+      break;
     default:
       throw new InvalidEventError();
   }
@@ -325,6 +346,10 @@ const DEFAULT_HANDLERS: Record<NotificationEventKey, NotificationHandler> = {
   'commerce_session|control.commerce_session.issued': consume,
   'commerce_session|control.commerce_session.exchanged': consume,
   'commerce_session|control.commerce_session.revoked': consume,
+  'commerce_action|control.commerce_action.authorized': consume,
+  'commerce_action|control.commerce_action.approved': consume,
+  'commerce_action|control.commerce_action.rejected': consume,
+  'commerce_action|control.commerce_action.cancelled': consume,
 };
 
 /**
