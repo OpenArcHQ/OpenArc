@@ -578,6 +578,7 @@ describe('schema10 manifest, ownership and ACLs', () => {
       '0009_control_sessions',
       '0010_control_actions',
       '0011_control_action_reads',
+      '0012_authorization_grants',
     ]);
     const tables = await admin.query<{ n: number; enabled: boolean; forced: boolean }>(
       `SELECT count(*)::int AS n, bool_and(c.relrowsecurity) AS enabled,

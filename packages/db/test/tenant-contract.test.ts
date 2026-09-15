@@ -29,6 +29,7 @@ describe('tenant migration manifest', () => {
       '0009_control_sessions',
       '0010_control_actions',
       '0011_control_action_reads',
+      '0012_authorization_grants',
     ]);
     const auth = migrations[0];
     expect(auth?.sql).toContain('CREATE TABLE openarc_auth.accounts');
