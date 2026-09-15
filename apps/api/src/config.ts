@@ -58,6 +58,7 @@ const EnvironmentSchema = z.object({
   MACHINE_CREDENTIAL_MANAGEMENT_ENABLED: flag(),
   MACHINE_SESSION_EXCHANGE_ENABLED: flag(),
   COMMERCE_SESSIONS_ENABLED: flag(),
+  COMMERCE_ACTIONS_ENABLED: flag(),
   MACHINE_CREDENTIAL_PEPPER_VERSION: pepperVersion().optional(),
   MACHINE_CREDENTIAL_PEPPER: canonical32ByteSecret().optional(),
   MACHINE_CREDENTIAL_PREVIOUS_VERSION: pepperVersion().optional(),
@@ -279,6 +280,29 @@ const EnvironmentSchema = z.object({
       config.TENANT_DATABASE_URL === config.AUTH_DATABASE_URL
     ) {
       context.addIssue({ code: "custom", path: ["TENANT_DATABASE_URL"], message: "Commerce sessions require a dedicated restricted role connection" });
+    }
+  }
+  // Commerce actions are an INDEPENDENT protected family and ship DEFAULT OFF.
+  // Enabling them requires authentication, the commerce-session family (the
+  // agent authorization audience presents a commerce-session bearer) and the
+  // dedicated restricted TENANT_DATABASE_URL, which must stay distinct from
+  // AUTH_DATABASE_URL or the restricted-role boundary is erased. An enabled
+  // action surface is a control surface only: it does not enable a payment,
+  // settlement or delivery lane.
+  if (config.COMMERCE_ACTIONS_ENABLED) {
+    if (!config.AUTH_ENABLED) {
+      context.addIssue({ code: "custom", path: ["COMMERCE_ACTIONS_ENABLED"], message: "Commerce actions require authentication" });
+    }
+    if (!config.COMMERCE_SESSIONS_ENABLED) {
+      context.addIssue({ code: "custom", path: ["COMMERCE_ACTIONS_ENABLED"], message: "Commerce actions require the commerce session family" });
+    }
+    if (!config.TENANT_DATABASE_URL) {
+      context.addIssue({ code: "custom", path: ["COMMERCE_ACTIONS_ENABLED"], message: "Commerce actions require a dedicated restricted database URL" });
+    } else if (
+      config.AUTH_DATABASE_URL !== undefined &&
+      config.TENANT_DATABASE_URL === config.AUTH_DATABASE_URL
+    ) {
+      context.addIssue({ code: "custom", path: ["TENANT_DATABASE_URL"], message: "Commerce actions require a dedicated restricted role connection" });
     }
   }
   if (config.GATEWAY_EVIDENCE_ENABLED) {

@@ -6,6 +6,7 @@ import { startMarketRuntime, type StartedMarketRuntime } from "./market/runtime.
 import { startMachineRuntime, type StartedMachineRuntime } from "./machine/runtime.js";
 import { startControlRuntime, type StartedControlRuntime } from "./control/runtime.js";
 import { startCommerceSessionRuntime, type StartedCommerceSessionRuntime } from "./control/session-runtime.js";
+import { startCommerceActionRuntime, type StartedCommerceActionRuntime } from "./control/action-runtime.js";
 import { ArcAccountService } from "./arc/account-service.js";
 import { AgentRegistryService } from "./arc/agent-registry-service.js";
 import { JobService } from "./arc/job-service.js";
@@ -27,6 +28,7 @@ async function start(): Promise<void> {
   let machineRuntimeHandle: StartedMachineRuntime | undefined;
   let controlRuntimeHandle: StartedControlRuntime | undefined;
   let commerceSessionRuntimeHandle: StartedCommerceSessionRuntime | undefined;
+  let commerceActionRuntimeHandle: StartedCommerceActionRuntime | undefined;
   let redis: Awaited<ReturnType<typeof connectBudgetRedis>> | undefined;
   let sourceBudget: SourceBudget | undefined;
   let rpc: ArcRpcClient | undefined;
@@ -112,6 +114,22 @@ async function start(): Promise<void> {
           rateLimitStore: authRuntimeHandle!.rateLimitStore,
         })
       : undefined;
+    // The commerce-action family is DEFAULT OFF and fails closed. The runtime
+    // owns no pool and constructs no repository: the DB10 commerce-action store
+    // and the commerce-session read are injected through their narrow seams, so
+    // until an integrator binds them the runtime reports `built_disabled`,
+    // exposes NO service and performs zero side effects. With the flag on and a
+    // seam unbound, `createApp` then fails startup rather than serving a family
+    // the capability manifest advertises. This runtime is opened, handed to
+    // `createApp` and closed exactly like the commerce-session runtime above.
+    commerceActionRuntimeHandle = config.COMMERCE_ACTIONS_ENABLED
+      ? await startCommerceActionRuntime({
+          enabled: true,
+          authSecret: config.AUTH_SECRET as string,
+          auth: authRuntimeHandle!.service,
+          rateLimitStore: authRuntimeHandle!.rateLimitStore,
+        })
+      : undefined;
     redis = config.ARC_OBSERVATION_ENABLED && config.REDIS_URL ? await connectBudgetRedis(config.REDIS_URL) : undefined;
     sourceBudget = redis && config.ABUSE_LIMIT_SECRET ? new SourceBudget(redis, {
       secret: config.ABUSE_LIMIT_SECRET,
@@ -167,6 +185,15 @@ async function start(): Promise<void> {
             commerceSessionReady: () => commerceSessionRuntimeHandle!.ready(),
           }
         : {}),
+      // A `built_disabled` action runtime exposes no service, so nothing is
+      // handed over and `createApp` fails startup closed rather than serving an
+      // enabled family with no store behind it.
+      ...(commerceActionRuntimeHandle?.service !== undefined
+        ? {
+            commerceActionService: commerceActionRuntimeHandle.service,
+            commerceActionReady: () => commerceActionRuntimeHandle!.ready(),
+          }
+        : {}),
       ...(config.GATEWAY_EVIDENCE_ENABLED ? { gatewayTransferService: new GatewayTransferService(new BoundedGatewayClient({
         timeoutMs: config.SOURCE_TIMEOUT_MS, maxResponseBytes: config.SOURCE_MAX_RESPONSE_BYTES,
       })) } : {}),
@@ -183,6 +210,7 @@ async function start(): Promise<void> {
       await machineRuntimeHandle?.close();
       await controlRuntimeHandle?.close();
       await commerceSessionRuntimeHandle?.close();
+      await commerceActionRuntimeHandle?.close();
       if (redis?.isOpen) redis.destroy();
       process.exit(0);
     };
@@ -199,6 +227,7 @@ async function start(): Promise<void> {
     await machineRuntimeHandle?.close().catch(() => undefined);
     await controlRuntimeHandle?.close().catch(() => undefined);
     await commerceSessionRuntimeHandle?.close().catch(() => undefined);
+    await commerceActionRuntimeHandle?.close().catch(() => undefined);
     if (redis?.isOpen) redis.destroy();
     throw error;
   }
