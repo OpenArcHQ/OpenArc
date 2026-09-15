@@ -6,7 +6,7 @@ import { ARC_ERC8183, ARC_TESTNET } from "../network.js";
  * One reviewed Arc Testnet reference deployment only. There is deliberately no
  * mainnet entry and no default: unknown or missing chain ids always throw.
  * Every value below is a literal copied from PORT-07 contract research
- * (tmp/commerce-port/port07-erc8183-contract-2026-09-15.md) or the verified
+ * (the PORT-07 ERC-8183 contract research) or the verified
  * deployed source whose SHA-256 is pinned here. Topics and selectors are
  * literals; the test suite recomputes each one with keccak-256 so this runtime
  * module carries no hashing dependency.
