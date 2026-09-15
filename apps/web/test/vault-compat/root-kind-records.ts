@@ -1,10 +1,10 @@
-// P08-00: records shaped EXACTLY like the ROOT (uncommitted <workspace>) build's three extra Vault
-// kinds, using the ROOT schema literals copied verbatim from:
-//   ROOT/packages/shared/src/task-draft.ts          TaskDraftRecordSchema    "openarc.task-draft-record.v1"
-//   ROOT/packages/shared/src/account-report-task.ts TaskReportRecordSchema   "openarc.task-report-record.v1"
-//   ROOT/packages/shared/src/research-run.ts        ResearchRunRecordSchema  "openarc.research-run.v1"
-// Deliberately free of @openarc/shared imports so the same builder can be validated against the ROOT schemas
-// out of band. Test-only; never imported by runtime code.
+// P08-00: records shaped EXACTLY like the ROOT build's Vault record kinds, using the literals copied verbatim from
+// these ROOT build files (repo-relative):
+//   packages/shared/src/task-draft.ts          TaskDraftRecordSchema    "openarc.task-draft-record.v1"
+//   packages/shared/src/account-report-task.ts TaskReportRecordSchema   "openarc.task-report-record.v1"
+//   packages/shared/src/research-run.ts        ResearchRunRecordSchema  "openarc.research-run.v1"
+// Deliberately free of @openarc/shared imports so the same builder can be validated against the ROOT build's own
+// schemas (see root-build-source.ts). Test-only; never imported by runtime code.
 import { createHash } from "node:crypto";
 
 export const ROOT_KIND_RECORD_SCHEMAS = Object.freeze({
