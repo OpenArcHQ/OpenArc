@@ -39,3 +39,5 @@ export * from "./commerce/control-action.js";
 export * from "./commerce/control-action-wire.js";
 export * from "./commerce/control-grant.js";
 export * from "./commerce/control-grant-model.js";
+export * from "./commerce/control-grant-wire.js";
+export * from "./commerce/control-grant-capabilities.js";
