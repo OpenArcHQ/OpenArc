@@ -9,3 +9,6 @@ injectWorkspacePackages: true
 
 syncInjectedDepsAfterScripts:
   - build
+
+overrides:
+  "@x402/evm>viem": 2.56.5
