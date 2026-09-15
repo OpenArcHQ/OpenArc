@@ -48,6 +48,7 @@
     "e2e:listings": "playwright test -c playwright.listing-management.config.ts",
     "e2e:policies": "playwright test -c playwright.policy-management.config.ts",
     "e2e:commerce-sessions": "playwright test -c playwright.commerce-sessions.config.ts",
+    "e2e:commerce-payment": "pnpm --filter @openarc/shared build && pnpm --filter @openarc/db build && pnpm --filter @openarc/x402 build && pnpm --filter @openarc/api build && pnpm --filter @openarc/agent-harness build && playwright test -c playwright.commerce-payment.config.ts",
     "test:reference-contract": "pnpm --filter @openarc/shared build && node --test tools/reference-provider/contract.test.mjs"
   },
   "devDependencies": {
