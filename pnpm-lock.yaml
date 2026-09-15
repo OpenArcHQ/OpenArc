@@ -148,6 +148,9 @@ importers:
         specifier: 4.5.4
         version: 4.5.4
     devDependencies:
+      viem:
+        specifier: 2.56.5
+        version: 2.56.5(typescript@6.0.3)(zod@4.5.4)
       vitest:
         specifier: 4.1.11
         version: 4.1.11(@types/node@26.4.0)(vite@8.2.2(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.13))
