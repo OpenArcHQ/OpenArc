@@ -489,6 +489,27 @@ export {
   type RecordPaymentAttemptDispatchInput,
 } from './control-payment-attempt-store.js';
 export {
+  MAX_OBSERVATION_ATTEMPTS,
+  OBSERVABLE_ATTEMPT_STATES,
+  OBSERVATION_ADMITS_NO_RELEASE,
+  RECORDABLE_OBSERVATION_STATES,
+  SETTLEMENT_OBSERVATION_STORE_ERROR_MESSAGES,
+  SettlementObservationStore,
+  SettlementObservationStoreError,
+  asSettlementObservationPool,
+  type ClaimObservationsInput,
+  type LeasedPaymentAttempt,
+  type ObservableAttemptState,
+  type ObservationAdmitsNoRelease,
+  type ObservationForbiddenReleaseState,
+  type ObservationGatewayStatus,
+  type RecordObservationInput,
+  type RecordableObservationState,
+  type RecordedObservation,
+  type ReleaseLeaseResult,
+  type SettlementObservationStoreErrorCode,
+} from './settlement-observation-store.js';
+export {
   EVIDENCE_NORMALIZED_MAX_BYTES,
   EVIDENCE_READ_DEFAULT_LIMIT,
   EVIDENCE_READ_MAX_LIMIT,

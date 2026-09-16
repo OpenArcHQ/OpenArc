@@ -34,6 +34,7 @@ describe('tenant migration manifest', () => {
       '0014_grant_mutation_reads',
       '0015_payment_attempts',
       '0016_evidence_store',
+      '0017_settlement_observation',
     ]);
     const auth = migrations[0];
     expect(auth?.sql).toContain('CREATE TABLE openarc_auth.accounts');

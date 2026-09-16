@@ -113,6 +113,9 @@ importers:
       '@openarc/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@openarc/x402':
+        specifier: workspace:*
+        version: link:../../packages/x402
     devDependencies:
       tsx:
         specifier: 4.23.13

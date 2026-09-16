@@ -311,6 +311,7 @@ describe('schema8 manifest, ownership and ACLs', () => {
       '0014_grant_mutation_reads',
       '0015_payment_attempts',
       '0016_evidence_store',
+      '0017_settlement_observation',
     ]);
     const tables = await admin.query<{ relname: string; owner: string; rls: boolean; forced: boolean }>(
       `SELECT c.relname, r.rolname AS owner, c.relrowsecurity AS rls, c.relforcerowsecurity AS forced
