@@ -153,8 +153,8 @@ describe('schema17 manifest, ownership, ACLs and readiness', () => {
     const applied = await admin.query<{ id: string }>(
       'SELECT id FROM openarc_meta.schema_migrations ORDER BY id',
     );
-    expect(applied.rows.map((row) => row.id).slice(-2)).toEqual([
-      '0016_evidence_store', '0017_settlement_observation',
+    expect(applied.rows.map((row) => row.id).slice(-3)).toEqual([
+      '0016_evidence_store', '0017_settlement_observation', '0018_operator_reads',
     ]);
 
     const table = await admin.query<{

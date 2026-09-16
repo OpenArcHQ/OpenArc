@@ -336,6 +336,7 @@ describe('durability migration and readiness', () => {
       '0015_payment_attempts',
       '0016_evidence_store',
       '0017_settlement_observation',
+      '0018_operator_reads',
     ]);
     const helpers = await admin.query<{ proname: string; owner: string }>(
       `SELECT p.proname, r.rolname AS owner
@@ -443,11 +444,13 @@ describe('durability migration and readiness', () => {
       'issue_commerce_session',
       'js_length',
       'list_agent_credentials',
+      'list_authorization_grants',
       'list_commerce_actions',
       'list_commerce_approvals',
       'list_commerce_sessions',
       'list_evidence_facts',
       'list_market_providers',
+      'list_operator_stuck_queue',
       'list_policy_revisions',
       'list_policy_roots',
       'list_provider_credentials',
@@ -488,6 +491,7 @@ describe('durability migration and readiness', () => {
       'read_commerce_approval',
       'read_commerce_approval_by_id',
       'read_commerce_exposure',
+      'read_commerce_exposure_buckets',
       'read_commerce_session',
       'read_commerce_session_by_token',
       'read_evidence_facts_by_subject',

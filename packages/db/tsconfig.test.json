@@ -4,5 +4,9 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "test/settlement-observation*.test.ts"]
+  "include": [
+    "src/**/*.ts",
+    "test/settlement-observation*.test.ts",
+    "test/control-operator-read-store*.test.ts"
+  ]
 }
