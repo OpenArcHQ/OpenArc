@@ -1,22 +1,48 @@
 <div align="center">
-  <img src="assets/openarc-logo.jpeg" alt="OpenArc" width="180" />
-  <h1>OpenArc</h1>
-  <p><strong>Understand the evidence behind agent activity.</strong></p>
-  <p>A local-first investigation workspace for autonomous finance on Arc Testnet.</p>
+  <img src="assets/openarc-logo.jpeg" alt="OpenArc" width="160" />
+
+```
+  ██████  ██████  ███████ ███    ██  █████  ██████   ██████
+ ██    ██ ██   ██ ██      ████   ██ ██   ██ ██   ██ ██
+ ██    ██ ██████  █████   ██ ██  ██ ███████ ██████  ██
+ ██    ██ ██      ██      ██  ██ ██ ██   ██ ██   ██ ██
+  ██████  ██      ███████ ██   ████ ██   ██ ██   ██  ██████
+```
+
+  <h3>The receipts layer for autonomous finance.</h3>
+
+  <p><em>A successful transfer is not proof of authorization.<br/>
+  It is not proof of delivery. We keep them apart.</em></p>
+
+  <p>
+    <img alt="Network" src="https://img.shields.io/badge/network-Arc%20Testnet-1f6feb" />
+    <img alt="License" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-8250df" />
+    <img alt="Status" src="https://img.shields.io/badge/mainnet-not%20supported-6e7781" />
+  </p>
+
   <p>
     <a href="#capabilities">Capabilities</a> ·
     <a href="#run-locally">Quick start</a> ·
     <a href="#architecture">Architecture</a> ·
-    <a href="#documentation">Documentation</a>
+    <a href="docs/roadmap.md">Roadmap</a> ·
+    <a href="#license">License</a>
   </p>
 </div>
 
 ---
 
-OpenArc brings agent reports, owner-supplied policies, payment metadata and
-onchain observations into an inspectable evidence trail. Distinguish what was
-reported, what was observed and what remains unresolved—without treating a
-successful transfer as proof of authorization or service delivery.
+When an agent spends money, four systems each tell you a different story: the
+agent says what it did, the provider says what it delivered, the payment network
+says a transfer moved, and the chain says a block was written. Those are four
+different kinds of evidence with four different levels of certainty, and
+collapsing them into a single green checkmark is how people end up believing
+things that are not true.
+
+OpenArc keeps them apart. Every fact carries its source, its adapter version and
+when it was observed. An unanswered validation reads as pending, never as a score
+of zero. A registry whose deployed code no longer matches its reviewed pin is
+reported as drifted, not verified. A gap in a log scan is a gap, not an empty
+result.
 
 **Current status:** OpenArc runs on Arc Testnet as a local-first evidence
 workspace. Available today: Arc account and transaction observation, ERC-8004
@@ -24,8 +50,7 @@ identity and reputation evidence, ERC-8183 job evidence, Circle Gateway transfer
 evidence, the encrypted browser workspace, investigations and bounded exports.
 Hosted accounts, the marketplace and agent purchases are built behind their own
 switches and are not enabled in this deployment, so purchases are unavailable.
-OpenArc does not support mainnet. See the [roadmap](docs/roadmap.md) for what
-ships next and the rules the purchase path will follow.
+OpenArc does not support mainnet. See the [roadmap](docs/roadmap.md).
 
 ## Capabilities
 
@@ -159,3 +184,14 @@ private records, credentials or vulnerability details in public issues.
 The repository is currently marked **UNLICENSED**; no open-source license has been
 granted. Public source availability is separate from licensing and
 product-launch readiness.
+
+## License
+
+OpenArc is **source-available**, not open source. It is licensed under the
+[PolyForm Noncommercial License 1.0.0](LICENSE.md): any noncommercial purpose is
+permitted, including personal study, research, teaching, and use by charitable,
+educational, public research, public safety, environmental and government
+organizations.
+
+Commercial use requires a separate licence. Open an issue to start that
+conversation.
