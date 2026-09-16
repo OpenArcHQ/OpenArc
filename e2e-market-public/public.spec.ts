@@ -167,7 +167,7 @@ function isSameOriginRequests(requests: string[]): boolean {
 }
 
 test.describe("flag ON public marketplace", () => {
-  test("lists declared services with an exact decimal price and no private fields", async ({ page }) => {
+  test("lists declared services with an exact decimal price and no private fields", async ({ page }, testInfo) => {
     await installAcceptedMocks(page);
     await page.goto("/market");
     await expect(page.getByRole("heading", { name: "Declared provider services" })).toBeVisible();
@@ -177,10 +177,10 @@ test.describe("flag ON public marketplace", () => {
     await expect(page.locator("body")).not.toContainText("openarc:org:");
     await expect(page.locator("body")).not.toContainText("organizationId");
     // Visual QA only, captured AFTER the real assertions above.
-    await page.screenshot({ path: "/workspace/test-results/market-qa-index.png" });
+    await page.screenshot({ path: testInfo.outputPath("market-qa-index.png") });
   });
 
-  test("opens detail, provider, docs, status and legal routes", async ({ page }) => {
+  test("opens detail, provider, docs, status and legal routes", async ({ page }, testInfo) => {
     await installAcceptedMocks(page);
 
     await page.goto(`/market/${encodeURIComponent(LISTING_A)}`);
@@ -190,7 +190,7 @@ test.describe("flag ON public marketplace", () => {
     await expect(page.getByText("Not yet available.")).toBeVisible();
     await expect(page.locator("body")).not.toContainText("organizationId");
     // Visual QA only, captured AFTER the detail assertions above.
-    await page.screenshot({ path: "/workspace/test-results/market-qa-detail.png" });
+    await page.screenshot({ path: testInfo.outputPath("market-qa-detail.png") });
 
     await page.goto(`/providers/${encodeURIComponent(PROVIDER_A)}`);
     await expect(page.getByRole("heading", { name: "Synthetic Provider" })).toBeVisible();

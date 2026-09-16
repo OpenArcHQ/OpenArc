@@ -1,0 +1,209 @@
+name: Fast checks
+
+# Change-scoped lane for everyday pushes. It verifies only what the change can
+# affect, in parallel jobs, on Chromium. It does not replace the full gates:
+# `Public source checks` (source-checks.yml) and the private release gates
+# still run every suite on Chromium and WebKit plus production images, and
+# run once per release batch rather than on every push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Branch to diff against
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fast-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs-only: ${{ steps.plan.outputs.docs-only }}
+      units: ${{ steps.plan.outputs.units }}
+      postgres: ${{ steps.plan.outputs.postgres }}
+      suites: ${{ steps.plan.outputs.suites }}
+      has-suites: ${{ steps.plan.outputs.has-suites }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - id: plan
+        env:
+          BASE_REF: ${{ inputs.base }}
+        run: |
+          set -euo pipefail
+          node scripts/e2e-plan.mjs --base "origin/${BASE_REF}"
+          plan=$(node scripts/e2e-plan.mjs --base "origin/${BASE_REF}" --json)
+          {
+            echo "docs-only=$(jq -r .docsOnly <<<"$plan")"
+            echo "units=$(jq -r .units <<<"$plan")"
+            echo "postgres=$(jq -r .postgres <<<"$plan")"
+            echo "suites=$(jq -c .suites <<<"$plan")"
+            echo "has-suites=$(jq -r '(.suites | length) > 0' <<<"$plan")"
+          } >> "$GITHUB_OUTPUT"
+
+  static:
+    needs: plan
+    if: needs.plan.outputs.docs-only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      redis:
+        image: redis:8-alpine@sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.5.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Check public commit identities
+        run: if [ -f scripts/check-public-history.mjs ]; then node scripts/check-public-history.mjs; fi
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm release:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - name: Deployment and CI wiring guards
+        run: node --test scripts/*.test.mjs
+      - name: Unit tests (${{ needs.plan.outputs.units }})
+        if: needs.plan.outputs.units != 'none'
+        env:
+          OPENARC_TEST_REDIS_URL: redis://127.0.0.1:6379
+          OPENARC_TEST_REDIS_DISPOSABLE: "true"
+          UNITS: ${{ needs.plan.outputs.units }}
+          BASE_REF: ${{ inputs.base }}
+        run: |
+          set -euo pipefail
+          pnpm --filter @openarc/shared --filter @openarc/db --filter @openarc/x402 build
+          if [ "$UNITS" = "all" ]; then
+            pnpm -r --if-present test --maxWorkers=2
+          else
+            # The root workspace's own `test` script is the full recursive run; exclude it.
+            pnpm --filter "...[origin/${BASE_REF}]" --filter "!openarc" --if-present test --maxWorkers=2
+          fi
+      - name: Build affected workspaces
+        if: needs.plan.outputs.units != 'none'
+        env:
+          UNITS: ${{ needs.plan.outputs.units }}
+          BASE_REF: ${{ inputs.base }}
+        run: |
+          if [ "$UNITS" = "all" ]; then pnpm build; else pnpm --filter "...[origin/${BASE_REF}]" --filter "!openarc" --if-present build; fi
+
+  browser:
+    needs: plan
+    if: needs.plan.outputs.has-suites == 'true'
+    name: browser (${{ matrix.suite.id }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.plan.outputs.suites) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.5.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Suites with a real API web server import the built database and x402 packages.
+      - run: pnpm --filter @openarc/shared --filter @openarc/db --filter @openarc/x402 build
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: ${{ matrix.suite.config }}
+        env:
+          SUITE_ARGS: ${{ matrix.suite.args }}
+        run: |
+          read -r -a args <<<"$SUITE_ARGS"
+          pnpm exec playwright test "${args[@]}"
+
+  postgres:
+    needs: plan
+    if: needs.plan.outputs.postgres == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+        env:
+          POSTGRES_DB: openarc_auth_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: openarc_disposable_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d openarc_auth_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      redis:
+        image: redis:8-alpine@sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.5.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @openarc/shared --filter @openarc/db --filter @openarc/x402 build
+      - run: pnpm exec playwright install --with-deps chromium webkit
+      - name: Disposable PostgreSQL database, API, worker and account suites
+        env:
+          OPENARC_TEST_DATABASE_URL: postgres://postgres:openarc_disposable_test@127.0.0.1:5432/openarc_auth_test
+          OPENARC_TEST_REDIS_URL: redis://127.0.0.1:6379
+          OPENARC_TEST_REDIS_DISPOSABLE: "true"
+        run: pnpm --filter @openarc/db test:postgres && pnpm --filter @openarc/api test:postgres && pnpm --filter @openarc/worker test:postgres && pnpm e2e:accounts
+
+  summary:
+    needs: [plan, static, browser, postgres]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"' | tee -a "$GITHUB_STEP_SUMMARY"
+          echo 'Fast lane: change-scoped, Chromium-only development journeys with synthetic fixtures. It is not the full gate: WebKit, production images and release evidence stay in the full lanes.' >> "$GITHUB_STEP_SUMMARY"
+          if echo "$RESULTS" | jq -e 'to_entries | any(.value.result == "failure" or .value.result == "cancelled")' >/dev/null; then exit 1; fi
