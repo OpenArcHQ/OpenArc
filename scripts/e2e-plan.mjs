@@ -16,6 +16,7 @@
  *   node scripts/e2e-plan.mjs --base origin/main          # human summary
  *   node scripts/e2e-plan.mjs --base origin/main --json   # machine output
  *   node scripts/e2e-plan.mjs --files a.ts,b.css --json   # explicit file list
+ *   node scripts/e2e-plan.mjs --full                      # full lane (JSON), both browsers
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -111,6 +112,25 @@ function suitesForWebSource(file) {
   return null;
 }
 
+/** Everything: every suite with every project, all units, the PostgreSQL lane. */
+export function fullPlan(configs = fullGateConfigs()) {
+  return {
+    docsOnly: false,
+    postgres: true,
+    units: "all",
+    reasons: ["full lane"],
+    suites: configs.map((config) => {
+      const projects = projectNames(config);
+      return {
+        config,
+        id: config === "playwright.config.ts" ? "root" : config.replace(/^playwright\./u, "").replace(/\.config\.ts$/u, ""),
+        projects,
+        args: ["-c", config, ...projects.flatMap((name) => ["--project", name])].join(" "),
+      };
+    }),
+  };
+}
+
 export function plan(files, configs = fullGateConfigs()) {
   const suites = new Set();
   let postgres = false;
@@ -198,6 +218,10 @@ function main(argv) {
     const index = argv.indexOf(name);
     return index === -1 ? undefined : argv[index + 1];
   };
+  if (argv.includes("--full")) {
+    process.stdout.write(`${JSON.stringify({ files: 0, ...fullPlan() })}\n`);
+    return;
+  }
   const explicit = arg("--files");
   const files = explicit !== undefined ? explicit.split(",").filter(Boolean) : changedFiles(arg("--base") ?? "origin/main");
   const result = { files: files.length, ...plan(files) };

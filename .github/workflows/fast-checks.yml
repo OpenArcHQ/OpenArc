@@ -1,16 +1,23 @@
 name: Fast checks
 
-# Change-scoped lane for everyday pushes. It verifies only what the change can
-# affect, in parallel jobs, on Chromium. It does not replace the full gates:
-# `Public source checks` (source-checks.yml) and the private release gates
-# still run every suite on Chromium and WebKit plus production images, and
-# run once per release batch rather than on every push.
+# Parallel verification.
+#   lane=changed (default): only what the change can affect, Chromium only.
+#   lane=full: every suite on Chromium and WebKit, every unit suite and the
+#   PostgreSQL lane, in parallel jobs. This is the release check.
+# The serial Docker source gate (source-checks.yml) and the private image
+# gates remain available but are not required to merge or publish.
 
 on:
   workflow_dispatch:
     inputs:
+      lane:
+        description: changed (affected suites) or full (everything, both browsers)
+        required: false
+        default: changed
+        type: choice
+        options: [changed, full]
       base:
-        description: Branch to diff against
+        description: Branch to diff against (changed lane)
         required: false
         default: main
 
@@ -42,10 +49,15 @@ jobs:
       - id: plan
         env:
           BASE_REF: ${{ inputs.base }}
+          LANE: ${{ inputs.lane }}
         run: |
           set -euo pipefail
-          node scripts/e2e-plan.mjs --base "origin/${BASE_REF}"
-          plan=$(node scripts/e2e-plan.mjs --base "origin/${BASE_REF}" --json)
+          if [ "$LANE" = "full" ]; then
+            plan=$(node scripts/e2e-plan.mjs --full)
+          else
+            node scripts/e2e-plan.mjs --base "origin/${BASE_REF}"
+            plan=$(node scripts/e2e-plan.mjs --base "origin/${BASE_REF}" --json)
+          fi
           {
             echo "docs-only=$(jq -r .docsOnly <<<"$plan")"
             echo "units=$(jq -r .units <<<"$plan")"
@@ -118,7 +130,7 @@ jobs:
     if: needs.plan.outputs.has-suites == 'true'
     name: browser (${{ matrix.suite.id }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -137,7 +149,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Suites with a real API web server import the built database and x402 packages.
       - run: pnpm --filter @openarc/shared --filter @openarc/db --filter @openarc/x402 build
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium webkit
       - name: ${{ matrix.suite.config }}
         env:
           SUITE_ARGS: ${{ matrix.suite.args }}
@@ -203,7 +215,8 @@ jobs:
       - name: Result
         env:
           RESULTS: ${{ toJSON(needs) }}
+          LANE: ${{ inputs.lane }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"' | tee -a "$GITHUB_STEP_SUMMARY"
-          echo 'Fast lane: change-scoped, Chromium-only development journeys with synthetic fixtures. It is not the full gate: WebKit, production images and release evidence stay in the full lanes.' >> "$GITHUB_STEP_SUMMARY"
+          echo "Lane: ${LANE}. Development journeys use synthetic fixtures; the changed lane is Chromium-only. Neither lane is production-image, deployed-service or mainnet evidence." >> "$GITHUB_STEP_SUMMARY"
           if echo "$RESULTS" | jq -e 'to_entries | any(.value.result == "failure" or .value.result == "cancelled")' >/dev/null; then exit 1; fi

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fullGateConfigs, plan, projectNames } from "./e2e-plan.mjs";
+import { fullGateConfigs, fullPlan, plan, projectNames } from "./e2e-plan.mjs";
 
 const configs = fullGateConfigs();
 const ids = (files) => plan(files).suites.map((suite) => suite.config);
@@ -66,4 +66,12 @@ test("the fast lane drops WebKit projects but keeps flag-off Chromium projects",
   for (const suite of plan(["apps/web/src/App.tsx"]).suites) {
     assert.ok(suite.projects.every((name) => !/webkit/iu.test(name)), suite.config);
   }
+});
+
+test("the full lane runs every suite with WebKit, all units and PostgreSQL", () => {
+  const result = fullPlan();
+  assert.equal(result.suites.length, configs.length);
+  assert.equal(result.units, "all");
+  assert.equal(result.postgres, true);
+  assert.ok(result.suites.some((suite) => suite.projects.some((name) => /webkit/iu.test(name))));
 });

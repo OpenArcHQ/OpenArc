@@ -8,8 +8,9 @@ whatever the change was. Verification is now split into lanes.
 | Lane | Where | When | What |
 |---|---|---|---|
 | Local fast | `pnpm verify:changed` | before every push | lint, typecheck, guards, affected unit tests, affected browser suites on Chromium |
-| CI fast | `Fast checks` workflow (`fast-checks.yml`) | on demand for a pushed branch | the same plan, with each browser suite in its own parallel job, plus the PostgreSQL lane when database, API or account code changed |
-| Full | `Public source checks` and the private `Release gates` | once per release batch, before tagging or exporting | everything: every suite on Chromium and WebKit, production images, scans |
+| CI changed | `Fast checks`, lane `changed` | on demand for a pushed branch | the same plan, each browser suite in its own parallel job, plus the PostgreSQL lane when database, API or account code changed |
+| CI full (release check) | `Fast checks`, lane `full` | once per release batch, before merging to main or exporting | every suite on Chromium and WebKit, every unit suite and the PostgreSQL lane, all in parallel |
+| Archival | `Public source checks` (serial Docker gate) and the private `Release gates` (images, scans) | optional, e.g. before a deployment | the old serial gates; not required to merge or publish |
 
 ## How the plan is chosen
 
@@ -35,6 +36,9 @@ pnpm verify:changed                      # run them
 ## Rules
 
 - Do not dispatch the full lane per push. Batch changes, then run it once.
+- Run `pnpm verify:changed` (it lints) before every push, including test-only edits.
+- A failing test is fixed at its cause in the same batch; re-running a red lane
+  without a change is not a fix.
 - The fast lane is Chromium-only development evidence with synthetic fixtures.
   It never counts as release, production-image or mainnet evidence.
 - A red full lane blocks the release; fix forward and re-run only the full lane.
