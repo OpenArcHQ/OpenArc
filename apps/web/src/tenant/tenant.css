@@ -335,7 +335,7 @@
   box-shadow: var(--tenant-eb-rest);
   transition: box-shadow var(--tenant-dur) var(--tenant-ease), transform var(--tenant-dur) var(--tenant-ease);
 }
-.tenant-netcard:hover { box-shadow: var(--tenant-eb-hover); transform: translateY(-1px); }
+.tenant-netcard:hover { box-shadow: var(--tenant-eb-hover); }
 .tenant-netcard::after {
   content: "";
   position: absolute;
@@ -472,7 +472,7 @@
 }
 .tenant-drawer .tenant-rail { min-height: auto; }
 @keyframes tenant-fade { from { opacity: 0; } }
-@keyframes tenant-slide { from { transform: translateX(-24px); opacity: 0; } }
+@keyframes tenant-slide { from { opacity: 0; } }
 
 .tenant-main {
   min-width: 0;
@@ -495,8 +495,10 @@
 .tenant-content > section > :nth-child(4) { animation-delay: 120ms; }
 .tenant-content > section > :nth-child(5) { animation-delay: 160ms; }
 .tenant-content > section > :nth-child(n + 6) { animation-delay: 200ms; }
+/* Opacity only: controls inside must never move, or automated clicks and
+   assistive pointers wait for a box that is still travelling. */
 @keyframes tenant-rise {
-  from { opacity: 0; transform: translateY(12px); filter: blur(2px); }
+  from { opacity: 0; }
 }
 
 .tenant-eyebrow {
@@ -624,7 +626,7 @@
 .tenant-card:hover,
 .tenant-table-wrap:hover,
 .tenant-surface:hover { box-shadow: var(--tenant-e-hover); }
-.tenant-card:hover,
+/* Only whole-surface links lift; cards that contain controls stay put. */
 .tenant-surface--lift:hover { transform: translateY(-2px); }
 
 /* Cursor-tracked sheen, positioned by useSurfaceSheen through CSSOM. */
@@ -782,7 +784,7 @@
   box-shadow: var(--tenant-e-rest);
   transition: box-shadow var(--tenant-dur) var(--tenant-ease), transform var(--tenant-dur) var(--tenant-ease);
 }
-.tenant-hero:hover { box-shadow: var(--tenant-e-hover); transform: translateY(-2px); }
+.tenant-hero:hover { box-shadow: var(--tenant-e-hover); }
 .tenant-hero > * { position: relative; z-index: 2; }
 /* Rendered glass-card art on the right; multiply keeps its white ground invisible. */
 .tenant-hero::before {
