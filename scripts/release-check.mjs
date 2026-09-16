@@ -342,7 +342,9 @@ if (!packageSource.includes("playwright test -c playwright.agent-registry.config
 if (!packageSource.includes("playwright test -c playwright.agent-registry.production.config.ts")) {
   failures.push("M05 browser gate must define an exact production-source image journey");
 }
-const m02WorkflowSource = await readFile(path.join(root, ".github/workflows/release-gates.yml"), "utf8");
+// The private release workflow is published as a structural reference only;
+// the public source gate has no private-history dependency.
+const m02WorkflowSource = await readFile(path.join(root, "docs/engineering/release-gates.reference.yml"), "utf8");
 for (const requiredToken of [
   "openarc-web-m03:ci", "VITE_API_BOUNDARY_ENABLED=true", "pnpm e2e:api-boundary:production",
   "API_UPSTREAM_SNI=wrong.openarc.test", "image --exit-code 1 --severity HIGH,CRITICAL openarc-web-m03:ci",
@@ -558,7 +560,7 @@ for (const [relativePath, requiredPackages] of [
 }
 
 const workflowSource = await readFile(
-  path.join(root, ".github/workflows/release-gates.yml"),
+  path.join(root, "docs/engineering/release-gates.reference.yml"),
   "utf8",
 );
 for (const action of workflowSource.matchAll(/^\s*-\s*uses:\s*([^\s#]+)/gmu)) {

@@ -55,7 +55,8 @@ const FILES = {
   actionBusiness: "apps/web/nginx-action-locations.conf",
   listingBusiness: "apps/web/nginx-listing-management-locations.conf",
   sourceChecks: ".github/workflows/source-checks.yml",
-  releaseGates: ".github/workflows/release-gates.yml",
+  // Public tree: the private release workflow ships as a reference copy.
+  releaseGates: "docs/engineering/release-gates.reference.yml",
 };
 
 const registrySource = read(FILES.registry);

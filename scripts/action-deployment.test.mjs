@@ -47,7 +47,8 @@ const FILES = {
   sessionDeny: "apps/web/nginx-session-deny.conf",
   sessionBusiness: "apps/web/nginx-commerce-session-locations.conf",
   sourceChecks: ".github/workflows/source-checks.yml",
-  releaseGates: ".github/workflows/release-gates.yml",
+  // Public tree: the private release workflow ships as a reference copy.
+  releaseGates: "docs/engineering/release-gates.reference.yml",
 };
 
 const registrySource = read(FILES.registry);
