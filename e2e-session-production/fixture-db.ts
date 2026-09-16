@@ -395,7 +395,12 @@ export async function seedAgentMachineSession(
     // The accepted `create_agent_session` helper caps a session at 15 minutes
     // (900s); the credential may live longer. Derive a session expiry inside
     // that bound AND inside the credential expiry.
-    const sessionSeconds = Math.min(expiresInSeconds, 900);
+    // schema05 refuses an agent session expiring later than the DATABASE clock
+  // plus 15 minutes, but this value is computed on the CLIENT clock. Asking for
+  // the full 900 s leaves zero margin, so any sub-second skew between the host
+  // and the database container raises durable_expiry_invalid and the fixture
+  // fails intermittently. Keep a margin well inside the cap.
+  const sessionSeconds = Math.min(expiresInSeconds, 870);
     const sessionExpiresAt = new Date(Date.now() + sessionSeconds * 1000).toISOString();
     const session = await store.createAgentSession({
       organizationId: organization,
