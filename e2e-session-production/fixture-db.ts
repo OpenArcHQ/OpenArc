@@ -134,7 +134,7 @@ async function withAdmin<T>(work: (admin: AdminPool) => Promise<T>): Promise<T> 
     return await work(admin);
   } catch (error) {
     if (error instanceof TenantFixtureError) throw error;
-    throw new TenantFixtureError("FIXTURE_UNAVAILABLE");
+    throw fixtureUnavailable(error);
   } finally {
     if (admin !== undefined) await admin.end().catch(() => undefined);
   }
@@ -258,10 +258,24 @@ async function withTenantPool<T>(work: (db: Awaited<ReturnType<typeof loadDbModu
     return await work(db, pool);
   } catch (error) {
     if (error instanceof TenantFixtureError) throw error;
-    throw new TenantFixtureError("FIXTURE_UNAVAILABLE");
+    // The public message stays fixed, but a bare FIXTURE_UNAVAILABLE hides
+    // transient pool failures and makes every future flake undiagnosable.
+    // Carry the reason as a redacted cause; never surface a connection string.
+    throw fixtureUnavailable(error);
   } finally {
     if (pool !== undefined) await pool.end().catch(() => undefined);
   }
+}
+
+/** FIXTURE_UNAVAILABLE carrying a redacted reason, never a connection string. */
+function fixtureUnavailable(error: unknown): TenantFixtureError {
+  const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  const unavailable = new TenantFixtureError("FIXTURE_UNAVAILABLE");
+  (unavailable as { cause?: unknown }).cause = detail.replace(
+    /postgres:\/\/\S*/gu,
+    "postgres://[redacted]",
+  );
+  return unavailable;
 }
 
 /**
