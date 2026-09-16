@@ -56,9 +56,13 @@ const open: { provider: ReferenceProvider | undefined; facilitator: FakeFacilita
 test.beforeAll(async () => {
   test.setTimeout(300_000);
   const schema = await prepareDatabase();
-  // The current head includes migration 0015, which owns the payment attempts.
+  // Migration 0015 owns the payment attempts this suite exercises. Later
+  // migrations are additive, so require the head to be AT OR PAST 0015 rather
+  // than pinning it: pinning breaks this suite every time a migration lands.
   expect(schema.applied).toBeGreaterThanOrEqual(15);
-  expect(schema.head.startsWith("0015")).toBe(true);
+  const head = /^(\d{4})_/u.exec(schema.head);
+  expect(head, `unexpected schema head ${schema.head}`).not.toBeNull();
+  expect(Number.parseInt(head?.[1] ?? "0", 10)).toBeGreaterThanOrEqual(15);
   api = await startApi();
 });
 
