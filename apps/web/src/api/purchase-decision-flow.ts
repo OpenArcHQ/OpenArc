@@ -1,4 +1,13 @@
-import type { WorkspaceRecord } from "@openarc/shared";
+import {
+  PURCHASE_DECISION_DISCLOSURE,
+  PURCHASE_DECISION_ROUTE_BY_DECISION,
+  PurchaseDecisionPermissionReceiptRecordSchema,
+  type CommerceActionMetadata,
+  type CommerceApprovalMetadata,
+  type PurchaseDecision,
+  type PurchaseDecisionPermissionReceiptRecord,
+  type WorkspaceRecord,
+} from "@openarc/shared";
 
 import type { UnlockedWorkspace } from "../vault/types.js";
 
@@ -42,6 +51,91 @@ export class PurchaseFinalizationError extends Error {
     super("A purchase decision receipt could not be saved, so nothing was sent.");
     this.name = "PurchaseFinalizationError";
   }
+}
+
+/** Exactly what the console showed the human, and exactly what it will send. */
+export interface PurchaseDecisionReceiptSubject {
+  readonly decision: PurchaseDecision;
+  readonly organizationId: string;
+  readonly actionId: string;
+  readonly mutationId: string;
+  readonly action: CommerceActionMetadata;
+  /** Null when no approval record exists or its read failed: the expiry is then genuinely absent. */
+  readonly approval: CommerceApprovalMetadata | null;
+}
+
+/**
+ * Builds the v6 purchase-decision receipt.
+ *
+ * Synchronous and pure, as `buildReceipt` requires: the receipt describes the
+ * reviewed state at the instant of the decision, with no chance of a later read
+ * changing it. It parses through the frozen schema, so a value the receipt
+ * cannot honestly represent throws HERE — before the revision guard, and
+ * therefore before any request can exist.
+ *
+ * `released` is exactly the wire: the organization ID and purchase ID are path
+ * segments, the decision is which of the two routes is called, and the mutation
+ * ID is the entire JSON body. The CSRF token and idempotency key are headers
+ * and are not representable on this record at all.
+ */
+export function buildPurchaseDecisionReceipt(
+  workspace: UnlockedWorkspace,
+  origin: string,
+  subject: PurchaseDecisionReceiptSubject,
+  clock: { readonly now?: () => string; readonly id?: () => string } = {},
+): PurchaseDecisionPermissionReceiptRecord {
+  const at = (clock.now ?? (() => new Date().toISOString()))();
+  const recordId = (clock.id ?? (() => crypto.randomUUID()))();
+  const action = subject.action;
+  const approval = subject.approval;
+  return PurchaseDecisionPermissionReceiptRecordSchema.parse({
+    recordSchema: "openarc.permission-receipt.v6",
+    kind: "permission_receipt",
+    recordId,
+    recordRevision: workspace.meta.revision,
+    createdAt: at,
+    updatedAt: at,
+    connectorId: PURCHASE_DECISION_DISCLOSURE.connectorId,
+    destination: {
+      origin,
+      path: PURCHASE_DECISION_ROUTE_BY_DECISION[subject.decision],
+      method: "POST",
+      upstreams: [],
+    },
+    releasedFields: ["organizationId", "actionId", "decision", "mutationId"],
+    released: {
+      organizationId: subject.organizationId,
+      actionId: subject.actionId,
+      decision: subject.decision,
+      mutationId: subject.mutationId,
+    },
+    reviewed: {
+      listingId: action.listingId,
+      listingVersion: action.listingVersion,
+      providerId: action.providerId,
+      amountAtomic: action.amountAtomic,
+      feeAtomic: action.feeAtomic,
+      debitAtomic: action.debitAtomic,
+      asset: action.exposureKey.asset,
+      decimals: action.exposureKey.decimals,
+      networkId: action.exposureKey.networkId,
+      policyId: action.policyId,
+      policyRevision: action.policyRevision,
+      // The approval pair moves together: an expiry is never shown without the
+      // approval it belongs to, and never invented when the read failed.
+      approvalId: approval?.approvalId ?? null,
+      approvalExpiresAt: approval?.expiresAt ?? null,
+    },
+    purpose: PURCHASE_DECISION_DISCLOSURE.purpose,
+    credentials: PURCHASE_DECISION_DISCLOSURE.credentials,
+    openArcRetention: PURCHASE_DECISION_DISCLOSURE.openArcRetention,
+    providerRetention: PURCHASE_DECISION_DISCLOSURE.providerRetention,
+    hostingMetadata: PURCHASE_DECISION_DISCLOSURE.hostingMetadata,
+    approvedAt: at,
+    outcome: "approved",
+    resolvedAt: null,
+    failureCode: null,
+  });
 }
 
 export interface PurchaseDecisionFlowOptions<T> {

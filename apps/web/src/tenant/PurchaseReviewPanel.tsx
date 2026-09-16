@@ -114,8 +114,9 @@ export function PurchaseReviewPanel(props: PurchaseReviewPanelProps) {
       {showDecisions ? (
         <div className="tenant-actions-console__decisions" role="group" aria-label="Purchase decision">
           <p className="tenant-status tenant-status--warning">
-            Your decision is recorded in your encrypted workspace before anything is sent. If that
-            workspace changed or was locked, nothing is sent at all.
+            What you reviewed above is written to your encrypted workspace before anything is sent.
+            Only the organization, this purchase, your decision and one mutation ID then leave this
+            browser. If that workspace changed or was locked, nothing is sent at all.
           </p>
           {(["approve", "reject"] as const).map((decision) => (
             <button

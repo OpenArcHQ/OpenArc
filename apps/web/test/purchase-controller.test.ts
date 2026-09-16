@@ -1,4 +1,9 @@
-import type { WorkspaceRecord } from "@openarc/shared";
+import {
+  PURCHASE_DECISION_APPROVE_PATH,
+  PURCHASE_DECISION_REJECT_PATH,
+  type PurchaseDecisionPermissionReceiptRecord,
+  type WorkspaceRecord,
+} from "@openarc/shared";
 import type { CommerceHumanRole } from "@openarc/shared";
 import { describe, expect, it, vi } from "vitest";
 
@@ -432,5 +437,173 @@ describe("P04-06 purchase access and flag gates", () => {
     expect(controller.state.review).toEqual(initialPurchaseControllerState().review);
     expect(controller.state.decision).toEqual({ kind: "idle" });
     expect(fetcher.mock.calls.slice(readCalls)).toEqual([]);
+  });
+});
+
+/**
+ * P04-06b — the decision path with the real v6 receipt.
+ *
+ * The tests above use a stub record to prove ORDER. These prove CONTENT: the
+ * receipt the Vault actually keeps describes exactly the request that actually
+ * left the browser, and nothing more.
+ */
+describe("P04-06b the committed receipt describes the request that was sent", () => {
+  /** A binding with no custom builder, so the controller builds the v6 receipt itself. */
+  function realVault(options: { conflict?: boolean; origin?: string | null } = {}): VaultProbe {
+    const events: string[] = [];
+    const committed: WorkspaceRecord[][] = [];
+    const workspace = {
+      // A real 32-character Vault revision: the receipt schema pins the grammar.
+      meta: { vaultId: "vault", revision: "A".repeat(32), coordinationRevision: "coord-1" },
+      key: {},
+      records: [],
+    } as unknown as UnlockedWorkspace;
+    const binding: PurchaseVaultBinding = {
+      workspace,
+      ...(options.origin === null ? {} : { origin: options.origin ?? "https://app.example.test" }),
+      assertActive: () => {
+        events.push("assert-active");
+      },
+      save: async (current, records) => {
+        events.push("commit-receipt");
+        committed.push([...records]);
+        return current;
+      },
+      verifyStored: async () => {
+        events.push("verify-stored");
+        if (options.conflict === true) {
+          throw new VaultError("VAULT_CONFLICT", "This encrypted workspace changed. Nothing was sent.");
+        }
+      },
+    };
+    return { binding, events, committed };
+  }
+
+  const receiptOf = (probe: VaultProbe): PurchaseDecisionPermissionReceiptRecord =>
+    probe.committed[0]![0] as PurchaseDecisionPermissionReceiptRecord;
+
+  it("commits a v6 receipt whose released fields equal the request body and route", async () => {
+    const fetcher = purchaseFetcher();
+    const vault = realVault();
+    const { controller } = controllerWith(fetcher, { vault: vault.binding });
+    await controller.initialize(ACTION);
+    const readCalls = fetcher.mock.calls.length;
+
+    expect(controller.beginDecision("approve")).toBe(true);
+    await controller.confirmDecision();
+
+    const writes = fetcher.mock.calls.slice(readCalls).filter((call) => call[1]?.method === "POST");
+    expect(writes).toHaveLength(1);
+    const path = String(writes[0]?.[0]);
+    const body = JSON.parse(String(writes[0]?.[1]?.body)) as Record<string, unknown>;
+    const receipt = receiptOf(vault);
+
+    expect(receipt.recordSchema).toBe("openarc.permission-receipt.v6");
+    expect(receipt.connectorId).toBe("openarc_purchase_decision");
+    // The body is exactly one field, and the receipt discloses exactly it.
+    expect(Object.keys(body)).toEqual(["mutationId"]);
+    expect(receipt.released.mutationId).toBe(body.mutationId);
+    // The two path segments that leave the browser are disclosed too.
+    expect(path).toBe(
+      `/v2/control/organizations/${encodeURIComponent(ORG)}/actions/${encodeURIComponent(ACTION)}/approve`,
+    );
+    expect(receipt.released.organizationId).toBe(ORG);
+    expect(receipt.released.actionId).toBe(ACTION);
+    // The decision IS the route, and the receipt names the route it called.
+    expect(receipt.released.decision).toBe("approve");
+    expect(receipt.destination.path).toBe(PURCHASE_DECISION_APPROVE_PATH);
+    expect(receipt.destination.upstreams).toEqual([]);
+    // Disclosure and payload agree exactly, with nothing disclosed that is not sent.
+    expect([...receipt.releasedFields].sort()).toEqual(Object.keys(receipt.released).sort());
+    expect(receipt.releasedFields).toEqual(["organizationId", "actionId", "decision", "mutationId"]);
+  });
+
+  it("never lets a CSRF token or idempotency key reach the receipt, though both are sent", async () => {
+    const fetcher = purchaseFetcher();
+    const vault = realVault();
+    const { controller } = controllerWith(fetcher, { vault: vault.binding });
+    await controller.initialize(ACTION);
+    const readCalls = fetcher.mock.calls.length;
+    expect(controller.beginDecision("approve")).toBe(true);
+    await controller.confirmDecision();
+
+    const write = fetcher.mock.calls.slice(readCalls).find((call) => call[1]?.method === "POST");
+    const headers = write?.[1]?.headers as Record<string, string>;
+    // Both really are on the wire, as headers...
+    expect(headers["X-OpenArc-CSRF"]).toBe(CSRF);
+    expect(headers["Idempotency-Key"]).toEqual(expect.any(String));
+    // ...and neither appears anywhere in the stored receipt.
+    const serialized = JSON.stringify(receiptOf(vault));
+    expect(serialized).not.toContain(CSRF);
+    expect(serialized).not.toContain(headers["Idempotency-Key"]);
+  });
+
+  it("records the reject route when the human rejects", async () => {
+    const fetcher = purchaseFetcher();
+    const vault = realVault();
+    const { controller } = controllerWith(fetcher, { vault: vault.binding });
+    await controller.initialize(ACTION);
+    expect(controller.beginDecision("reject")).toBe(true);
+    await controller.confirmDecision();
+    const receipt = receiptOf(vault);
+    expect(receipt.released.decision).toBe("reject");
+    expect(receipt.destination.path).toBe(PURCHASE_DECISION_REJECT_PATH);
+  });
+
+  it("records what the human reviewed: listing version, exact amounts, policy and expiry", async () => {
+    const fetcher = purchaseFetcher();
+    const vault = realVault();
+    const { controller } = controllerWith(fetcher, { vault: vault.binding });
+    await controller.initialize(ACTION);
+    expect(controller.beginDecision("approve")).toBe(true);
+    await controller.confirmDecision();
+
+    const reviewed = receiptOf(vault).reviewed;
+    const shown = new Map(controller.reviewFields().map((field) => [field.key, field.value]));
+    expect(reviewed.listingVersion).toBe(shown.get("listingVersion"));
+    expect(reviewed.amountAtomic).toBe(shown.get("amountAtomic"));
+    expect(reviewed.debitAtomic).toBe(shown.get("debitAtomic"));
+    expect(reviewed.policyId).toBe(shown.get("policyId"));
+    expect(reviewed.policyRevision).toBe(shown.get("policyRevision"));
+    expect(reviewed.approvalExpiresAt).toBe(shown.get("approvalExpiresAt"));
+    expect({ asset: reviewed.asset, decimals: reviewed.decimals }).toEqual({ asset: "USDC", decimals: 6 });
+    // Amount plus fee is the budget, as exact integers.
+    expect(BigInt(reviewed.debitAtomic)).toBe(BigInt(reviewed.amountAtomic) + BigInt(reviewed.feeAtomic));
+  });
+
+  it("sends ZERO requests when the Vault changed, and keeps the real receipt", async () => {
+    const fetcher = purchaseFetcher();
+    const vault = realVault({ conflict: true });
+    const { controller } = controllerWith(fetcher, { vault: vault.binding });
+    await controller.initialize(ACTION);
+    const readCalls = fetcher.mock.calls.length;
+
+    expect(controller.beginDecision("approve")).toBe(true);
+    await controller.confirmDecision();
+
+    expect(fetcher.mock.calls.slice(readCalls)).toEqual([]);
+    expect(vault.committed).toHaveLength(1);
+    expect(receiptOf(vault).recordSchema).toBe("openarc.permission-receipt.v6");
+    expect(vault.events).toEqual(["assert-active", "commit-receipt", "assert-active", "verify-stored"]);
+    expect(controller.state.decision).toEqual({ kind: "rejected", notice: { kind: "vault-conflict" } });
+  });
+
+  /** A receipt must name the exact origin it was sent to; one is never guessed. */
+  it("refuses and sends nothing when no origin can be resolved for the receipt", async () => {
+    const fetcher = purchaseFetcher();
+    const vault = realVault({ origin: null });
+    const { controller } = controllerWith(fetcher, { vault: vault.binding });
+    await controller.initialize(ACTION);
+    const readCalls = fetcher.mock.calls.length;
+
+    expect(controller.beginDecision("approve")).toBe(true);
+    await controller.confirmDecision();
+
+    expect(fetcher.mock.calls.slice(readCalls)).toEqual([]);
+    expect(vault.committed).toEqual([]);
+    expect(controller.state.decision).toEqual({
+      kind: "rejected",
+      notice: { kind: "receipt-unavailable" },
+    });
   });
 });

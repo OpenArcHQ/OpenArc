@@ -25,6 +25,7 @@ import {
 import type { AccountBoundToken, AccountFlowController } from "../account/flow-controller.js";
 import {
   PurchaseReceiptUnavailableError,
+  buildPurchaseDecisionReceipt,
   runPurchaseDecisionFlow,
 } from "../api/purchase-decision-flow.js";
 import type { UnlockedWorkspace } from "../vault/types.js";
@@ -174,10 +175,19 @@ export interface PurchaseVaultBinding {
   ) => Promise<UnlockedWorkspace>;
   readonly verifyStored?: (workspace: UnlockedWorkspace) => Promise<void>;
   /**
+   * The exact origin the decision request is sent to, recorded on the receipt.
+   * Defaults to this document's own origin; a binding with neither an origin
+   * nor a custom builder refuses the decision rather than guessing one.
+   */
+  readonly origin?: string;
+  /**
    * Builds the encrypted record of exactly what the human saw and decided.
    * Returning no record refuses the decision.
+   *
+   * Optional since P04-06b: with no override, the v6 purchase-decision receipt
+   * is built from the reviewed purchase itself.
    */
-  readonly buildReceipt: (
+  readonly buildReceipt?: (
     workspace: UnlockedWorkspace,
     reviewed: PurchaseReceiptSubject,
   ) => readonly WorkspaceRecord[];
@@ -492,6 +502,24 @@ export class PurchaseController {
       action,
       approval: this.#state.review.approval,
     };
+    // P04-06b: with no override the v6 purchase-decision receipt is built here.
+    // It needs the exact origin the request is sent to; a binding that supplies
+    // neither an origin nor a builder refuses rather than recording a guess.
+    const custom = vault.buildReceipt;
+    const origin =
+      vault.origin ?? (typeof window === "undefined" ? null : window.location.origin);
+    const buildReceipt =
+      custom !== undefined
+        ? (workspace: UnlockedWorkspace) => custom(workspace, subject)
+        : origin === null
+          ? null
+          : (workspace: UnlockedWorkspace) => [
+              buildPurchaseDecisionReceipt(workspace, origin, subject),
+            ];
+    if (buildReceipt === null) {
+      this.#update({ decision: { kind: "rejected", notice: { kind: "receipt-unavailable" } } });
+      return;
+    }
     const generation = this.#generation;
     this.#update({ decision: { kind: "pending", decision, actionId: action.actionId, mutationId } });
     this.#reads.abortPendingReads();
@@ -505,7 +533,7 @@ export class PurchaseController {
             assertActive: vault.assertActive,
             save: vault.save,
             ...(vault.verifyStored === undefined ? {} : { verifyStored: vault.verifyStored }),
-            buildReceipt: (workspace) => vault.buildReceipt(workspace, subject),
+            buildReceipt,
             send: async (sendSignal) => {
               const request = {
                 organizationId,

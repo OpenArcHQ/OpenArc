@@ -4,6 +4,7 @@ import {
   EVIDENCE_V2_PAYMENT_CERTAINTIES,
   PURCHASE_ADMITS_NO_SETTLEMENT,
   PURCHASE_DECISIONS,
+  PURCHASE_DECISION_DISCLOSURE,
   PURCHASE_DECISION_SUMMARIES,
   PURCHASE_FORBIDDEN_OUTCOME_WORDS,
   PURCHASE_OUTCOMES,
@@ -64,6 +65,19 @@ describe("P04-06 purchase outcome vocabulary", () => {
     for (const text of rendered) {
       expect(forbiddenPaymentWordsIn(text), `forbidden payment word rendered in: ${text}`).toEqual([]);
     }
+  });
+
+  /**
+   * P04-06b: the v6 purchase-decision receipt adds the only new human-facing
+   * disclosure text in this flow. It is held to the same guard as every label
+   * and explanation above.
+   */
+  it("never renders a forbidden payment word in the v6 purchase-decision disclosure", () => {
+    for (const [field, text] of Object.entries(PURCHASE_DECISION_DISCLOSURE)) {
+      expect(forbiddenPaymentWordsIn(text), `forbidden payment word in ${field}: ${text}`).toEqual([]);
+    }
+    // The disclosure must still say plainly that the decision moves no money.
+    expect(PURCHASE_DECISION_DISCLOSURE.purpose).toContain("moves no money");
   });
 
   it("matches a forbidden word only as a whole word, so settlement and settling stay usable", () => {
