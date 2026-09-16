@@ -1245,7 +1245,12 @@ describe('tenant membership mutation authority', () => {
       await blocker.query('SELECT account_id FROM openarc_auth.accounts WHERE account_id = $1 FOR UPDATE', [
         accountId(42),
       ]);
-      const pending = tenant.query('SELECT * FROM openarc_tenant.lock_auth_session($1, NULL)', [ownerHash]);
+      // Attach the rejection handler now: the query rejects as soon as the
+      // blocker commits, which can land before the assertion below runs.
+      const rejected = expectPgError(
+        tenant.query('SELECT * FROM openarc_tenant.lock_auth_session($1, NULL)', [ownerHash]),
+        '28000',
+      );
       let waiting = false;
       for (let attempt = 0; attempt < 400 && !waiting; attempt += 1) {
         const probe = await admin.query<{ n: number }>(
@@ -1261,7 +1266,7 @@ describe('tenant membership mutation authority', () => {
         [ownerHash],
       );
       await blocker.query('COMMIT');
-      await expectPgError(pending, '28000');
+      await rejected;
     } finally {
       blocker.release();
     }
@@ -1392,7 +1397,7 @@ describe('tenant lock-order freshness recheck', () => {
       ]);
       await waitForLockWait();
       await blocker.query('COMMIT');
-      await expectPgError(pending, '28000');
+      await rejected;
     } finally {
       blocker.release();
     }
@@ -1424,7 +1429,7 @@ describe('tenant lock-order freshness recheck', () => {
       await waitForLockWait();
       await blocker.query('SELECT pg_sleep(2)');
       await blocker.query('COMMIT');
-      await expectPgError(pending, '28000');
+      await rejected;
     } finally {
       blocker.release();
     }

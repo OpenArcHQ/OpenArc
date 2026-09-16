@@ -147,6 +147,9 @@ afterEach(async () => {
   await deleteDatabase();
 });
 
+// Key derivation is deliberately slow; match the other Vault suites under CI load.
+vi.setConfig({ testTimeout: 60_000 });
+
 describe("encrypted local workspace", () => {
   it.each(["lock", "deletion", "record revision", "replacement"] as const)(
     "rejects a stale unlock when %s changes during key derivation without writing ciphertext", async (change) => {
