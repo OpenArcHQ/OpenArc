@@ -15,7 +15,7 @@
     "dev": "pnpm --filter @openarc/shared build && pnpm --filter @openarc/db build && pnpm --parallel --filter @openarc/api --filter @openarc/web dev",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "pnpm -r --if-present typecheck",
-    "test": "pnpm --filter @openarc/shared build && pnpm --filter @openarc/db build && pnpm -r --if-present test --maxWorkers=2",
+    "test": "pnpm --filter @openarc/shared build && pnpm --filter @openarc/db build && pnpm --filter @openarc/x402 build && pnpm -r --if-present test --maxWorkers=2",
     "build": "pnpm -r --if-present build",
     "e2e": "pnpm --filter @openarc/shared build && playwright test && playwright test -c playwright.flag-off.config.ts && playwright test -c playwright.api-boundary.config.ts && playwright test -c playwright.arc-observation.config.ts && playwright test -c playwright.agent-registry.config.ts && playwright test -c playwright.job-evidence.config.ts && playwright test -c playwright.gateway-evidence.config.ts && playwright test -c playwright.local-agent-import.config.ts && playwright test -c playwright.investigations.config.ts && playwright test -c playwright.investigations.flag-off.config.ts && playwright test -c playwright.policy-management.config.ts && playwright test -c playwright.commerce-sessions.config.ts && playwright test -c playwright.market-public.config.ts && playwright test -c playwright.listing-management.config.ts && playwright test -c playwright.machine-management.config.ts && playwright test -c playwright.tenant-write.config.ts && pnpm e2e:tenant && playwright test -c playwright.supplied.config.ts",
     "e2e:local-agent-import": "playwright test -c playwright.local-agent-import.config.ts",
