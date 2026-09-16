@@ -1,14 +1,8 @@
 <div align="center">
   <img src="assets/openarc-logo.jpeg" alt="OpenArc" width="160" />
 
-```
-  ██████  ██████  ███████ ███    ██  █████  ██████   ██████
- ██    ██ ██   ██ ██      ████   ██ ██   ██ ██   ██ ██
- ██    ██ ██████  █████   ██ ██  ██ ███████ ██████  ██
- ██    ██ ██      ██      ██  ██ ██ ██   ██ ██   ██ ██
-  ██████  ██      ███████ ██   ████ ██   ██ ██   ██  ██████
-```
 
+  <h1>OpenArc</h1>
   <h3>The receipts layer for autonomous finance.</h3>
 
   <p><em>A successful transfer is not proof of authorization.<br/>
