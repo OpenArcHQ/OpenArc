@@ -1395,6 +1395,7 @@ describe('tenant lock-order freshness recheck', () => {
         'owner',
         'active',
       ]);
+      const rejected = expectPgError(pending, '28000');
       await waitForLockWait();
       await blocker.query('COMMIT');
       await rejected;
@@ -1426,6 +1427,7 @@ describe('tenant lock-order freshness recheck', () => {
         'owner',
         'active',
       ]);
+      const rejected = expectPgError(pending, '28000');
       await waitForLockWait();
       await blocker.query('SELECT pg_sleep(2)');
       await blocker.query('COMMIT');
