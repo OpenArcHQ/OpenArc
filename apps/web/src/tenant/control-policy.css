@@ -28,8 +28,8 @@
 }
 
 .tenant-policies__fieldset {
-  border: 1px solid var(--tenant-border, #d8dee9);
-  border-radius: 0.5rem;
+  border: 1px solid var(--tenant-border, rgba(13, 27, 46, 0.09));
+  border-radius: 12px;
   padding: 1rem;
   margin: 0 0 1rem;
 }
@@ -56,8 +56,8 @@
 .tenant-policies__field textarea {
   font: inherit;
   padding: 0.5rem;
-  border: 1px solid var(--tenant-border, #d8dee9);
-  border-radius: 0.375rem;
+  border: 1px solid var(--tenant-border, rgba(13, 27, 46, 0.09));
+  border-radius: 10px;
   background: var(--tenant-surface, #fff);
   color: inherit;
 }
@@ -88,14 +88,14 @@
 
 .tenant-policies__revision {
   border: 2px solid var(--tenant-accent, #b7791f);
-  border-radius: 0.5rem;
+  border-radius: 12px;
   padding: 1rem;
   background: var(--tenant-accent-soft, #fffaf0);
 }
 
 .tenant-policies__disclosure {
   border: 2px solid var(--tenant-accent, #b7791f);
-  border-radius: 0.5rem;
+  border-radius: 12px;
   padding: 1rem;
   background: var(--tenant-accent-soft, #fffaf0);
 }

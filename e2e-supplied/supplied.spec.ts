@@ -216,16 +216,19 @@ test("design styles are removed on same-document navigation to legacy routes", a
   await waitForRoute(page, "/design");
   await expect(page.locator('link[rel="stylesheet"][data-supplied-style="supplied"]')).toHaveCount(1);
   await expect(page.locator('link[rel="stylesheet"][data-supplied-style="staging"]')).toHaveCount(1);
+  await expect(page.locator('link[rel="stylesheet"][data-supplied-style="brand"]')).toHaveCount(1);
   await expect(page.locator(".supplied-home")).toHaveCount(1);
 
+  // `/` is now the landing page; the legacy evidence explorer lives at `/evidence`.
   await page.evaluate(() => {
-    window.history.pushState(null, "", "/");
+    window.history.pushState(null, "", "/evidence");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
 
   await expect(page.getByRole("heading", { name: "See the full arc of every agent action." })).toBeVisible();
   await expect(page.locator('link[rel="stylesheet"][data-supplied-style="supplied"]')).toHaveCount(0);
   await expect(page.locator('link[rel="stylesheet"][data-supplied-style="staging"]')).toHaveCount(0);
+  await expect(page.locator('link[rel="stylesheet"][data-supplied-style="brand"]')).toHaveCount(0);
   await expect(page.locator(".supplied-home")).toHaveCount(0);
 });
 
@@ -316,7 +319,7 @@ test("design stylesheets load same-origin and apply at computed level", async ({
   const hrefs = await page
     .locator('link[rel="stylesheet"][data-supplied-style]')
     .evaluateAll((links) => links.map((link) => (link as HTMLLinkElement).href));
-  expect(hrefs).toHaveLength(2);
+  expect(hrefs).toHaveLength(3);
   for (const href of hrefs) expect(new URL(href).origin).toBe(origin);
 
   const sheetHrefs = await page.evaluate(() =>

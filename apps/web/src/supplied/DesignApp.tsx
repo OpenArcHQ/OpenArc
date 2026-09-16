@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 
 import stagingCssUrl from "./staging.css?url";
 import suppliedCssUrl from "./supplied.css?url";
+import brandCssUrl from "./brand.css?url";
+import { useSurfaceSheen } from "../app/surface-sheen.js";
 
 import Home from "./pages/Home.js";
 import Docs from "./pages/Docs.js";
@@ -11,6 +13,7 @@ import { designHref } from "./navigation.js";
 const SUPPLIED_STYLES = [
   { key: "supplied", href: suppliedCssUrl },
   { key: "staging", href: stagingCssUrl },
+  { key: "brand", href: brandCssUrl },
 ] as const;
 
 /**
@@ -75,6 +78,7 @@ function Route({ path }: { path: string }) {
 export default function DesignApp() {
   const [path, setPath] = useState(currentPath);
   useSuppliedStyles();
+  useSurfaceSheen(".supplied-home .v-card, .supplied-home .oa-console__frame");
 
   useEffect(() => {
     const onPopState = () => setPath(currentPath());

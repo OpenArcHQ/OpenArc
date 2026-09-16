@@ -2305,7 +2305,7 @@ export function Modal({ title, children, onClose, closeDisabled = false, returnF
 }
 
 function WorkspaceGate({ title, build, children }: { title: string; build: BuildInfo; children: ReactNode }) {
-  return <main className="workspace-gate"><a className="workspace-brand" href="/"><img src="/openarc-logo.jpeg" alt="" /><span><strong>OPENARC</strong><small>ENCRYPTED WORKSPACE</small></span></a><section><p className="eyebrow">LOCAL FIRST · NO ACCOUNT · NO NETWORK</p><h1>{title}</h1>{children}</section><footer><a href="/">← Back to evidence engine</a><code data-testid="build-sha">BUILD {build.commitSha}</code></footer></main>;
+  return <main className="workspace-gate"><a className="workspace-brand" href="/"><img src="/openarc-logo.jpeg" alt="" /><span><strong>OPENARC</strong><small>ENCRYPTED WORKSPACE</small></span></a><section><p className="eyebrow">LOCAL FIRST · NO ACCOUNT · NO NETWORK</p><h1>{title}</h1>{children}</section><footer><a href="/evidence">← Back to evidence engine</a><code data-testid="build-sha">BUILD {build.commitSha}</code></footer></main>;
 }
 
 function WorkspaceWait({ label }: { label: string }) {

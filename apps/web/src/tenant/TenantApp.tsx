@@ -80,6 +80,7 @@ import { ListingEditorPanel, ListingLifecycleActions } from "./ListingEditorPane
 import { ListingVersionHistory } from "./ListingVersionHistory.js";
 import { PolicyListPanel } from "./PolicyListPanel.js";
 import { PolicyRevisionHistory } from "./PolicyRevisionHistory.js";
+import { initials, useWorkspaceSheen, WorkspaceIcon, type WorkspaceIconName } from "./workspace-chrome.js";
 import {
   beginAppendFromRevision,
   PolicyController,
@@ -147,6 +148,25 @@ type AppPath =
   | "/app/actions/approvals"
   | "/app/actions/exposure"
   | "/app/grants";
+
+const NAV_ITEMS: ReadonlyArray<{ path: AppPath; label: string; icon: WorkspaceIconName; group: "Overview" | "Commerce" | "Provider" }> = [
+  { path: "/app/overview", label: "Overview", icon: "overview", group: "Overview" },
+  { path: "/app/agents", label: "Agents", icon: "agents", group: "Overview" },
+  { path: "/app/budgets", label: "Budgets", icon: "budgets", group: "Commerce" },
+  { path: "/app/sessions", label: "Sessions", icon: "sessions", group: "Commerce" },
+  { path: "/app/actions", label: "Actions", icon: "actions", group: "Commerce" },
+  { path: "/app/grants", label: "Grants", icon: "grants", group: "Commerce" },
+  { path: "/app/provider", label: "Provider", icon: "provider", group: "Provider" },
+  { path: "/app/provider/listings", label: "Listings", icon: "listings", group: "Provider" },
+];
+
+function navLabel(path: AppPath | null): string {
+  if (path === null) return "Workspace";
+  const exact = NAV_ITEMS.find((item) => item.path === path);
+  if (exact !== undefined) return exact.label;
+  const parent = [...NAV_ITEMS].reverse().find((item) => path.startsWith(`${item.path}/`));
+  return parent?.label ?? "Workspace";
+}
 
 type WorkspacePath =
   | AppPath
@@ -505,6 +525,7 @@ export default function TenantApp() {
   const accountId = state.principal.accountId;
 
   useTenantStyles();
+  useWorkspaceSheen();
   useListingStyles(listingEnabled);
   usePolicyStyles(policyEnabled);
   useSessionStyles(sessionsEnabled);
@@ -1503,9 +1524,18 @@ export default function TenantApp() {
       <div className="tenant-main">
         <header className="tenant-topbar">
           <a className="tenant-topbar__brand" href="/design" aria-label="OpenArc home">
-            <img src="/openarc-logo.jpeg" alt="" width={32} height={32} />
+            <img src="/openarc-logo.jpeg" alt="" width={30} height={30} />
             <span>OPENARC</span>
           </a>
+          <p className="tenant-crumbs">
+            {currentOrganization !== null ? `${currentOrganization.displayName} / ` : ""}
+            <b>{navLabel(activePath)}</b>
+          </p>
+          <div className="tenant-topbar__end">
+            <span className="tenant-netpill">
+              <span className="tenant-testnet__dot" aria-hidden="true" />
+              Arc Testnet
+            </span>
           <button
             type="button"
             ref={menuButtonRef}
@@ -1516,6 +1546,7 @@ export default function TenantApp() {
           >
             {drawerOpen ? "Close menu" : "Menu"}
           </button>
+          </div>
         </header>
 
         <main id="tenant-main" className="tenant-content" tabIndex={-1}>
@@ -1630,23 +1661,29 @@ interface RailProps {
 
 function Rail(props: RailProps) {
   const { organizations, principal } = props.state;
-  const navItems: Array<{ path: AppPath; label: string }> = [
-    { path: "/app/overview", label: "Overview" },
-    { path: "/app/agents", label: "Agents" },
-    { path: "/app/provider", label: "Provider" },
-    { path: "/app/provider/listings", label: "Listings" },
-    { path: "/app/budgets", label: "Budgets" },
-    { path: "/app/sessions", label: "Sessions" },
-    { path: "/app/actions", label: "Actions" },
-    { path: "/app/grants", label: "Grants" },
-  ];
+  const groups = ["Overview", "Commerce", "Provider"] as const;
+  const navLink = (item: { path: AppPath; label: string; icon: WorkspaceIconName }) => (
+    <li key={item.path}>
+      <a
+        href={item.path}
+        aria-current={props.currentPath === item.path ? "page" : undefined}
+        onClick={(event) => {
+          event.preventDefault();
+          props.onNavigate(item.path);
+        }}
+      >
+        <WorkspaceIcon name={item.icon} className="tenant-nav__icon" />
+        {item.label}
+      </a>
+    </li>
+  );
   return (
     <nav
       className={props.staticRail === true ? "tenant-rail tenant-rail--static" : "tenant-rail"}
       aria-label="Organization workspace"
     >
       <a className="tenant-brand" href="/design" aria-label="OpenArc home">
-        <img className="tenant-brand__logo" src="/openarc-logo.jpeg" alt="" width={38} height={38} />
+        <img className="tenant-brand__logo" src="/openarc-logo.jpeg" alt="" width={36} height={36} />
         <span>
           <span className="tenant-brand__name">OPENARC</span>
           <span className="tenant-brand__sub">AGENT CONSOLE</span>
@@ -1676,62 +1713,64 @@ function Rail(props: RailProps) {
           </select>
         ) : null}
         {props.currentOrganization !== null ? (
-          <p className="tenant-org-current">
-            <strong>{props.currentOrganization.displayName}</strong>
-            <br />
-            <span className="tenant-org-role">
-              {roleLabel(props.currentOrganization.role)} ·{" "}
-              {props.currentOrganization.status === "active" ? "ACTIVE" : "SUSPENDED"}
+          <div className="tenant-org-current">
+            <span className="tenant-org-badge" aria-hidden="true">
+              {initials(props.currentOrganization.displayName)}
             </span>
-          </p>
+            <p className="tenant-org-current__text">
+              <strong>{props.currentOrganization.displayName}</strong>
+              <span className="tenant-org-role">
+                {roleLabel(props.currentOrganization.role)} ·{" "}
+                {props.currentOrganization.status === "active" ? "Active" : "Suspended"}
+              </span>
+            </p>
+          </div>
         ) : null}
       </div>
 
-      <div className="tenant-rail__section">
-        <p className="tenant-rail__label">Workspace</p>
-        <ul className="tenant-nav">
-          {navItems.map((item) => (
-            <li key={item.path}>
-              <a
-                href={item.path}
-                aria-current={props.currentPath === item.path ? "page" : undefined}
-                onClick={(event) => {
-                  event.preventDefault();
-                  props.onNavigate(item.path);
-                }}
-              >
-                {item.label}
-              </a>
-            </li>
-          ))}
-        </ul>
-      </div>
+      {groups.map((group) => (
+        <div className="tenant-rail__section" key={group}>
+          <p className="tenant-rail__label">{group}</p>
+          <ul className="tenant-nav">{NAV_ITEMS.filter((item) => item.group === group).map(navLink)}</ul>
+        </div>
+      ))}
 
       <div className="tenant-rail__section">
         <p className="tenant-rail__label">Elsewhere</p>
         <ul className="tenant-nav">
           <li>
-            <a href="/account">Account</a>
+            <a href="/account">
+              <WorkspaceIcon name="account" className="tenant-nav__icon" />
+              Account
+            </a>
           </li>
           <li>
-            <a href="/design/docs">Docs</a>
+            <a href="/design/docs">
+              <WorkspaceIcon name="docs" className="tenant-nav__icon" />
+              Docs
+            </a>
           </li>
           <li>
-            <a href="/workspace">Local workspace</a>
+            <a href="/workspace">
+              <WorkspaceIcon name="local" className="tenant-nav__icon" />
+              Local workspace
+            </a>
           </li>
         </ul>
       </div>
 
       <div className="tenant-rail__spacer" />
-      <span className="tenant-testnet">
-        <span className="tenant-testnet__dot" aria-hidden="true" />
-        TESTNET
-      </span>
-      <p className="tenant-rail__meta">
-        chain {ARC_TESTNET.chainId}
-        <br />
-        {ARC_TESTNET.currencySymbol}
-      </p>
+      <div className="tenant-netcard">
+        <span className="tenant-testnet">
+          <span className="tenant-testnet__dot" aria-hidden="true" />
+          TESTNET
+        </span>
+        <p className="tenant-rail__meta">
+          chain {ARC_TESTNET.chainId}
+          <br />
+          {ARC_TESTNET.currencySymbol} · non-custodial
+        </p>
+      </div>
     </nav>
   );
 }
@@ -2134,6 +2173,7 @@ function Workspace(props: WorkspaceProps) {
     default:
       return (
         <Overview
+          onNavigate={props.onNavigate}
           state={state}
           currentOrganization={props.currentOrganization}
           writeController={props.writeController}
@@ -2179,11 +2219,36 @@ function OrganizationList(props: {
   );
 }
 
+const OVERVIEW_TILES: ReadonlyArray<{
+  path: AppPath;
+  icon: WorkspaceIconName;
+  title: string;
+  body: string;
+  /** Accessible name; must not contain a rail label, which tests match by substring. */
+  label: string;
+  gold?: boolean;
+}> = [
+  { path: "/app/agents", icon: "agents", title: "Agents", label: "Open the agent list", body: "The AI agents that can act for this organization, and their credentials." },
+  { path: "/app/budgets", icon: "budgets", title: "Budgets", label: "Open budget rules", body: "The spending rules each agent must follow. Anything outside them waits for a person.", gold: true },
+  { path: "/app/actions/approvals", icon: "actions", title: "Approvals", label: "Open the approval queue", body: "Purchases your agents asked for that need a human decision." },
+  { path: "/app/sessions", icon: "sessions", title: "Sessions", label: "Open session permissions", body: "Time-boxed permissions an agent can use to buy within a budget." },
+  { path: "/app/grants", icon: "grants", title: "Grants", label: "Open grant lookup", body: "What each seller was allowed to deliver, and whether it was used." },
+  { path: "/app/provider/listings", icon: "listings", title: "Listings", label: "Open your service catalog", body: "If you sell to agents: the services and prices they can see.", gold: true },
+];
+
+function greeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
+
 function Overview(props: {
   state: TenantViewControllerState;
   currentOrganization: { displayName: string; role: CommerceHumanRole; status: "active" | "suspended" };
   writeController: TenantWriteController | null;
   organizationId: string;
+  onNavigate: (path: AppPath) => void;
 }) {
   const { currentOrganization, state } = props;
   return (
@@ -2192,18 +2257,60 @@ function Overview(props: {
       <h1 className="tenant-title" id="tenant-overview-title">
         {currentOrganization.displayName}
       </h1>
-      <dl className="tenant-meta">
-        <dt>Role</dt>
-        <dd>
-          {roleLabel(currentOrganization.role)}{" "}
-          <span className="tenant-pill tenant-pill--active">{currentOrganization.status}</span>
-        </dd>
-        <dt>Network</dt>
-        <dd>Arc Testnet ({ARC_TESTNET.chainId})</dd>
-        <dt>Organization ID</dt>
-        <dd className="tenant-mono">{state.selectedOrganizationId}</dd>
-      </dl>
       <p className="tenant-lede">Choose Agents or Provider to view this organization.</p>
+      <div className="tenant-hero">
+        <span className="tenant-hero__burst" aria-hidden="true" />
+        <p className="tenant-eyebrow">{greeting()}</p>
+        <p className="tenant-hero__title">
+          Your agents buy. <b>You stay in control.</b>
+        </p>
+        <dl className="tenant-hero__facts">
+          <div>
+            <dt>Your role</dt>
+            <dd>
+              {roleLabel(currentOrganization.role)}{" "}
+              <span className={`tenant-pill ${currentOrganization.status === "active" ? "tenant-pill--active" : "tenant-pill--suspended"}`}>
+                {currentOrganization.status}
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt>Network</dt>
+            <dd>Arc Testnet ({ARC_TESTNET.chainId})</dd>
+          </div>
+          <div>
+            <dt>Custody</dt>
+            <dd>Non-custodial</dd>
+          </div>
+          <div>
+            <dt>Organization ID</dt>
+            <dd className="tenant-mono">{state.selectedOrganizationId}</dd>
+          </div>
+        </dl>
+      </div>
+      <div className="tenant-tiles">
+        {OVERVIEW_TILES.map((tile) => (
+          <a
+            key={tile.path}
+            href={tile.path}
+            aria-label={tile.label}
+            className={`tenant-surface tenant-surface--lift tenant-tile${tile.gold === true ? " tenant-tile--gold" : ""}`}
+            onClick={(event) => {
+              event.preventDefault();
+              props.onNavigate(tile.path);
+            }}
+          >
+            <span className="tenant-tile__icon" aria-hidden="true">
+              <WorkspaceIcon name={tile.icon} />
+            </span>
+            <h2>{tile.title}</h2>
+            <p>{tile.body}</p>
+            <span className="tenant-tile__go" aria-hidden="true">
+              Open <span>→</span>
+            </span>
+          </a>
+        ))}
+      </div>
       {currentOrganization.role === "owner" ? (
         <TenantMutationPanel
           controller={props.writeController}

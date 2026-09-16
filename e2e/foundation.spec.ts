@@ -8,7 +8,7 @@ test("renders the Testnet-only M00 foundation with an exact build marker", async
     if (url.origin !== appOrigin) externalRequests.push(request.url());
   });
 
-  await page.goto("/");
+  await page.goto("/evidence");
 
   await expect(page).toHaveTitle(/OpenArc/u);
   await expect(page.getByRole("heading", { name: "See the full arc of every agent action." })).toBeVisible();

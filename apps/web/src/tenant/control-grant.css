@@ -32,7 +32,7 @@
 }
 
 .tenant-grants-console__section {
-  border: 1px solid var(--tenant-line, #d7dde7);
+  border: 1px solid var(--tenant-line, rgba(13, 27, 46, 0.09));
   border-radius: var(--tenant-radius, 10px);
   background: var(--tenant-surface, #ffffff);
   padding: 1rem;
@@ -50,23 +50,23 @@
 }
 
 .tenant-grants-console__field input {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--tenant-mono-font, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   padding: 0.5rem 0.6rem;
-  border: 1px solid var(--tenant-line-strong, #b9c2d1);
+  border: 1px solid var(--tenant-line-strong, rgba(13, 27, 46, 0.18));
   border-radius: var(--tenant-radius, 10px);
   background: var(--tenant-surface, #ffffff);
-  color: var(--tenant-ink, #16233a);
+  color: var(--tenant-ink, #0d1b2e);
   min-width: 0;
   width: 100%;
   max-width: 34rem;
 }
 
 .tenant-grants-console__field input[aria-invalid="true"] {
-  border-color: var(--tenant-danger, #a12727);
+  border-color: var(--tenant-danger, #b3402e);
 }
 
 .tenant-grants-console__hint {
-  color: var(--tenant-muted, #5a6780);
+  color: var(--tenant-muted, #56637a);
   font-size: 0.9rem;
   margin: 0;
 }
@@ -77,8 +77,8 @@
  * console renders no countdown and no animated timer.
  */
 .tenant-grants-console__expiry {
-  border: 1px solid var(--tenant-line, #d7dde7);
-  border-left: 3px solid var(--tenant-gold, #b07d1a);
+  border: 1px solid var(--tenant-line, rgba(13, 27, 46, 0.09));
+  border-left: 3px solid var(--tenant-gold, #b36f00);
   border-radius: var(--tenant-radius, 10px);
   padding: 0.75rem;
   display: flex;
@@ -88,7 +88,7 @@
 }
 
 .tenant-grants-console__confirm {
-  border: 1px solid var(--tenant-cobalt, #0f62fe);
+  border: 1px solid var(--tenant-cobalt, #1d5fe0);
   border-radius: var(--tenant-radius, 10px);
   padding: 1rem;
   margin-block-start: 1rem;
@@ -96,14 +96,14 @@
 
 /* The unknown outcome is marked, never coloured as success or failure. */
 .tenant-grants-console__unknown {
-  border: 1px solid var(--tenant-gold, #b07d1a);
+  border: 1px solid var(--tenant-gold, #b36f00);
   border-radius: var(--tenant-radius, 10px);
   padding: 1rem;
   margin-block-start: 1rem;
 }
 
 .tenant-grants-console__receipt {
-  border: 1px solid var(--tenant-line-strong, #b9c2d1);
+  border: 1px solid var(--tenant-line-strong, rgba(13, 27, 46, 0.18));
   border-radius: var(--tenant-radius, 10px);
   padding: 1rem;
   margin-block-start: 1rem;
@@ -115,7 +115,7 @@
   align-items: flex-start;
   gap: 0.5rem;
   margin-block-start: 1rem;
-  border-block-start: 1px solid var(--tenant-line, #d7dde7);
+  border-block-start: 1px solid var(--tenant-line, rgba(13, 27, 46, 0.09));
   padding-block-start: 0.75rem;
 }
 
@@ -124,15 +124,15 @@
  * retires permission and is fully described in the copy beside it.
  */
 .tenant-grants-console .tenant-button--danger {
-  border-color: var(--tenant-danger, #a12727);
-  color: var(--tenant-danger, #a12727);
+  border-color: var(--tenant-danger, #b3402e);
+  color: var(--tenant-danger, #b3402e);
   background: var(--tenant-surface, #ffffff);
   transition: background-color 120ms ease, color 120ms ease;
 }
 
 .tenant-grants-console .tenant-button--danger:hover:not(:disabled),
 .tenant-grants-console .tenant-button--danger:focus-visible:not(:disabled) {
-  background: var(--tenant-danger-soft, #fdecec);
+  background: var(--tenant-danger-soft, #fdf0ed);
 }
 
 .tenant-grants-console .tenant-button--danger:disabled {
@@ -148,7 +148,7 @@
 .tenant-grants-console a:focus-visible,
 .tenant-grants-console button:focus-visible,
 .tenant-grants-console input:focus-visible {
-  outline: 3px solid var(--tenant-cobalt, #0f62fe);
+  outline: 3px solid var(--tenant-cobalt, #1d5fe0);
   outline-offset: 2px;
 }
 

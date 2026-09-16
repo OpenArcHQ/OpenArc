@@ -47,7 +47,7 @@ class DesignErrorBoundary extends Component<DesignErrorBoundaryProps, DesignErro
         <main className="supplied-fallback" role="alert">
           <h1>The design preview could not load.</h1>
           <p>
-            The rest of this build is unaffected. Return to the <a href="/">evidence workspace</a>.
+            The rest of this build is unaffected. Return to the <a href="/evidence">evidence workspace</a>.
           </p>
         </main>
       );
@@ -165,6 +165,18 @@ export function App({ build }: AppProps) {
       >
         <VaultWorkspace build={build} />
       </Suspense>
+    );
+  }
+
+  // Any other public path falls through to the landing page; the synthetic
+  // evidence explorer lives at `/evidence`.
+  if (path !== "/evidence") {
+    return (
+      <DesignErrorBoundary>
+        <Suspense fallback={<main className="supplied-fallback" role="status">Loading…</main>}>
+          <SuppliedDesignApp />
+        </Suspense>
+      </DesignErrorBoundary>
     );
   }
 

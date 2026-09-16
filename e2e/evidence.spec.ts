@@ -14,7 +14,7 @@ test("explores every fixture with graph/list parity, keyboard tabs, and no priva
     if (/\/(v1|rpc|graphql)(\/|\?|$)/u.test(url.pathname)) dynamicRequests.push(request.url());
   });
 
-  await page.goto("/");
+  await page.goto("/evidence");
   await expect(page.getByText("M02 · ENCRYPTED WORKSPACE")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Read the evidence before the conclusion." })).toBeVisible();
 
@@ -63,7 +63,7 @@ test("explores every fixture with graph/list parity, keyboard tabs, and no priva
 });
 
 test("passes a full-document serious accessibility scan with the explorer rendered", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/evidence");
   await page.getByRole("tab", { name: /Recipient conflict/u }).click();
 
   const results = await new AxeBuilder({ page })
@@ -75,7 +75,7 @@ test("passes a full-document serious accessibility scan with the explorer render
 test("keeps essential controls usable on mobile and under reduced motion", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/");
+  await page.goto("/evidence");
 
   const tabs = page.getByRole("tab");
   for (let index = 0; index < (await tabs.count()); index += 1) {
