@@ -65,6 +65,15 @@ import { canDecideActions, canReadActions, type ActionReadCoordinator } from "./
  * `action_reject`. It never calls an agent-audience route.
  */
 
+/**
+ * P04-06c — where a purchase decision is actually taken. The encrypted
+ * workspace is the only surface in this build that unlocks a Vault, so it is
+ * the only surface that can receipt a decision. A console without one links
+ * here instead of offering a control it could never honour.
+ */
+export const PURCHASE_WORKSPACE_VIEW = "purchases";
+export const PURCHASE_WORKSPACE_HREF = `/workspace?view=${PURCHASE_WORKSPACE_VIEW}`;
+
 export type PurchaseReviewStatus = "none" | "loading" | "ready" | "not-found" | "error";
 
 export interface PurchaseReviewState {
@@ -134,7 +143,19 @@ export interface PurchaseControllerState {
 }
 
 /** Only these statuses can still receive a human purchase decision. */
-const DECIDABLE_STATUSES = new Set(["pending_approval", "reserved_not_granted"]);
+const DECIDABLE_STATUSES: ReadonlySet<string> = new Set([
+  "pending_approval",
+  "reserved_not_granted",
+]);
+
+/**
+ * Whether a purchase in this status can still receive a human decision. It is
+ * the one place that answer is defined, so the review, the decision gate and
+ * the workspace's pending list can never drift apart.
+ */
+export function isDecidablePurchaseStatus(status: string): boolean {
+  return DECIDABLE_STATUSES.has(status);
+}
 
 export function initialPurchaseReviewState(): PurchaseReviewState {
   return {

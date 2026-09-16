@@ -6,6 +6,7 @@ import {
 
 import { formatAtomicAmount } from "./action-controller.js";
 import {
+  isDecidablePurchaseStatus,
   purchaseDecisionOutcomeLabel,
   purchaseRejectionMessage,
   type PurchaseController,
@@ -25,12 +26,63 @@ import {
  * A field no browser route can supply is shown as an explicit unknown, never
  * filled in with a guess. The outcome line uses only the accepted certainty
  * vocabulary: it never says paid, settled, refunded, failed or released.
+ *
+ * P04-06c — WHERE the decision may be taken is now explicit. The review itself
+ * renders identically on both surfaces, but only a surface that owns an
+ * unlocked Vault renders a decision control at all. The tenant console does
+ * not own one, so it renders the review read-only and links to the private
+ * workspace instead of offering a button that could never be receipted.
  */
+
+/** The surface this review is mounted on, and therefore what it may offer. */
+export type PurchaseDecisionSurface =
+  /** Mounted inside the unlocked encrypted workspace: decisions live here. */
+  | { readonly kind: "workspace" }
+  /** Mounted anywhere else: read-only, with a link to where a decision is made. */
+  | { readonly kind: "elsewhere"; readonly href: string };
+
+/**
+ * What the review may show below the figures. This is a pure function of the
+ * controller state and the surface, so "the tenant console renders no decision
+ * control" is a property that can be asserted directly rather than inferred
+ * from markup.
+ */
+export type PurchaseDecisionControls =
+  /** The approve/reject controls, receipt-gated by an unlocked Vault. */
+  | { readonly kind: "controls"; readonly busy: boolean }
+  /** No control here; the decision is taken on another surface. */
+  | { readonly kind: "handoff"; readonly href: string }
+  | {
+      readonly kind: "unavailable";
+      readonly reason: "closed" | "server-denied" | "role" | "no-receipt";
+    };
+
+export function purchaseDecisionControls(
+  state: PurchaseControllerState,
+  surface: PurchaseDecisionSurface,
+): PurchaseDecisionControls {
+  const action = state.review.action;
+  if (action === null || !isDecidablePurchaseStatus(action.status)) {
+    return { kind: "unavailable", reason: "closed" };
+  }
+  if (!state.canDecide) {
+    return { kind: "unavailable", reason: state.serverDeniedDecision ? "server-denied" : "role" };
+  }
+  // A surface without an unlocked Vault never renders a control, whatever the
+  // role allows: an unreceipted approval is exactly what this gate prevents.
+  if (surface.kind === "elsewhere") return { kind: "handoff", href: surface.href };
+  if (state.receiptUnavailable) return { kind: "unavailable", reason: "no-receipt" };
+  return {
+    kind: "controls",
+    busy: state.decision.kind === "pending" || state.decision.kind === "confirming",
+  };
+}
 
 export interface PurchaseReviewPanelProps {
   readonly state: PurchaseControllerState;
   readonly controller: PurchaseController | null;
   readonly actionId: string;
+  readonly decisions: PurchaseDecisionSurface;
 }
 
 /** Amount-valued rows get a decimal placement alongside the exact integer. */
@@ -79,9 +131,8 @@ export function PurchaseReviewPanel(props: PurchaseReviewPanelProps) {
   const action = review.action;
   const fields = controller?.reviewFields() ?? [];
   const outcome = controller?.outcome() ?? null;
-  const decidable = action.status === "pending_approval" || action.status === "reserved_not_granted";
-  const busy = state.decision.kind === "pending" || state.decision.kind === "confirming";
-  const showDecisions = state.canDecide && decidable && !state.receiptUnavailable;
+  const controls = purchaseDecisionControls(state, props.decisions);
+  const readOnly = props.decisions.kind !== "workspace";
 
   return (
     <section className="tenant-actions-console__section purchase-review" aria-labelledby="purchase-review-title">
@@ -109,9 +160,9 @@ export function PurchaseReviewPanel(props: PurchaseReviewPanelProps) {
         </p>
       ) : null}
 
-      <PurchaseDecisionView state={state} controller={controller} />
+      {readOnly ? null : <PurchaseDecisionView state={state} controller={controller} />}
 
-      {showDecisions ? (
+      {controls.kind === "controls" ? (
         <div className="tenant-actions-console__decisions" role="group" aria-label="Purchase decision">
           <p className="tenant-status tenant-status--warning">
             What you reviewed above is written to your encrypted workspace before anything is sent.
@@ -123,26 +174,44 @@ export function PurchaseReviewPanel(props: PurchaseReviewPanelProps) {
               key={decision}
               type="button"
               className={decision === "approve" ? "tenant-button tenant-button--primary" : "tenant-button"}
-              disabled={busy}
+              disabled={controls.busy}
               onClick={() => controller?.beginDecision(decision)}
             >
               {decision === "approve" ? "Approve purchase" : "Reject purchase"}
             </button>
           ))}
         </div>
-      ) : state.receiptUnavailable && decidable && state.canDecide ? (
+      ) : controls.kind === "handoff" ? (
+        <div className="tenant-actions-console__handoff">
+          <p className="tenant-status tenant-status--warning" role="status">
+            This console cannot decide a purchase. Approving one first writes an encrypted receipt
+            of exactly what you reviewed into your private workspace, and that workspace is only
+            unlocked there. Without it nothing would record what you approved, so no decision
+            control is offered here and nothing is sent from this page.
+          </p>
+          <p className="tenant-actions">
+            <a className="tenant-button tenant-button--primary" href={controls.href}>
+              Decide this purchase in your private workspace
+            </a>
+          </p>
+          <p className="tenant-actions-console__explain">
+            Unlock the workspace there with your passphrase, open Purchases and review this same
+            purchase. Nothing about this purchase is sent by opening that page.
+          </p>
+        </div>
+      ) : controls.reason === "no-receipt" ? (
         <p className="tenant-status tenant-status--error" role="alert">
           No encrypted workspace is unlocked in this browser, so a receipt of what you reviewed
-          cannot be committed. The decision controls are disabled and nothing can be sent.
+          cannot be committed. The decision controls are unavailable and nothing can be sent.
         </p>
-      ) : !decidable ? (
+      ) : controls.reason === "closed" ? (
         <p className="tenant-status" role="status">
           This purchase is no longer open to a decision.
         </p>
       ) : (
         <p className="tenant-status tenant-status--warning" role="status">
-          {state.serverDeniedDecision
-            ? "The server refused your last decision on this purchase, so the controls are disabled here."
+          {controls.reason === "server-denied"
+            ? "The server refused your last decision on this purchase, so the controls are unavailable here."
             : "Your role can read this purchase but cannot decide it. Only an owner or operator may approve or reject."}
         </p>
       )}

@@ -41,6 +41,7 @@ import { ActionDetailPanel, ActionDecisionView } from "./ActionDetailPanel.js";
 import { ApprovalDetailPanel } from "./ApprovalDetailPanel.js";
 import { ActionExposurePanel } from "./ActionExposurePanel.js";
 import {
+  PURCHASE_WORKSPACE_HREF,
   PurchaseController,
   initialPurchaseControllerState,
   type PurchaseControllerState,
@@ -677,8 +678,11 @@ export default function TenantApp() {
     actionControllerRef.current = actionController;
     // The purchase handoff reuses the SAME browser-audience routes and the same
     // public capability probe as the action console. It is constructed with NO
-    // Vault binding: this shell holds no unlocked workspace, so every decision
-    // is refused before any request is built rather than sent unreceipted.
+    // Vault binding and is never given one: this shell holds no unlocked
+    // workspace, and P04-06c deliberately does not grow one here. The review
+    // renders read-only and links to the encrypted workspace, which owns
+    // unlock, lock, cross-tab coordination and the revision guard. No decision
+    // request can originate from this console.
     const purchaseController = actionsEnabled
       ? new PurchaseController({
           account,
@@ -3133,6 +3137,10 @@ function ActionWorkspace(props: ActionWorkspaceProps) {
           state={props.purchaseState}
           controller={props.purchaseController}
           actionId={props.route.actionId}
+          // P04-06c: this shell owns no unlocked Vault, so the review is
+          // read-only here and links to the workspace that does. No decision
+          // control is rendered and no decision request originates here.
+          decisions={{ kind: "elsewhere", href: PURCHASE_WORKSPACE_HREF }}
         />
       ) : null}
       {props.route.kind === "detail" ? (
